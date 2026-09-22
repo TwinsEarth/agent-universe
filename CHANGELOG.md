@@ -1,3 +1,3 @@
-# v2.0.3
+# v2.0.4
 
-- shard_of 哈希均匀分布修复：确保 DID 哈希均匀映射到分片
+- ShardMetadata counts 统一写入：分片计数与元数据保持单一真相源

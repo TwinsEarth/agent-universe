@@ -1,3 +1,3 @@
-# v2.0.4
+# v2.0.5
 
-- ShardMetadata counts 统一写入：分片计数与元数据保持单一真相源
+- get_shard_stats() 查询接口：返回各分片当前计数

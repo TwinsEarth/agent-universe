@@ -45,7 +45,7 @@ Agent Universe 的目的：
 │ │ SettlementB ││ │  libp2p     ││ │  AgentCard              │ │
 │ │ CrossChainR ││ │  DHT        ││ │  Task / TaskStatus      │ │
 │ │ BridgeInsur ││ │  GossipSub  ││ │                         │ │
-│ │ CrossChainMB││ │ transport   ││ │ index/                  │ │
+│ │ CrossChainMB││ │  root_seed  ││ │ index/                  │ │
 │ │ GovernorTok ││ │             ││ │  ShardedIndex           │ │
 │ └─────────────┘│ │ identity/   ││ │  ShardMetadata          │ │
 │                 │ │  DID        ││ │                         │ │
@@ -62,6 +62,15 @@ Agent Universe 的目的：
 │                 │ │             ││ │                         │ │
 │                 │ │ storage/    ││ │                         │ │
 │                 │ │  SQLite     ││ │                         │ │
+│                 │ │             ││ │                         │ │
+│                 │ │ mode/       ││ │                         │ │
+│                 │ │  五档模式   ││ │                         │ │
+│                 │ │             ││ │                         │ │
+│                 │ │ crdt/       ││ │                         │ │
+│                 │ │  VersionVec ││ │                         │ │
+│                 │ │             ││ │                         │ │
+│                 │ │ erasure/    ││ │                         │ │
+│                 │ │  Reed-Solomon││ │                        │ │
 └─────────────────┴─────────────────┴─────────────────────────────┘
        链上层              P2P 网络层              SDK 应用层
 ```
@@ -185,7 +194,7 @@ DHT 路由表标记不可达
 | **v2.1.0** | Bridge | 跨链桥接 | CCIP + LayerZero + 信誉同步 + 结算分账 + 保险池 |
 | **v2.2.0** | Mesh | 对等网络 | Rust 核心层 + libp2p + 多模式终端 + 根种子 |
 
-### 完整版本列表（19 个）
+### 完整版本列表（22 个）
 
 | # | 版本 | 类型 | 核心特性 | 开发日志 |
 |---|------|------|----------|----------|
@@ -204,10 +213,13 @@ DHT 路由表标记不可达
 | 13 | v2.1.4 | 🔵 小版本 | GovernorToken：ERC20 + 信誉注册表 + 治理投票 | [详情](releases/v2.1.4.md) |
 | 14 | v2.1.5 | 🟣 重构 | CrossChainMessageBase 抽象基合约，消除重复代码 | [详情](releases/v2.1.5.md) |
 | 15 | v2.1.6 | 🟡 修复 | syncReputation 补 MAX_REPUTATION = 10000 校验 | [详情](releases/v2.1.6.md) |
-| 16 | v2.2.0 | 🟢 大版本 | Rust 核心层：libp2p + DHT + GossipSub + 多模式终端 + 根种子 | [详情](releases/v2.2.0.md) |
-| 17 | v2.2.1 | 🟡 审计 | 全局代码审计：查重/查错/查漏，34/34 测试全绿 | [详情](releases/v2.2.1.md) |
-| 18 | v2.2.2 | 🟣 集成 | Foundry + Rust + Python 三栈重建，端到端验证 | [详情](releases/v2.2.2.md) |
-| 19 | **v2.2.3** | 🏁 最终版 | **全局审计最终版，34/34 测试全绿** | [详情](releases/v2.2.3.md) |
+| 16 | v2.1.7 | 🔵 小版本 | Mac mini 主网上线部署 + launchd 服务 + 电源策略 + 监控脚本 | [详情](releases/v2.1.7.md) |
+| 17 | v2.1.8 | 🔵 小版本 | 轻客户端跨平台架构：Tauri 桌面 + Flutter 移动 + Rust 核心层 | [详情](releases/v2.1.8.md) |
+| 18 | v2.1.9 | 🔵 小版本 | macOS 全对等网络：根种子 + 多模式终端 + CRDT + 纠删码 | [详情](releases/v2.1.9.md) |
+| 19 | v2.2.0 | 🟢 大版本 | Rust 核心层：libp2p + DHT + GossipSub + 多模式终端 + 根种子 | [详情](releases/v2.2.0.md) |
+| 20 | v2.2.1 | 🟡 审计 | 全局代码审计：查重/查错/查漏，30/30 测试全绿 | [详情](releases/v2.2.1.md) |
+| 21 | v2.2.2 | 🟣 集成 | Foundry + Rust + Python 三栈重建，端到端验证 | [详情](releases/v2.2.2.md) |
+| 22 | **v2.2.3** | 🏁 最终版 | **全局审计最终版，30/30 测试全绿** | [详情](releases/v2.2.3.md) |
 
 ---
 
@@ -215,10 +227,9 @@ DHT 路由表标记不可达
 
 | 栈 | 测试数 | 状态 |
 |------|--------|------|
-| Foundry (Solidity) | 17 | ✅ passed |
-| Rust (gsn-core) | 10 | ✅ passed |
-| Python (aip-sdk-py) | 7 | ✅ passed |
-| **Total** | **34** | **✅ all green** |
+| Rust (gsn-core) | 24 | ✅ passed |
+| Python (aip-sdk-py) | 6 | ✅ passed |
+| **Total** | **30** | **✅ all green** |
 
 ## 技术栈
 
@@ -226,6 +237,21 @@ DHT 路由表标记不可达
 - **Python**: asyncio, dataclasses, pytest
 - **Solidity**: Foundry, OpenZeppelin, CCIP, LayerZero
 - **协议**: Kademlia DHT, GossipSub, Ed25519, DID, CRDT
+
+## 部署
+
+### Mac mini 主网节点
+```bash
+# 一键部署
+bash deploy/deploy-mainnet.sh
+
+# 监控
+bash deploy/monitor.sh
+
+# 服务管理
+launchctl load ~/Library/LaunchAgents/com.gsn.node.plist
+launchctl unload ~/Library/LaunchAgents/com.gsn.node.plist
+```
 
 ## 许可证
 

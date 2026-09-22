@@ -1,3 +1,3 @@
-# v2.1.5
+# v2.1.6
 
-- CrossChainMessageBase 抽象基合约：消除 ReputationBridge/SettlementBridge 重复代码
+- syncReputation MAX_REPUTATION 校验：防止信誉溢出

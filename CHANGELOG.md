@@ -1,3 +1,3 @@
-# v2.1.3
+# v2.1.4
 
-- BridgeInsurance 保险池：质押赔付
+- GovernorToken：ERC20 + 信誉注册表

@@ -1,4 +1,3 @@
-# v2.1.1
+# v2.1.2
 
-- ReputationBridge + SettlementBridge 双合约完善
-- 15 个 Foundry 测试用例
+- CrossChainRouter 路由层：速率限制 + 熔断器

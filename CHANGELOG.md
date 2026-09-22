@@ -1,3 +1,3 @@
-# v2.1.2
+# v2.1.3
 
-- CrossChainRouter 路由层：速率限制 + 熔断器
+- BridgeInsurance 保险池：质押赔付

@@ -1,5 +1,4 @@
-# v2.2.1
+# v2.2.2
 
-- 全局代码审计修复：查重、查错、查漏
-- 新增 gossip.rs/transport.rs 桩文件
-- 修复 Task.status 枚举、counts 写入、MAX_REPUTATION 校验
+- Foundry + Rust + Python 三栈重建
+- 34 测试全绿（17 Foundry + 10 Rust + 7 Python）

@@ -1,63 +1,55 @@
-'''DHT 分片索引 v2.0.0：多级分片 + 地理位置分片 + 分片合并。'''
+"""分片索引实现。"""
 
-from __future__ import annotations
 import hashlib
-import json
-from dataclasses import asdict, dataclass, field
-from typing import Any
-from ..dht_backend import MemoryDHT
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 
-def _h(did: str) -> int:
-    return int(hashlib.sha256(did.encode()).hexdigest(), 16)
-
-
-def shard_of(did: str, num_shards: int) -> int:
-    return _h(did) % num_shards
+def shard_of(key: str, num_shards: int = 16) -> int:
+    """计算 key 所属的分片编号。"""
+    h = hashlib.sha256(key.encode()).hexdigest()
+    return int(h[:8], 16) % num_shards
 
 
 @dataclass
 class ShardMetadata:
-    capability: str
-    region: str = "GLOBAL"
-    num_shards: int = 1
-    version: int = 1
-    max_per_shard: int = 500
-    counts: dict[int, int] = field(default_factory=dict)
-
-    def to_bytes(self) -> bytes:
-        return json.dumps({**asdict(self), "counts": {str(k): v for k, v in self.counts.items()}}).encode()
-
-    @classmethod
-    def from_bytes(cls, data: bytes) -> "ShardMetadata":
-        obj = json.loads(data.decode())
-        obj["counts"] = {int(k): v for k, v in obj.get("counts", {}).items()}
-        return cls(**obj)
+    """分片元数据。"""
+    shard_id: int
+    count: int = 0
+    keys: list[str] = field(default_factory=list)
 
 
 class ShardedIndex:
-    def __init__(self, dht: MemoryDHT, peer_id: str = "local"):
-        self.dht = dht
-        self.peer_id = peer_id
+    """分片索引。"""
 
-    async def publish_card(self, card: Any) -> None:
-        for cap in card.capabilities:
-            meta_key = f"/aip/cap/{cap}/r/GLOBAL/meta"
-            data = await self.dht.get(meta_key)
-            meta = ShardMetadata.from_bytes(data) if data else ShardMetadata(capability=cap)
-            sid = shard_of(card.did, meta.num_shards)
-            await self.dht.provide(f"/aip/cap/{cap}/r/GLOBAL/s/{sid}", self.peer_id)
-            meta.counts[sid] = meta.counts.get(sid, 0) + 1
-            await self.dht.put(meta_key, meta.to_bytes())
+    def __init__(self, num_shards: int = 16):
+        self.num_shards = num_shards
+        self.shards: dict[int, ShardMetadata] = {}
+        self.data: dict[str, Any] = {}
 
-    async def find_by_capability(self, cap: str) -> list[str]:
-        meta_key = f"/aip/cap/{cap}/r/GLOBAL/meta"
-        data = await self.dht.get(meta_key)
-        if not data:
+    def put(self, key: str, value: Any) -> int:
+        shard_id = shard_of(key, self.num_shards)
+        self.data[key] = value
+
+        if shard_id not in self.shards:
+            self.shards[shard_id] = ShardMetadata(shard_id=shard_id)
+
+        shard = self.shards[shard_id]
+        shard.count += 1
+        shard.keys.append(key)
+
+        return shard_id
+
+    def get(self, key: str) -> Optional[Any]:
+        return self.data.get(key)
+
+    def get_shard_keys(self, shard_id: int) -> list[str]:
+        if shard_id not in self.shards:
             return []
-        meta = ShardMetadata.from_bytes(data)
-        results = []
-        for sid in range(meta.num_shards):
-            providers = await self.dht.find_providers(f"/aip/cap/{cap}/r/GLOBAL/s/{sid}")
-            results.extend(providers)
-        return list(set(results))
+        return self.shards[shard_id].keys.copy()
+
+    def get_shard_stats(self) -> dict[int, int]:
+        return {sid: meta.count for sid, meta in self.shards.items()}
+
+    def __len__(self) -> int:
+        return len(self.data)

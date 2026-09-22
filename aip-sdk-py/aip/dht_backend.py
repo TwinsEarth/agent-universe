@@ -1,23 +1,25 @@
-"""DHT 后端：内存版。"""
+"""内存 DHT 后端实现。"""
 
-from dataclasses import dataclass, field
+from typing import Optional
 
 
-@dataclass
 class MemoryDHT:
-    _values: dict[str, bytes] = field(default_factory=dict)
-    _providers: dict[str, list[str]] = field(default_factory=dict)
+    """内存 DHT 实现，用于测试和开发。"""
 
-    async def get(self, key: str) -> bytes | None:
-        return self._values.get(key)
+    def __init__(self):
+        self._store: dict[str, bytes] = {}
 
-    async def put(self, key: str, value: bytes) -> None:
-        self._values[key] = value
+    def put(self, key: str, value: bytes) -> None:
+        self._store[key] = value
 
-    async def provide(self, key: str, peer_id: str = "local") -> None:
-        if key not in self._providers:
-            self._providers[key] = []
-        self._providers[key].append(peer_id)
+    def get(self, key: str) -> Optional[bytes]:
+        return self._store.get(key)
 
-    async def find_providers(self, key: str) -> list[str]:
-        return self._providers.get(key, [])
+    def remove(self, key: str) -> None:
+        self._store.pop(key, None)
+
+    def keys(self) -> list[str]:
+        return list(self._store.keys())
+
+    def __len__(self) -> int:
+        return len(self._store)

@@ -1,3 +1,10 @@
-# v2.0.6
+# v2.1.0
 
-- 分片过载自动翻倍分裂：超过 80% 容量时 num_shards 翻倍，上限 16
+## 多链桥接（CCIP + LayerZero）
+
+- ReputationBridge：跨链信誉同步
+- SettlementBridge：跨链结算分账
+- CrossChainRouter：路由层（速率限制+熔断器）
+- BridgeInsurance：保险池
+- CrossChainMessageBase：抽象基合约
+- GovernorToken：ERC20+信誉注册表

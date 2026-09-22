@@ -1,54 +1,337 @@
-# Agent Universe Releases
+# Agent Universe 版本谱系（19 个 Release）
 
-19 个版本按顺序发布，每个版本对应一个 commit。
+> **一句话**：从基础协议到对等网络，19 个版本迭代完成去中心化智能体经济网络。
 
-## 版本谱系
+---
 
-| # | 版本 | Commit | 核心特性 |
-|---|------|--------|----------|
-| 1 | v1.0.0 | `fce9960` | 基础分片索引 + DHT 聚合 + AgentCard/Task 模型 |
-| 2 | v2.0.0 | `758aae1` | 多级分片 + 地理位置分片 + 分片合并 |
-| 3 | v2.0.1 | `3b39512` | 区域桥接 + 动态区域 + 容量预测 |
-| 4 | v2.0.2 | `aeb48d7` | predictor 七模块包 |
-| 5 | v2.0.3 | `339f177` | shard_of 哈希均匀分布修复 |
-| 6 | v2.0.4 | `d9230da` | ShardMetadata counts 统一写入 |
-| 7 | v2.0.5 | `03e6856` | get_shard_stats() 查询接口 |
-| 8 | v2.0.6 | `52682c4` | 分片过载自动翻倍分裂（上限16） |
-| 9 | v2.1.0 | `cf1c47b` | 多链桥接（CCIP + LayerZero） |
-| 10 | v2.1.1 | `d1356f3` | ReputationBridge + SettlementBridge |
-| 11 | v2.1.2 | `920a4f4` | CrossChainRouter 路由层 |
-| 12 | v2.1.3 | `47fc8ea` | BridgeInsurance 保险池 |
-| 13 | v2.1.4 | `1243941` | GovernorToken ERC20+信誉 |
-| 14 | v2.1.5 | `6d1c3a0` | CrossChainMessageBase 抽象基合约 |
-| 15 | v2.1.6 | `553fd76` | syncReputation MAX_REPUTATION 校验 |
-| 16 | v2.2.0 | `03c011a` | 对等网络 + 多模式终端 + 根种子 |
-| 17 | v2.2.1 | `0fa3f53` | 全局代码审计修复 |
-| 18 | v2.2.2 | `32ef645` | Foundry+Rust+Python 三栈重建 |
-| 19 | v2.2.3 | `2f62d52` | 全局审计版（34/34 测试全绿） |
+## 项目总览
 
-## 三栈测试
+| 维度 | 内容 |
+|------|------|
+| **项目目的** | 构建无中心服务器的去中心化智能体协作网络 |
+| **项目意义** | 将 BitTorrent P2P 思想扩展到 AI Agent 领域 |
+| **核心技术** | libp2p + DHT + 区块链 + CRDT + 纠删码 |
+| **三栈架构** | Foundry 合约层 + Rust 核心层 + Python SDK 层 |
+| **测试基线** | 34/34 全绿（Foundry 17 + Rust 10 + Python 7） |
 
-- Foundry: 17/17 passed
-- Rust: 10/10 passed
-- Python: 7/7 passed
-- **Total: 34/34 passed**
+---
 
-## 核心架构
+## 大版本架构演进
 
+### v1.0.0 — Genesis（创世版）
+
+**系统架构**：
 ```
-Agent Universe
-├── Python SDK (aip-sdk-py)
-│   ├── models: AgentCard, Task, TaskStatus
-│   ├── index: ShardedIndex, ShardMetadata
-│   └── dht_backend: MemoryDHT
-├── Rust Core (gsn-core)
-│   ├── net: libp2p, DHT, GossipSub
-│   ├── identity: DID, Ed25519
-│   └── agent: Task state machine
-└── Contracts (Foundry)
-    ├── ReputationBridge
-    ├── SettlementBridge
-    ├── CrossChainRouter
-    ├── BridgeInsurance
-    └── GovernorToken
+┌─────────────────────────┐
+│    Python SDK 单栈       │
+│  ┌───────────────────┐  │
+│  │  models.py        │  │
+│  │   AgentCard       │  │
+│  │   Task / TaskFSM  │  │
+│  └───────────────────┘  │
+│  ┌───────────────────┐  │
+│  │  dht_backend.py   │  │
+│  │   MemoryDHT       │  │
+│  └───────────────────┘  │
+│  ┌───────────────────┐  │
+│  │  index/sharded.py │  │
+│  │   ShardedIndex    │  │
+│  └───────────────────┘  │
+└─────────────────────────┘
 ```
+
+**运行逻辑**：
+- AgentCard 发布 → 计算分片 → 写入内存 DHT
+- 按能力查找 → 遍历分片 → 返回 PeerID 列表
+- Task 状态机：PENDING → ASSIGNED → RUNNING → COMPLETED → VERIFIED → SETTLED
+
+**实现内容**：
+- AgentCard 链式构造（new().with_capability()）
+- Task 完整状态机迁移
+- MemoryDHT 内存版 Kademlia 模拟
+- SHA256 分片计算
+- 4 个单元测试
+
+---
+
+### v2.0.0 — Shard（分片扩展版）
+
+**系统架构**：
+```
+┌─────────────────────────┐
+│    Python SDK 增强       │
+│  ┌───────────────────┐  │
+│  │  ShardMetadata    │  │
+│  │   capability      │  │
+│  │   region          │  │
+│  │   num_shards      │  │
+│  │   max_per_shard   │  │
+│  │   counts          │  │
+│  └───────────────────┘  │
+│  ┌───────────────────┐  │
+│  │  地理位置分片      │  │
+│  │   /aip/cap/{cap}/ │  │
+│  │     r/{region}/   │  │
+│  │     s/{sid}      │  │
+│  └───────────────────┘  │
+│  ┌───────────────────┐  │
+│  │  分片合并机制      │  │
+│  │   低负载合并      │  │
+│  │   version 历史    │  │
+│  └───────────────────┘  │
+└─────────────────────────┘
+```
+
+**运行逻辑**：
+- 发布时自动路由到所属区域分片
+- 查找时遍历该区域所有分片
+- 低负载分片可合并，高负载分片自动分裂
+- ShardMetadata 持久化到 DHT，新节点可恢复分片结构
+
+**实现内容**：
+- ShardMetadata 数据结构 + 序列化/反序列化
+- 地理位置分片 DHT key 设计
+- 分片合并机制
+- 容量阈值（max_per_shard = 500）
+
+---
+
+### v2.1.0 — Bridge（跨链桥接版）
+
+**系统架构**：
+```
+┌─────────────────────────────────┐
+│      Foundry 合约层             │
+│  ┌─────────────┐ ┌───────────┐ │
+│  │ ReputationB │ │ SettlementB│ │
+│  │  信誉同步    │ │  结算分账  │ │
+│  └─────────────┘ └───────────┘ │
+│  ┌─────────────┐ ┌───────────┐ │
+│  │ CrossChainR │ │ BridgeInsur│ │
+│  │  路由层     │ │  保险池    │ │
+│  └─────────────┘ └───────────┘ │
+│  ┌───────────────────────────┐ │
+│  │     GovernorToken         │ │
+│  │  ERC20 + 信誉注册表       │ │
+│  └───────────────────────────┘ │
+│  ┌───────────────────────────┐ │
+│  │  CrossChainMessageBase    │ │
+│  │  抽象基合约（v2.1.5 提取）│ │
+│  └───────────────────────────┘ │
+└─────────────────────────────────┘
+```
+
+**运行逻辑**：
+- 源链发送信誉/结算消息 → 目标链接收验证
+- 防重放：消息 ID 唯一
+- 路由层：速率限制 + 熔断器
+- 保险池：质押赔付跨链失败
+- 治理代币：质押投票 + 信誉绑定
+
+**实现内容**：
+- 5 个核心合约
+- 1 个抽象基合约
+- 跨链消息发送/接收框架
+- 防重放机制
+- 17 个 Foundry 测试
+
+---
+
+### v2.2.0 — Mesh（对等网络版）
+
+**系统架构**：
+```
+┌─────────────────────────────────┐
+│      gsn-core (Rust)            │
+│  ┌───────────────────────────┐ │
+│  │  net/                     │ │
+│  │   libp2p_node.rs         │ │
+│  │   DHT (Kademlia)          │ │
+│  │   GossipSub               │ │
+│  │   transport (TCP/QUIC)    │ │
+│  └───────────────────────────┘ │
+│  ┌───────────────────────────┐ │
+│  │  identity/                │ │
+│  │   DID / Ed25519           │ │
+│  │   keyring 抽象            │ │
+│  └───────────────────────────┘ │
+│  ┌───────────────────────────┐ │
+│  │  agent/                   │ │
+│  │   card / skill / task     │ │
+│  └───────────────────────────┘ │
+│  ┌───────────────────────────┐ │
+│  │  chain/                   │ │
+│  │   PoCV 轻量验证           │ │
+│  └───────────────────────────┘ │
+│  ┌───────────────────────────┐ │
+│  │  storage/ SQLite           │ │
+│  └───────────────────────────┘ │
+└─────────────────────────────────┘
+```
+
+**运行逻辑**：
+- 根种子启动：无 bootstrap 地址，生成 DID
+- 第二个节点：配置根种子地址加入
+- 网络成熟后：根种子自动降级为普通节点
+- 多模式终端：Full / Light / Mobile / Browser
+- 节点失效：DHT 自愈，邻居接管分片
+- 节点上线：CRDT 状态自动合并
+
+**实现内容**：
+- libp2p 节点初始化（Noise + Yamux）
+- Kademlia DHT 客户端
+- GossipSub 消息广播
+- DID 生成与解析
+- Ed25519 签名
+- 多模式终端切换
+- 根种子降级逻辑
+- 10 个 Rust 测试
+
+---
+
+## 小版本详细日志
+
+### v2.0.1 — 区域桥接 + 容量预测
+
+| 模块 | 变更 |
+|------|------|
+| 区域桥接 | 跨区域查询，异步并发，先到先返回 |
+| 动态区域 | 运行时新增区域，自动从 GLOBAL 同步 |
+| 容量预测 | 基于历史计数的线性趋势预测 |
+| 合并安全期 | 默认 60 秒，防止抖动 |
+
+### v2.0.2 — predictor 七模块包
+
+| 模块 | 功能 |
+|------|------|
+| trend.py | 线性回归 + 移动平均 |
+| changepoint.py | 变点检测 |
+| seasonal.py | 季节分解 |
+| residual.py | 残差分析 |
+| confidence.py | 置信区间 |
+| fusion.py | 多模型加权融合 |
+| report.py | 报告生成 |
+
+### v2.0.3 — shard_of 分布修复
+
+- 验证 100 个 DID 在 1/2/4/8 分片下的分布均匀性
+- 添加分布测试用例
+- 无 API 变更，纯测试增强
+
+### v2.0.4 — counts 统一写入
+
+- 修复 counts 在两处更新导致的不一致
+- 统一在 ShardMetadata 中维护
+- 先写 DHT 再确认发布
+
+### v2.0.5 — get_shard_stats()
+
+- 新增运维查询接口
+- 返回各分片当前计数
+- 用于分片负载监控和分裂预警
+
+### v2.0.6 — 自动分裂机制
+
+- 触发阈值：80% max_per_shard
+- 分裂方式：num_shards *= 2
+- 最大分片数：16
+- 分裂后清空 counts，版本递增
+
+### v2.1.1 — 双合约完善
+
+- ReputationBridge：信誉更新发送/接收
+- SettlementBridge：结算分账 + 退款
+- 消息 ID 防重放
+- 信誉上下限校验
+
+### v2.1.2 — CrossChainRouter
+
+- 速率限制：滑动窗口算法
+- 熔断器：CLOSED → OPEN → HALF_OPEN
+- 链级独立配置
+
+### v2.1.3 — BridgeInsurance
+
+- 质押模式：保险池提供者有激励
+- 赔付验证：防止恶意索赔
+- 保费提取：可持续运营
+
+### v2.1.4 — GovernorToken
+
+- ERC20 标准接口
+- 信誉注册表：读写分离
+- 委托投票：提高治理参与度
+- 总量上限：10 亿
+
+### v2.1.5 — 抽象基合约提取
+
+- 提取 CrossChainMessageBase
+- 消除 ReputationBridge/SettlementBridge 重复代码
+- 新增桥接合约只需实现 _processMessage()
+
+### v2.1.6 — MAX_REPUTATION 校验
+
+- 补 MAX_REPUTATION = 10000 校验
+- 防止异常值进入系统
+- onlyRouter 修饰符保护
+
+### v2.2.1 — 全局审计修复
+
+**查重（3 项）**：
+- 重复跨链消息逻辑 → 提取基合约
+- Rust unused warnings 清理
+- Python 裸字符串 → 枚举
+
+**查错（5 项）**：
+- Task.status → TaskStatus 枚举
+- counts 写入不一致 → 统一真相源
+- syncReputation 缺上限 → 补校验
+- DHT 写入失败脏数据 → 先写后确认
+- 分片计数重置时机 → 分裂后清空
+
+**查漏（7 项）**：
+- gossip.rs 桩文件
+- transport.rs 桩文件
+- get_shard_stats() 接口
+- 自动分裂机制
+- 签名负例测试
+- 分布均匀性测试
+- 元数据 roundtrip 测试
+
+### v2.2.2 — 三栈重建
+
+- Foundry + Rust + Python 三栈统一
+- 端到端模拟运行通过
+- 三栈测试全部通过
+
+### v2.2.3 — 最终版
+
+- 全局审计最终修复
+- 15 项修复清单全部完成
+- 34/34 测试全绿
+
+---
+
+## Commit 对照
+
+| 版本 | Commit SHA |
+|------|------------|
+| v1.0.0 | `fce99609` |
+| v2.0.0 | `758aae18` |
+| v2.0.1 | `3b395124` |
+| v2.0.2 | `aeb48d7d` |
+| v2.0.3 | `339f1773` |
+| v2.0.4 | `d9230dae` |
+| v2.0.5 | `03e68564` |
+| v2.0.6 | `52682c4d` |
+| v2.1.0 | `cf1c47be` |
+| v2.1.1 | `d1356f39` |
+| v2.1.2 | `920a4f42` |
+| v2.1.3 | `47fc8ea4` |
+| v2.1.4 | `12439415` |
+| v2.1.5 | `6d1c3a05` |
+| v2.1.6 | `553fd768` |
+| v2.2.0 | `03c011ab` |
+| v2.2.1 | `0fa3f534` |
+| v2.2.2 | `32ef6453` |
+| v2.2.3 | `2f62d52b` |

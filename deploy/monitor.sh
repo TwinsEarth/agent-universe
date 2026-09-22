@@ -1,0 +1,18 @@
+#!/bin/bash
+# GSN 主网监控脚本
+echo "=== GSN 主网监控 ==="
+echo "时间: $(date)"
+echo ""
+echo "--- 进程状态 ---"
+pgrep -la gsn-daemon || echo "gsn-daemon 未运行"
+echo ""
+echo "--- 端口监听 ---"
+lsof -i :4001 -i :4002 2>/dev/null || echo "端口未监听"
+echo ""
+echo "--- 系统资源 ---"
+echo "CPU: $(top -l 1 -n 0 | grep 'CPU usage' | awk '{print $3}')"
+echo "内存: $(vm_stat | grep 'Pages free' | awk '{print $3}') free pages"
+echo "磁盘: $(df -h / | tail -1 | awk '{print $5}') used"
+echo ""
+echo "--- 最近日志 ---"
+tail -20 /Volumes/GSN/logs/gsn-daemon.out.log 2>/dev/null || echo "日志文件不存在"

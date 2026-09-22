@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.gsn.node</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/gsn-daemon</string>
+        <string>--data-dir</string>
+        <string>/Volumes/GSN/data</string>
+        <string>--listen</string>
+        <string>0.0.0.0</string>
+        <string>--port</string>
+        <string>4001</string>
+        <string>--api-port</string>
+        <string>4002</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Volumes/GSN/logs/gsn-daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Volumes/GSN/logs/gsn-daemon.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>RUST_LOG</key>
+        <string>info</string>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>

@@ -1,3 +1,3 @@
-# v2.2.4
+# v2.2.5
 
-- 根种子自动降级监控：网络节点数超阈值后从 Root 降级为 Normal
+- BitSwap 做种集成：AgentCard CID 计算 + provider 记录

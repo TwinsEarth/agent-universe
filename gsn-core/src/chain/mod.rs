@@ -1,3 +1,3 @@
 pub mod pocv;
 
-pub use pocv::PoCVVerifier;
+pub use pocv::{PoCVVerifier, ProofOfComputation};

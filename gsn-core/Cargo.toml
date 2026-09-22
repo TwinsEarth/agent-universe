@@ -1,8 +1,8 @@
 [package]
 name = "gsn-core"
-version = "0.2.18"
+version = "0.2.31"
 edition = "2021"
-description = "Agent Universe 核心库"
+description = "Agent Universe 核心库 - 智能体宇宙"
 
 [lib]
 crate-type = ["rlib"]

@@ -1,5 +1,14 @@
-"""Agent Universe AIP SDK v2.2.7"""
-from .models import AgentCard, Task, TaskStatus
+"""Agent Universe AIP SDK v2.2.8
+
+去中心化 Agent 发现、验证与结算协议 Python SDK。
+"""
+
+from .models import AgentCard, SkillSpec, Pricing, Task, TaskStatus
 from .dht_backend import MemoryDHT
 from .index.sharded import ShardedIndex, ShardMetadata, shard_of
-__version__ = "2.2.7"
+
+__version__ = "2.2.8"
+__all__ = [
+    "AgentCard", "SkillSpec", "Pricing", "Task", "TaskStatus",
+    "MemoryDHT", "ShardedIndex", "ShardMetadata", "shard_of",
+]

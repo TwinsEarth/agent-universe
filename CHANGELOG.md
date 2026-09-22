@@ -1,3 +1,3 @@
-# v2.2.5
+# v2.2.6
 
-- BitSwap 做种集成：AgentCard CID 计算 + provider 记录
+- 链上锚定：AgentCard CID 哈希上链验证

@@ -2,7 +2,14 @@
 name = "gsn-core"
 version = "0.2.34"
 edition = "2021"
-description = "Agent Universe 核心库 v2.3.4: 智能体市场"
+description = "Agent Universe 核心库 v2.3.4: 智能体市场 - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+license = "MIT"
+repository = "https://github.com/TwinsEarth/agent-universe"
+homepage = "https://github.com/TwinsEarth/agent-universe"
+documentation = "https://github.com/TwinsEarth/agent-universe/tree/main/docs"
+keywords = ["p2p", "agent", "decentralized", "swarm", "libp2p"]
+categories = ["concurrency", "network-programming"]
+publish = true
 
 [lib]
 crate-type = ["rlib"]

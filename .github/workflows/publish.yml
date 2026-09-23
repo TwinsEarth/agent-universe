@@ -1,0 +1,118 @@
+name: Publish Package
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g. v2.3.4)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  GITHUB_REGISTRY: github
+
+jobs:
+  publish-rust:
+    name: Publish Rust Crate to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Configure cargo registry
+        run: |
+          mkdir -p ~/.cargo
+          cat > ~/.cargo/config.toml << 'EOF'
+          [registries.github]
+          index = "sparse+https://github.com/TwinsEarth/agent-universe/"
+          protocol = "sparse"
+
+          [registries.github]
+          token = "${{ secrets.GITHUB_TOKEN }}"
+          EOF
+          # The above heredoc won't work due to indentation, use sed approach
+          cat > ~/.cargo/config.toml << EOF
+          [registries.github]
+          index = "sparse+https://github.com/TwinsEarth/agent-universe/"
+          protocol = "sparse"
+          EOF
+          echo "${{ secrets.GITHUB_TOKEN }}" | cargo login --registry github
+
+      - name: Set crate version from tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          # Remove leading 'v'
+          CRATE_VERSION="${VERSION#v}"
+          echo "Publishing version: $CRATE_VERSION"
+          # Update Cargo.toml version
+          cd gsn-core
+          sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" Cargo.toml
+          grep '^version' Cargo.toml
+
+      - name: Build
+        run: cd gsn-core && cargo build --release
+
+      - name: Test
+        run: cd gsn-core && cargo test
+
+      - name: Publish to GitHub Packages
+        run: cd gsn-core && cargo publish --registry github --allow-dirty
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-python:
+    name: Publish Python SDK to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Set package version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION="${GITHUB_REF_NAME}"
+          fi
+          CRATE_VERSION="${VERSION#v}"
+          cd aip-sdk-py
+          sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" pyproject.toml
+          grep '^version' pyproject.toml
+
+      - name: Build package
+        run: cd aip-sdk-py && python -m build
+
+      - name: Publish to GitHub Packages
+        run: |
+          cd aip-sdk-py
+          python -m twine upload \
+            --repository-url https://upload.pkg.github.com/TwinsEarth \
+            --username "__token__" \
+            --password "${{ secrets.GITHUB_TOKEN }}" \
+            dist/*

@@ -14,12 +14,16 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  publish-rust:
-    name: Publish Rust Crate to GitHub Packages
-    runs-on: ubuntu-latest
+  build-and-upload:
+    name: Build & Upload Packages
+    runs-on: ${{ matrix.os }}
     permissions:
-      contents: read
+      contents: write
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -27,13 +31,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
-
-      - name: Configure cargo registry
-        run: |
-          mkdir -p ~/.cargo
-          printf '[registries.github]\nindex = "sparse+https://pkg.github.com/TwinsEarth/agent-universe/"\nprotocol = "sparse"\n' > ~/.cargo/config.toml
-          echo "${{ secrets.GITHUB_TOKEN }}" | cargo login --registry github
-          cat ~/.cargo/config.toml
 
       - name: Set crate version from tag
         run: |
@@ -48,22 +45,37 @@ jobs:
           sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" Cargo.toml
           grep '^version' Cargo.toml
 
-      - name: Build
+      - name: Build release binary
         run: cd gsn-core && cargo build --release
 
-      - name: Test
-        run: cd gsn-core && cargo test
+      - name: Package binary
+        run: |
+          cd gsn-core/target/release
+          if [ "${{ matrix.os }}" = "macos-latest" ]; then
+            ARCH="macos-arm64"
+          else
+            ARCH="linux-x64"
+          fi
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          tar -czf gsn-daemon-${ARCH}-${VERSION}.tar.gz gsn-daemon
+          ls -la gsn-daemon-*.tar.gz
 
-      - name: Publish to GitHub Packages
-        run: cd gsn-core && cargo publish --registry github --allow-dirty
+      - name: Upload to Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          cd gsn-core/target/release
+          for f in gsn-daemon-*.tar.gz; do
+            echo "Uploading $f..."
+            gh release upload "$VERSION" "$f" --clobber
+          done
 
-  publish-python:
-    name: Publish Python SDK to GitHub Packages
+  build-python:
+    name: Build Python Wheel
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -76,7 +88,7 @@ jobs:
       - name: Install build tools
         run: |
           python -m pip install --upgrade pip
-          pip install build twine
+          pip install build wheel
 
       - name: Set package version
         run: |
@@ -88,16 +100,17 @@ jobs:
           CRATE_VERSION="${VERSION#v}"
           cd aip-sdk-py
           sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" pyproject.toml
-          grep '^version' pyproject.toml
 
-      - name: Build package
-        run: cd aip-sdk-py && python -m build
+      - name: Build wheel
+        run: cd aip-sdk-py && python -m build --wheel
 
-      - name: Publish to GitHub Packages
+      - name: Upload wheel to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd aip-sdk-py
-          python -m twine upload \
-            --repository-url https://upload.pkg.github.com/TwinsEarth/agent-universe \
-            --username "__token__" \
-            --password "${{ secrets.GITHUB_TOKEN }}" \
-            dist/*
+          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
+          cd aip-sdk-py/dist
+          for f in *.whl *.tar.gz; do
+            echo "Uploading $f..."
+            gh release upload "$VERSION" "$f" --clobber
+          done

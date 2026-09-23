@@ -1,8 +1,8 @@
 [package]
 name = "gsn-core"
-version = "0.2.32"
+version = "0.2.33"
 edition = "2021"
-description = "Agent Universe 核心库 v2.3.2: MCP + ACA 兼容层"
+description = "Agent Universe 核心库 v2.3.3: P2P 分布式网络层"
 
 [lib]
 crate-type = ["rlib"]
@@ -21,5 +21,7 @@ hex = "0.4"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+rand = "0.8"
 
 [dev-dependencies]

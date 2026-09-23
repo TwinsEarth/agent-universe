@@ -22,6 +22,11 @@ pub mod topology;
 pub mod proof;
 pub mod mcp;
 pub mod aca;
+pub mod collaboration;
+pub mod inference;
+pub mod crowdsource;
+pub mod security;
+pub mod nat;
 
 pub use identity::{Did, Keypair, Ed25519Signer, SecureKeyring};
 pub use agent::{AgentCard, Task, TaskStatus};
@@ -52,3 +57,10 @@ pub use aca::{Receipt, ReceiptStatus, ResourceMetering};
 pub use aca::{MultiReputation, ReputationDimension};
 pub use aca::{VerificationLevel, VerificationPolicy, VerificationResult};
 pub use aca::{AcaMessage, MessageType};
+
+// v2.3.3: P2P 分布式网络
+pub use collaboration::{CollaborationGroup, CollaborationMessage, CollaborationManager, AgentTier, SceneType, MessageType as CollabMessageType};
+pub use inference::{ComputeResource, ComputeScheduler, InferenceTask, KvCacheShard, TaskStatus as InferenceTaskStatus};
+pub use crowdsource::{CrowdTask, CrowdTaskStatus, CrowdsourcingMarket, Solver, TaskType as CrowdTaskType};
+pub use security::{SecurityEngine, SecurityScore, SecurityFlag};
+pub use nat::{NatTraversalManager, NatType, IceCandidate, CandidateType, ConnectionState};

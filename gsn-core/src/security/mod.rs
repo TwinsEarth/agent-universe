@@ -76,8 +76,8 @@ impl SecurityEngine {
     }
 
     pub fn ban_node(&mut self, node_id: String) {
-        self.banned.insert(node_id);
         self.neighbor_pool.retain(|n| n != &node_id);
+        self.banned.insert(node_id);
     }
 
     pub fn banned_count(&self) -> usize {

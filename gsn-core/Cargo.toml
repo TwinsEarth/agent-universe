@@ -1,11 +1,15 @@
 [package]
 name = "gsn-core"
-version = "0.2.31"
+version = "0.2.32"
 edition = "2021"
-description = "Agent Universe 核心库 - 智能体宇宙"
+description = "Agent Universe 核心库 v2.3.2: MCP + ACA 兼容层"
 
 [lib]
 crate-type = ["rlib"]
+
+[[bin]]
+name = "gsn-daemon"
+path = "src/bin/gsn-daemon.rs"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -14,5 +18,7 @@ sha2 = "0.10"
 thiserror = "1.0"
 uuid = { version = "1.0", features = ["v4"] }
 hex = "0.4"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
 
 [dev-dependencies]

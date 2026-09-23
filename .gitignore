@@ -40,3 +40,13 @@ volumes/
 # Logs
 *.log
 logs/
+
+# Local cargo registry
+config.json
+
+# Runtime data
+gsn-core/.gsn/
+gsn-core/~
+
+# OS files
+Thumbs.db

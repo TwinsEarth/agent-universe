@@ -9,6 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![npm](https://img.shields.io/badge/npm-%40twinsearth%2Fagent--universe-red.svg)](https://github.com/TwinsEarth/agent-universe/packages)
 
 ## 核心理念
 
@@ -160,6 +161,14 @@ card = client.register_agent(
 )
 print(f"Agent DID: {card.did}")
 ```
+
+### npm 包
+
+```bash
+npm install @twinsearth/agent-universe
+```
+
+详见 [Packages](https://github.com/TwinsEarth/agent-universe/packages)。
 
 ## 版本谱系
 

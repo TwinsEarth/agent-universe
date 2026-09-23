@@ -15,7 +15,11 @@ v1.0.0 (Genesis)
                           ├── v2.2.1 (Audit - 全局审计)
                           ├── v2.2.2 (Rebuild - 三栈重建)
                           ├── v2.2.3 (Final - 最终版)
-                          └── v2.3.1 (Swarm - 群体智能) ← 当前
+                          └── v2.3.0 (P2P - 分布式网络基础)
+                                ├── v2.3.1 (Swarm - 群体智能)
+                                ├── v2.3.2 (MCP+ACA - 兼容协议)
+                                ├── v2.3.3 (P2P Net - 网络应用)
+                                └── v2.3.4 (Market - 智能体市场) ← 当前
 ```
 
 ## 大版本详情
@@ -147,6 +151,67 @@ Mac mini M4
 
 **测试基线**：40/40 通过
 
+### v2.3.0 - P2P（分布式网络基础）
+
+**核心内容**：P2P 网络栈基础组件
+
+**新增模块**：
+- `net/libp2p_node.rs`：libp2p host 初始化，Noise + Yamux + QUIC
+- `net/dht.rs`：Kademlia DHT 客户端
+- `net/gossip.rs`：GossipSub 订阅/发布
+- `net/root_seed.rs`：根种子节点引导逻辑
+- `mode/mod.rs`：五种节点模式（Archive/Full/Light/Edge/Browser）
+
+### v2.3.2 - MCP+ACA（兼容协议）
+
+**核心内容**：MCP 和 ACA 兼容 API 接口与通讯协议
+
+**新增模块**：
+- `mcp/`：MCP 兼容层（protocol/server/tool/resource/prompt）
+- `aca/`：ACA 兼容 API（envelope/manifest/message/receipt/reputation/verification）
+
+**八层协议栈**：身份→发现→通信→执行→数据→验证→结算→治理
+
+**四个协议对象**：Agent Manifest → Task Envelope → Receipt → Reputation
+
+**五级验证分层**：L0 抽样 → L1 冗余2-of-3 → L2 TEE → L3 zkML → L4 委员会仲裁
+
+### v2.3.3 - P2P Net（分布式网络应用）
+
+**核心内容**：P2P 分布式网络在 Agent 领域的三大应用方向
+
+**三大方向**：
+1. Agent 协作与安全通信（分层架构 + 动态组网）
+2. 分布式推理与算力调度（闲置 GPU 整合 + 边缘融合）
+3. 去中心化任务众包（以工换工 + 隐私优势）
+
+**关键技术**：NAT 穿透（STUN/TURN/UDP打洞）、DHT 路由 O(logN)、信任与激励机制
+
+### v2.3.4 - Market（智能体市场）
+
+**核心内容**：智能体宇宙的第一版经济层
+
+**系统架构**：
+```
+注册 → 发布 → 匹配 → 执行 → 验证 → 结算 → 信誉更新
+  ↑                                      ↓
+  └──────────── 争议/仲裁/罚没 ←─────────┘
+```
+
+**核心机制**：
+| 机制 | 说明 |
+|------|------|
+| AgentCard 注册 | 质押准入，能力声明 + 签名 |
+| TaskSpec | 六字段校验 |
+| 匹配引擎 | 技能/信誉/负载过滤，性价比排序 |
+| BFT-lite QA | n≥3f+1，equivocation 整轮作废 |
+| 结算守恒 | balance_sum = budget - slashed |
+| 多维信誉 | quality/speed/honesty/availability，不可转让 |
+| 质押罚没 | 作恶扣除质押 |
+| 证据分级 | verified / cpu-proto / unverified |
+
+**测试基线**：144/144 通过，端到端演示真实运行
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -189,6 +254,9 @@ Mac mini M4
 - ✅ **任务调度器**（v2.3.1）
 - ✅ **网络拓扑**（v2.3.1）
 - ✅ **贡献证明**（v2.3.1）
+- ✅ **MCP/ACA 兼容协议**（v2.3.2）
+- ✅ **P2P 网络应用**（v2.3.3）
+- ✅ **智能体市场 Agent Market**（v2.3.4）
 
 ### 技术栈
 

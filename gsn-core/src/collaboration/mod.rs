@@ -62,6 +62,7 @@ pub enum MessageType {
 }
 
 /// 协作管理器
+#[allow(dead_code)]
 pub struct CollaborationManager {
     groups: HashMap<String, CollaborationGroup>,
     messages: Vec<CollaborationMessage>,

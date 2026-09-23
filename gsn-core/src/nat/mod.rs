@@ -50,6 +50,7 @@ pub enum ConnectionState {
 }
 
 /// NAT 穿透管理器
+#[allow(dead_code)]
 pub struct NatTraversalManager {
     stun_servers: Vec<String>,
     turn_servers: Vec<String>,
@@ -94,7 +95,7 @@ impl NatTraversalManager {
     }
 
     /// 建立连接
-    pub fn connect(&mut self, peer_id: String, remote_candidates: Vec<IceCandidate>) -> ConnectionState {
+    pub fn connect(&mut self, peer_id: String, _remote_candidates: Vec<IceCandidate>) -> ConnectionState {
         // 实际实现：ICE 协商，尝试打洞
         // 简化：假设连接成功
         let state = ConnectionState::Connected;

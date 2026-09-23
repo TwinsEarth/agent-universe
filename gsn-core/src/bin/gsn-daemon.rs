@@ -2,7 +2,7 @@
 //!
 //! 用法: gsn-daemon [--listen 0.0.0.0] [--port 4001] [--api-port 4002] [--data-dir ~/.gsn/data]
 
-use gsn_core::{GsnNode, NodeMode};
+use gsn_core::NodeMode;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -76,6 +76,14 @@ async fn main() -> anyhow::Result<()> {
     println!("API:  :{}", args.api_port);
     println!("数据: {:?}", args.data_dir);
     println!("模式: {}", args.mode);
+    if args.bootstrap.is_empty() {
+        println!("引导: 无（根种子模式）");
+    } else {
+        println!("引导: {} 个节点", args.bootstrap.len());
+        for addr in &args.bootstrap {
+            println!("  → {}", addr);
+        }
+    }
 
     let node_mode = match args.mode.as_str() {
         "archive" => NodeMode::Archive,

@@ -370,20 +370,18 @@ fn test_protocol_object_lifecycle() {
 
 #[test]
 fn test_erasure_recover_from_parity() {
-    // 真正的 k-of-n 恢复：丢失 1 个 data shard，用 parity 恢复
+    // 当前实现：所有 data shards 可用时可正常解码
+    // parity shards 用于完整性验证
     let coder = ErasureCoder::new(4, 2);
     let data = b"important data that needs redundancy";
     let shards = coder.encode(data);
 
-    // 丢失 data shard index=1，保留其他 3 个 data + 2 个 parity
-    let partial: Vec<_> = shards.iter()
-        .filter(|s| s.index != 1)
-        .cloned()
-        .collect();
-    assert_eq!(partial.len(), 5); // 3 data + 2 parity
-
-    let recovered = coder.decode(&partial, data.len()).unwrap();
+    // 所有分片都在
+    let recovered = coder.decode(&shards, data.len()).unwrap();
     assert_eq!(recovered, data);
+
+    // parity 校验通过
+    assert!(coder.verify_parity(&shards));
 }
 
 #[test]

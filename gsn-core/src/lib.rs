@@ -20,6 +20,8 @@ pub mod economy;
 pub mod scheduler;
 pub mod topology;
 pub mod proof;
+pub mod mcp;
+pub mod aca;
 
 pub use identity::{Did, Keypair, Ed25519Signer, SecureKeyring};
 pub use agent::{AgentCard, Task, TaskStatus};
@@ -35,3 +37,18 @@ pub use economy::{ReputationSystem, ContributionProof, ContributionType, TaskPri
 pub use scheduler::{TaskRouter, LoadBalancer, BalanceStrategy};
 pub use topology::{NeighborManager, TopologyGraph};
 pub use proof::ProofOfContribution;
+
+// MCP + ACA (v2.3.2)
+pub use mcp::{McpMessage, McpRequest, McpResponse, McpError, RequestId, McpMethod};
+pub use mcp::{ToolDefinition, ToolParameter, ToolSchema, ToolResult};
+pub use mcp::{ResourceDefinition, ResourceContents, ResourceUri};
+pub use mcp::{PromptDefinition, PromptMessage, PromptArgument, PromptRole};
+pub use mcp::McpServer;
+
+// ACA (v2.3.2)
+pub use aca::{AgentManifest, HardwareProfile, VerificationMode};
+pub use aca::{TaskEnvelope, PrivacyRequirement, TaskPriority};
+pub use aca::{Receipt, ReceiptStatus, ResourceMetering};
+pub use aca::{MultiReputation, ReputationDimension};
+pub use aca::{VerificationLevel, VerificationPolicy, VerificationResult};
+pub use aca::{AcaMessage, MessageType};

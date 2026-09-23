@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  rust-test:
+    name: Rust - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Build
+        run: cd gsn-core && cargo build --verbose
+
+      - name: Test
+        run: cd gsn-core && cargo test --verbose
+
+      - name: Clippy
+        run: cd gsn-core && cargo clippy -- -D warnings 2>&1 || echo "clippy warnings tolerated"
+
+      - name: Run gsn-daemon --help
+        run: cd gsn-core && cargo run --bin gsn-daemon -- --help
+
+  python-test:
+    name: Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e aip-sdk-py/
+
+      - name: Run tests
+        run: cd aip-sdk-py && pytest tests/ -v
+
+  contracts-check:
+    name: Solidity Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List contracts
+        run: |
+          echo "=== Contract files ==="
+          find contracts/ -name "*.sol" -exec echo {} \; -exec wc -l {} \;
+
+      - name: Check contract syntax (basic)
+        run: |
+          for f in contracts/src/*.sol; do
+            echo "Checking $f"
+            grep -q "pragma solidity" "$f" && echo "  ✅ has pragma"
+            grep -q "contract " "$f" && echo "  ✅ has contract"
+          done

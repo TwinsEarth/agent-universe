@@ -43,12 +43,7 @@ jobs:
             gsn-core/target
           key: ${{ runner.os }}-release-cargo-${{ matrix.target }}-${{ hashFiles('gsn-core/Cargo.toml') }}
 
-      - name: Build (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: cd gsn-core && cargo build --release --target ${{ matrix.target }} --bin gsn-daemon
-
-      - name: Build (Windows)
-        if: runner.os == 'Windows'
+      - name: Build
         run: cd gsn-core && cargo build --release --target ${{ matrix.target }} --bin gsn-daemon
 
       - name: Package (tar.gz)
@@ -60,19 +55,17 @@ jobs:
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
+        shell: pwsh
         run: |
           cd gsn-core/target/${{ matrix.target }}/release
-          7z a ../../../gsn-daemon-${{ matrix.target }}.zip gsn-daemon.exe
+          Compress-Archive -Path gsn-daemon.exe -DestinationPath ../../../gsn-daemon-${{ matrix.target }}.zip
           ls -lh ../../../gsn-daemon-${{ matrix.target }}.zip
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            gsn-core/gsn-daemon-*.tar.gz
-            gsn-core/gsn-daemon-*.zip
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} gsn-core/gsn-daemon-*.tar.gz gsn-core/gsn-daemon-*.zip --clobber
 
   python-sdk:
     name: Python SDK Package
@@ -91,8 +84,7 @@ jobs:
           cd aip-sdk-py && python -m build
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: aip-sdk-py/dist/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} aip-sdk-py/dist/* --clobber

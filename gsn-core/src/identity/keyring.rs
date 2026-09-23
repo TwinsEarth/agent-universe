@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
+use async_trait::async_trait;
 
+#[async_trait]
 pub trait SecureKeyring: Send + Sync {
     async fn store(&self, key: &str, secret: &[u8]) -> Result<(), KeyringError>;
     async fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KeyringError>;
@@ -27,6 +29,7 @@ impl MemoryKeyring {
     }
 }
 
+#[async_trait]
 impl SecureKeyring for MemoryKeyring {
     async fn store(&self, key: &str, secret: &[u8]) -> Result<(), KeyringError> {
         self.data.lock().unwrap().insert(key.to_string(), secret.to_vec());

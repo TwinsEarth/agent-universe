@@ -33,6 +33,7 @@ jobs:
           toolchain: stable
 
       - name: Set crate version from tag
+        shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             VERSION="${{ github.event.inputs.version }}"
@@ -40,15 +41,31 @@ jobs:
             VERSION="${GITHUB_REF_NAME}"
           fi
           CRATE_VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "Publishing version: $CRATE_VERSION"
           cd gsn-core
-          sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" Cargo.toml
+          # 跨平台兼容 sed（Linux 和 macOS）
+          sed -i.bak "s/^version = .*/version = \"$CRATE_VERSION\"/" Cargo.toml
+          rm -f Cargo.toml.bak
           grep '^version' Cargo.toml
+
+      - name: Ensure Release exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Creating release $VERSION..."
+            gh release create "$VERSION" --title "Agent Universe $VERSION" \
+              --notes "Release $VERSION"
+          else
+            echo "Release $VERSION already exists"
+          fi
 
       - name: Build release binary
         run: cd gsn-core && cargo build --release
 
       - name: Package binary
+        shell: bash
         run: |
           cd gsn-core/target/release
           if [ "${{ matrix.os }}" = "macos-latest" ]; then
@@ -56,7 +73,6 @@ jobs:
           else
             ARCH="linux-x64"
           fi
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
           tar -czf gsn-daemon-${ARCH}-${VERSION}.tar.gz gsn-daemon
           ls -la gsn-daemon-*.tar.gz
 
@@ -64,7 +80,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
           cd gsn-core/target/release
           for f in gsn-daemon-*.tar.gz; do
             echo "Uploading $f..."
@@ -98,8 +113,20 @@ jobs:
             VERSION="${GITHUB_REF_NAME}"
           fi
           CRATE_VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
           cd aip-sdk-py
-          sed -i "s/^version = .*/version = \"$CRATE_VERSION\"/" pyproject.toml
+          sed -i.bak "s/^version = .*/version = \"$CRATE_VERSION\"/" pyproject.toml
+          rm -f pyproject.toml.bak
+
+      - name: Ensure Release exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if ! gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Creating release $VERSION..."
+            gh release create "$VERSION" --title "Agent Universe $VERSION" \
+              --notes "Release $VERSION"
+          fi
 
       - name: Build wheel
         run: cd aip-sdk-py && python -m build --wheel
@@ -108,9 +135,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME:-${{ github.event.inputs.version }}}"
           cd aip-sdk-py/dist
-          for f in *.whl *.tar.gz; do
+          for f in *.whl; do
             echo "Uploading $f..."
             gh release upload "$VERSION" "$f" --clobber
           done

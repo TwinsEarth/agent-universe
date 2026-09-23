@@ -1,9 +1,10 @@
-//! Agent Universe gsn-core v2.3.1
+//! Agent Universe gsn-core v2.3.4
 //!
 //! 群体智能核心库 - 智能体宇宙
 //! 
 //! 群体智能 = 网络结构的 Scaling Law
 //! 从 token 网络结构向智能体网络结构演进
+//! v2.3.4: 智能体市场 Agent Market
 
 pub mod identity;
 pub mod agent;
@@ -27,6 +28,7 @@ pub mod inference;
 pub mod crowdsource;
 pub mod security;
 pub mod nat;
+pub mod marketplace;
 
 pub use identity::{Did, Keypair, Ed25519Signer, SecureKeyring};
 pub use agent::{AgentCard, Task, TaskStatus};
@@ -64,3 +66,14 @@ pub use inference::{ComputeResource, ComputeScheduler, InferenceTask, KvCacheSha
 pub use crowdsource::{CrowdTask, CrowdTaskStatus, CrowdsourcingMarket, Solver, TaskType as CrowdTaskType};
 pub use security::{SecurityEngine, SecurityScore, SecurityFlag};
 pub use nat::{NatTraversalManager, NatType, IceCandidate, CandidateType, ConnectionState};
+
+// v2.3.4: 智能体市场 Agent Market
+pub use marketplace::{
+    AgentMarket, Bid, DisputeCase,
+    MarketAgentCard, SkillManifest, Pricing, PricingModel, Currency, Sla, SchemaField, AgentCategory,
+    TaskSpec, TaskState, ResultEnvelope, ErrorType, VerificationPolicy as MarketVerificationPolicy,
+    QaCommittee, QaMember, QaVote, QaDecision,
+    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport,
+    ReputationManager, MarketReputation, StakeRecord, StakeStatus,
+    EvidenceGrade,
+};

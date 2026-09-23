@@ -1,0 +1,5 @@
+# GSN 主网防火墙规则
+# 只开放必要端口: 22(SSH), 4001(P2P), 4002(API)
+block in all
+pass in proto tcp from any to any port {22, 4001, 4002}
+pass out all

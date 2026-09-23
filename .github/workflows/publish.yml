@@ -97,7 +97,7 @@ jobs:
         run: |
           cd aip-sdk-py
           python -m twine upload \
-            --repository-url https://upload.pkg.github.com/TwinsEarth \
+            --repository-url https://upload.pkg.github.com/TwinsEarth/agent-universe \
             --username "__token__" \
             --password "${{ secrets.GITHUB_TOKEN }}" \
             dist/*

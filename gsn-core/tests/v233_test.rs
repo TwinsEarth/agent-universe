@@ -1,7 +1,6 @@
 //! V2.3.3 P2P 分布式网络层测试
 
 use gsn_core::*;
-use serde_json::json;
 
 // ========== Agent 协作测试 ==========
 
@@ -25,8 +24,8 @@ fn test_collaboration_group_creation() {
 
 #[test]
 fn test_agent_tier_hierarchy() {
-    assert!(AgentTier::McpAgent as u8 < AgentTier::RouteAgent as u8);
-    assert!(AgentTier::RouteAgent as u8 < AgentTier::EndAgent as u8);
+    assert!((AgentTier::McpAgent as u8) < (AgentTier::RouteAgent as u8));
+    assert!((AgentTier::RouteAgent as u8) < (AgentTier::EndAgent as u8));
 }
 
 // ========== 分布式推理测试 ==========

@@ -70,10 +70,13 @@ contract PoCVSettlement {
     function settleTask(bytes32 taskId) external {
         Task storage t = tasks[taskId];
         require(t.status == TaskStatus.Verified || t.status == TaskStatus.Disputed, "not settleable");
+
+        // 先记录是否 verified，再改状态
+        bool verified = (t.status == TaskStatus.Verified);
         t.status = TaskStatus.Settled;
 
         uint256 payout = t.rewardAmount;
-        if (t.status == TaskStatus.Verified) {
+        if (verified) {
             payout += t.stakeAmount;
         }
 

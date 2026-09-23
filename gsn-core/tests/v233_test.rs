@@ -158,7 +158,7 @@ fn test_task_complete_and_reward() {
     let completed = market.complete_task("task_002".to_string(), "translated text".to_string());
     assert!(completed);
 
-    let solver = market.solvers.get("solver_001").unwrap();
+    let solver = market.get_solver("solver_001").unwrap();
     assert_eq!(solver.points, 700);
     assert_eq!(solver.completed_tasks, 11);
 }
@@ -218,6 +218,6 @@ fn test_connection_establishment() {
 #[test]
 fn test_stun_server_config() {
     let manager = NatTraversalManager::new();
-    assert!(manager.stun_servers.len() >= 2);
+    assert!(manager.stun_server_count() >= 2);
     assert!(!manager.has_turn_relay());
 }

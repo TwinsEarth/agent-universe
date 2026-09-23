@@ -115,4 +115,8 @@ impl NatTraversalManager {
     pub fn has_turn_relay(&self) -> bool {
         !self.turn_servers.is_empty()
     }
+
+    pub fn stun_server_count(&self) -> usize {
+        self.stun_servers.len()
+    }
 }

@@ -119,4 +119,8 @@ impl CrowdsourcingMarket {
     pub fn total_solvers(&self) -> usize {
         self.solvers.len()
     }
+
+    pub fn get_solver(&self, solver_id: &str) -> Option<&Solver> {
+        self.solvers.get(solver_id)
+    }
 }

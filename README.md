@@ -181,15 +181,34 @@ index = ShardedIndex(num_shards=16)
 index.put(card.did, card)
 ```
 
-### npm 包（GitHub Packages）
+### JS SDK 安装
+
+**方式一：jsDelivr 公开 CDN（无需登录 / 无需 token，推荐）**
+
+任何人无需认证即可获取完整包，浏览器或 Node 直接下载：
 
 ```bash
-# 包发布在 GitHub Packages registry，需先配置
+# 一键下载主入口与全部模块（零认证）
+BASE="https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js"
+curl -O "$BASE/index.js" --create-dirs
+for f in keychain models dht market; do
+  curl -o "lib/$f.js" --create-dirs "$BASE/lib/$f.js"
+done
+```
+
+也可在 HTML 中直接引用单文件：`https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js/index.js`
+
+**方式二：GitHub Packages（需 GitHub token）**
+
+```bash
+# 包发布在 GitHub Packages registry，需先配置凭证
 npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-详见 [Packages](https://github.com/TwinsEarth/agent-universe/packages)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4，详见 [Packages](https://github.com/TwinsEarth/agent-universe/packages)。
+
+> 公共 npmjs（`npm install @twinsearth/agent-universe` 零认证）正在筹备中。
 
 ## 版本谱系
 

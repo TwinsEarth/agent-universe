@@ -149,22 +149,25 @@ cd gsn-core
 cargo run --bin gsn-daemon -- --help
 ```
 
+> **当前实现状态**：gsn-daemon 当前为骨架/内存模拟实现——会打印配置并创建数据目录，但尚未真正 bind P2P/API 端口，也未接入真实 libp2p 网络、SQLite 持久化或链上交互。核心业务逻辑（Agent Market 结算、BFT 验证、信誉）已在 Rust 单元测试中完整验证（144 测试通过），网络层和持久化为下一步目标。
+
 ### Python SDK 使用
 
 ```python
-from aip import AgentClient
+from aip import AgentCard, Task, ShardedIndex
 
-client = AgentClient()
-card = client.register_agent(
-    name="my-agent",
-    capabilities=["text-generation"]
-)
-print(f"Agent DID: {card.did}")
+card = AgentCard.new(did="did:aip:demo", name="my-agent")
+card.with_capability("text-generation")
+
+index = ShardedIndex(num_shards=16)
+index.put(card.did, card)
 ```
 
-### npm 包
+### npm 包（GitHub Packages）
 
 ```bash
+# 包发布在 GitHub Packages registry，需先配置
+npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 

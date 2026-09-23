@@ -15,6 +15,16 @@ struct Args {
     bootstrap: Vec<String>,
 }
 
+/// 从 args[i+1] 取选项值，缺值时打印友好错误并退出
+fn require_value(args: &[String], i: usize, opt: &str) -> String {
+    if i + 1 >= args.len() || args[i + 1].starts_with("--") {
+        eprintln!("错误: 选项 {} 缺少参数", opt);
+        eprintln!("用法: gsn-daemon [选项]，运行 gsn-daemon --help 查看帮助");
+        std::process::exit(1);
+    }
+    args[i + 1].clone()
+}
+
 impl Args {
     fn parse() -> Self {
         let mut listen = "0.0.0.0".to_string();
@@ -28,23 +38,35 @@ impl Args {
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
-                "--listen" => { listen = args[i+1].clone(); i += 2; }
-                "--port" => { port = args[i+1].parse().unwrap_or(4001); i += 2; }
-                "--api-port" => { api_port = args[i+1].parse().unwrap_or(4002); i += 2; }
-                "--data-dir" => { data_dir = PathBuf::from(&args[i+1]); i += 2; }
-                "--mode" => { mode = args[i+1].clone(); i += 2; }
+                "--listen" => { listen = require_value(&args, i, "--listen"); i += 2; }
+                "--port" => {
+                    let v = require_value(&args, i, "--port");
+                    port = v.parse().unwrap_or(4001);
+                    i += 2;
+                }
+                "--api-port" => {
+                    let v = require_value(&args, i, "--api-port");
+                    api_port = v.parse().unwrap_or(4002);
+                    i += 2;
+                }
+                "--data-dir" => { data_dir = PathBuf::from(require_value(&args, i, "--data-dir")); i += 2; }
+                "--mode" => { mode = require_value(&args, i, "--mode"); i += 2; }
                 "--bootstrap" => {
-                    while i + 1 < args.len() && !args[i+1].starts_with("--") {
-                        bootstrap.push(args[i+1].clone());
+                    while i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                        bootstrap.push(args[i + 1].clone());
                         i += 1;
                     }
                     i += 1;
                 }
-                "--help" => {
+                "--help" | "-h" => {
                     print_help();
                     std::process::exit(0);
                 }
-                _ => i += 1,
+                _ => {
+                    eprintln!("错误: 未知选项 {}", args[i]);
+                    eprintln!("用法: gsn-daemon [选项]，运行 gsn-daemon --help 查看帮助");
+                    std::process::exit(1);
+                }
             }
         }
 
@@ -101,8 +123,8 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(args.data_dir.join("logs"))?;
 
     println!("✅ gsn-daemon 启动完成");
-    println!("   P2P 端口: {}", args.port);
-    println!("   API 端口: {}", args.api_port);
+    println!("   P2P 端口: {}（当前为内存模拟，尚未 bind 真实端口）", args.port);
+    println!("   API 端口: {}（当前为内存模拟，尚未 bind 真实端口）", args.api_port);
     println!("   数据目录: {:?}", args.data_dir);
 
     // 保持运行

@@ -146,10 +146,28 @@ cd aip-sdk-py && PYTHONPATH=. pytest tests/ -v
 
 ```bash
 cd gsn-core
-cargo run --bin gsn-daemon -- --help
+# 前台运行（默认 P2P 4001 / HTTP API 4002）
+cargo run --release --bin gsn-daemon
+# 自定义端口与数据目录
+cargo run --release --bin gsn-daemon -- \
+  --port 4001 --api-port 4002 --data-dir ~/.gsn/data
+# 连接已有引导节点（非根种子）
+cargo run --release --bin gsn-daemon -- \
+  --bootstrap /ip4/<bootstrap-ip>/tcp/4001
 ```
 
-> **当前实现状态**：gsn-daemon 当前为骨架/内存模拟实现——会打印配置并创建数据目录，但尚未真正 bind P2P/API 端口，也未接入真实 libp2p 网络、SQLite 持久化或链上交互。核心业务逻辑（Agent Market 结算、BFT 验证、信誉）已在 Rust 单元测试中完整验证（144 测试通过），网络层和持久化为下一步目标。
+启动后可访问 HTTP API：
+
+| 方法 & 路径 | 功能 |
+|---|---|
+| `GET /health` | 节点健康、版本、模式、连接数、运行时长 |
+| `GET /version` | daemon 版本 |
+| `GET /peers` | 本地 Peer ID、连接数、DHT 路由表条目 |
+| `GET /agents` | 已注册智能体列表 |
+| `GET /tasks` | 任务列表 |
+| `POST /agents` | 注册 AgentCard（同时落 SQLite 与 DHT） |
+
+> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 144 个 Rust 测试 + 8 个 JS 测试守护。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
 ### Python SDK 使用
 

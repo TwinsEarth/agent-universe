@@ -67,6 +67,23 @@ jobs:
       - name: Run tests
         run: cd aip-sdk-py && PYTHONPATH=. pytest tests/ -v
 
+  js-test:
+    name: JS SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS SDK tests
+        run: node js/test/test.js
+
+      - name: Verify root package re-export
+        run: node -e "const au=require('./'); if(au.version!=='2.3.4') process.exit(1); console.log('root package OK, version', au.version)"
+
   contracts-check:
     name: Solidity Contracts
     runs-on: ubuntu-latest

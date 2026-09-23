@@ -1,0 +1,32 @@
+{
+  "name": "@twinsearth/agent-universe",
+  "version": "2.3.4",
+  "description": "Agent Universe - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TwinsEarth/agent-universe.git"
+  },
+  "keywords": [
+    "agi",
+    "p2p",
+    "agent",
+    "decentralized",
+    "gsn",
+    "swarm",
+    "libp2p"
+  ],
+  "author": "TwinsEarth",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/TwinsEarth/agent-universe/issues"
+  },
+  "homepage": "https://github.com/TwinsEarth/agent-universe#readme",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  }
+}

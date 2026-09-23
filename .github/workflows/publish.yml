@@ -31,7 +31,7 @@ jobs:
       - name: Configure cargo registry
         run: |
           mkdir -p ~/.cargo
-          printf '[registries.github]\nindex = "sparse+https://github.com/TwinsEarth/agent-universe/"\nprotocol = "sparse"\n' > ~/.cargo/config.toml
+          printf '[registries.github]\nindex = "sparse+https://pkg.github.com/TwinsEarth/agent-universe/"\nprotocol = "sparse"\n' > ~/.cargo/config.toml
           echo "${{ secrets.GITHUB_TOKEN }}" | cargo login --registry github
           cat ~/.cargo/config.toml
 

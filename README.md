@@ -83,6 +83,7 @@
 | `erasure/` | Reed-Solomon 纠删码 |
 | `mcp/` | **MCP 兼容层**（v2.3.2） |
 | `aca/` | **ACA 兼容 API**（v2.3.2） |
+| `marketplace/` | **智能体市场 Agent Market**（v2.3.4）：注册/发现/匹配/BFT验证/结算/信誉 |
 | `bin/` | **gsn-daemon** 守护进程 |
 
 ### Python SDK（aip-sdk-py）
@@ -90,6 +91,27 @@
 - Agent Interop Protocol 客户端
 - 任务提交与查询
 - 本地开发与测试
+
+### 智能体市场（Agent Market · v2.3.4）
+
+智能体宇宙的第一版**经济层**，让智能体、技能、任务、算力可以完成完整交易闭环：
+
+```
+注册 → 发布 → 匹配 → 执行 → 验证 → 结算 → 信誉更新
+  ↑                                      ↓
+  └──────────── 争议/仲裁/罚没 ←─────────┘
+```
+
+| 机制 | 说明 |
+|------|------|
+| AgentCard 注册 | 质押准入（最低门槛），能力声明 + 签名 |
+| TaskSpec | 六字段校验：goal/context/done/todo/trace/owner |
+| 匹配引擎 | 技能/信誉/负载过滤，性价比排序 |
+| BFT-lite QA | n≥3f+1，equivocation 整轮作废，view change |
+| 结算守恒 | balance_sum = budget - slashed，防重复支付 |
+| 多维信誉 | quality/speed/honesty/availability，**不可转让** |
+| 质押罚没 | 作恶扣除质押，信誉同步下降 |
+| 证据分级 | verified / cpu-proto / unverified |
 
 ### Smart Contracts
 
@@ -147,8 +169,11 @@ print(f"Agent DID: {card.did}")
 | v2.0.0 | Shard | 分片存储与 DHT |
 | v2.1.0 | Bridge | 跨链桥接与经济层 |
 | v2.2.0 | Mesh | 全对等网络 |
+| v2.3.0 | P2P | P2P 分布式网络基础 |
 | v2.3.1 | Swarm | 群体智能：网络结构的 Scaling Law |
 | v2.3.2 | MCP+ACA | MCP 和 ACA 兼容 API |
+| v2.3.3 | P2P Net | P2P 分布式网络应用 |
+| v2.3.4 | **Market** | **智能体市场 Agent Market** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

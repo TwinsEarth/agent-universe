@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Universe v2.3.4</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <div class="app">
+    <header>
+      <h1>Agent Universe</h1>
+      <span class="version">v2.3.4 · Universal</span>
+    </header>
+
+    <section class="panel">
+      <div class="row">
+        <span class="label">平台</span>
+        <span class="value" id="platform">检测中…</span>
+      </div>
+      <div class="row">
+        <span class="label">DID</span>
+        <span class="value did" id="did">did:au:client-demo</span>
+      </div>
+      <div class="row">
+        <span class="label">网络</span>
+        <span class="value">本地模拟节点（内存 DHT）</span>
+      </div>
+    </section>
+
+    <section class="panel">
+      <button id="btn-run" class="cta">▶ 运行市场端到端演示</button>
+      <p class="hint">充值 → 质押 → 发布 → 投标 → 匹配 → 完成 → 结算 → 守恒校验</p>
+    </section>
+
+    <section class="panel">
+      <h2>运行日志</h2>
+      <pre id="log" class="log">就绪。\n</pre>
+    </section>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

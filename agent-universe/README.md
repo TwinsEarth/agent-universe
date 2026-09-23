@@ -253,3 +253,21 @@ npm install @twinsearth/agent-universe
 **Agent Universe · 智能体宇宙**
 
 *让科技造福全人类！*
+
+## v2.3.5 跨平台客户端
+
+v2.3.5 新增五平台客户端，源码与安装包在 `client/` 目录：
+
+| 平台 | 安装包 | 说明 |
+|------|--------|------|
+| macOS | `client/macos/Agent Universe_2.3.5_aarch64.dmg` | Apple Silicon |
+| Windows | `client/windows/Agent Universe_2.3.5_x64_en-US.msi` | x64 |
+| Android | `client/android/app-universal-release-unsigned.apk` | Universal APK |
+| Linux | `client/linux/gsn-daemon-linux-x64-v2.3.5.tar.gz` | x64 |
+| iOS | `client/ios/README.md` | 需 Apple Developer 证书 |
+
+源码：
+- 前端：`client/src/`（Vite + HTML/JS）
+- Rust 壳：`client/src-tauri/`（Tauri 2）
+
+Release: https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.5

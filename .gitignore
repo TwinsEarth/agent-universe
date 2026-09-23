@@ -50,3 +50,6 @@ gsn-core/~
 
 # OS files
 Thumbs.db
+
+# npm local auth (contains token)
+.npmrc

@@ -1,0 +1,24 @@
+{
+  "name": "agent-universe-contracts",
+  "version": "2.3.2",
+  "description": "GSN 智能体宇宙合约层",
+  "files": [
+    "src/GovernorToken.sol",
+    "src/AgentCardAnchor.sol",
+    "src/PoCVSettlement.sol",
+    "src/ReputationBridge.sol"
+  ],
+  "compiler": {
+    "version": "0.8.20"
+  },
+  "networks": {
+    "base": {
+      "deployed": false,
+      "note": "待主网部署"
+    },
+    "arbitrum": {
+      "deployed": false,
+      "note": "待主网部署"
+    }
+  }
+}

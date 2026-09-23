@@ -78,7 +78,7 @@ fn test_tool_result() {
 
 #[test]
 fn test_resource_uri_parse() {
-    let uri = ResourceUri::new("gsn://did:123/agent/card");
+    let _uri = ResourceUri::new("gsn://did:123/agent/card");
     let parsed = ResourceUri::parse_gsn("gsn://did:123/agent/card");
     assert!(parsed.is_some());
     let (did, res_type, id) = parsed.unwrap();

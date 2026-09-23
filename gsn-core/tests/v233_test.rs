@@ -168,8 +168,10 @@ fn test_task_complete_and_reward() {
 fn test_sybil_detection() {
     let mut engine = SecurityEngine::new();
 
-    engine.report_behavior("malicious_node".to_string(), SecurityFlag::SybilSuspected);
-    engine.report_behavior("malicious_node".to_string(), SecurityFlag::PollutionDetected);
+    // 每次报告 score *= 0.8，6 次后 0.262 < 0.3 阈值触发封禁
+    for _ in 0..6 {
+        engine.report_behavior("malicious_node".to_string(), SecurityFlag::SybilSuspected);
+    }
 
     assert!(engine.is_banned("malicious_node"));
     assert_eq!(engine.banned_count(), 1);

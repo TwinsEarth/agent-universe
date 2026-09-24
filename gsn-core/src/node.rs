@@ -50,11 +50,38 @@ impl Default for DaemonArgs {
             listen: "0.0.0.0".to_string(),
             port: 4001,
             api_port: 4002,
-            data_dir: PathBuf::from("~/.gsn/data"),
+            data_dir: default_data_dir(),
             mode: "full".to_string(),
             bootstrap: Vec::new(),
         }
     }
+}
+
+/// 返回真实 home 下的默认数据目录（不使用字面 "~"，PathBuf 不会展开它）。
+pub fn default_data_dir() -> PathBuf {
+    match std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+        Some(home) => PathBuf::from(home).join(".gsn").join("data"),
+        // 无 home 环境变量时回退到当前目录，避免创建字面 "~" 目录。
+        None => PathBuf::from(".gsn").join("data"),
+    }
+}
+
+/// 展开路径开头的 "~" 或 "~/" 为真实 home 目录；其余情况原样返回。
+pub fn expand_tilde(p: PathBuf) -> PathBuf {
+    let s = match p.to_str() {
+        Some(s) => s,
+        None => return p,
+    };
+    if let Some(rest) = s.strip_prefix('~') {
+        if let Some(home) = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+        {
+            let rest = rest.trim_start_matches('/');
+            return if rest.is_empty() { home } else { home.join(rest) };
+        }
+    }
+    p
 }
 
 pub fn require_value(args: &[String], i: usize, opt: &str) -> String {
@@ -101,6 +128,7 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
             _ => { eprintln!("错误: 未知选项 {}", args[i]); std::process::exit(1); }
         }
     }
+    d.data_dir = expand_tilde(d.data_dir);
     d
 }
 

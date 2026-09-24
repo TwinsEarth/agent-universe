@@ -1,10 +1,11 @@
-//! Agent Universe gsn-core v2.3.4
+//! Agent Universe gsn-core v2.3.5
 //!
 //! 群体智能核心库 - 智能体宇宙
 //! 
 //! 群体智能 = 网络结构的 Scaling Law
 //! 从 token 网络结构向智能体网络结构演进
 //! v2.3.4: 智能体市场 Agent Market
+//! v2.3.5: 跨平台客户端 + CLI/REST/MCP 三大连接层重构
 
 pub mod identity;
 pub mod agent;

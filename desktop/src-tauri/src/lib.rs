@@ -1,9 +1,9 @@
-// Agent Universe v2.3.4 — Tauri 2 最小壳
-// 前端: Vite + HTML/JS，调用 @twinsearth/agent-universe@2.3.4
+// Agent Universe v2.3.5 — Tauri 2 桌面客户端壳
+// 前端: Vite + HTML/JS，调用 @twinsearth/agent-universe
 
 #[tauri::command]
 fn get_sdk_version() -> String {
-    "2.3.4".to_string()
+    "2.3.5".to_string()
 }
 
 pub fn run() {

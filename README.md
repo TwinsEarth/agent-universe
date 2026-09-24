@@ -242,9 +242,17 @@ index.put(card.did, card)
 
 ### JS SDK 安装
 
-**方式一：jsDelivr 公开 CDN（无需登录 / 无需 token，推荐）**
+**方式一：公共 npmjs（零认证，推荐）**
 
-任何人无需认证即可获取完整包，浏览器或 Node 直接下载：
+包已发布到公共 npm registry，任何人无需 token 即可安装：
+
+```bash
+npm install @twinsearth/agent-universe
+```
+
+**方式二：jsDelivr 公开 CDN（无需登录 / 无需 token）**
+
+浏览器或 Node 直接下载：
 
 ```bash
 # 一键下载主入口与全部模块（零认证）
@@ -257,7 +265,7 @@ done
 
 也可在 HTML 中直接引用单文件：`https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js/index.js`
 
-**方式二：GitHub Packages（需 GitHub token）**
+**方式三：GitHub Packages（需 GitHub token）**
 
 ```bash
 # 包发布在 GitHub Packages registry，需先配置凭证
@@ -265,9 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4，详见 [Packages](https://github.com/TwinsEarth/agent-universe/packages)。
-
-> 公共 npmjs（`npm install @twinsearth/agent-universe` 零认证）正在筹备中。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -281,7 +287,8 @@ npm install @twinsearth/agent-universe
 | v2.3.1 | Swarm | 群体智能：网络结构的 Scaling Law |
 | v2.3.2 | MCP+ACA | MCP 和 ACA 兼容 API |
 | v2.3.3 | P2P Net | P2P 分布式网络应用 |
-| v2.3.4 | **Market** | **智能体市场 Agent Market** |
+| v2.3.4 | Market | 智能体市场 Agent Market |
+| v2.3.5 | **Client** | **跨平台客户端 + CLI/REST/MCP 重构** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
@@ -315,18 +322,32 @@ npm install @twinsearth/agent-universe
 
 ## v2.3.5 跨平台客户端
 
-v2.3.5 新增五平台客户端，源码与安装包在 `client/` 目录：
+v2.3.5 新增基于 Tauri 2 的跨平台客户端。客户端**源码**在仓库内，**安装包为构建产物、不入库**：在推送版本 tag 时由 [`.github/workflows/client-build.yml`](.github/workflows/client-build.yml) 在对应系统的 runner 上自动构建，并发布到 GitHub Release 下载。
 
-| 平台 | 安装包 | 说明 |
-|------|--------|------|
-| macOS | `client/macos/Agent Universe_2.3.5_aarch64.dmg` | Apple Silicon |
-| Windows | `client/windows/Agent Universe_2.3.5_x64_en-US.msi` | x64 |
-| Android | `client/android/app-universal-release-unsigned.apk` | Universal APK |
-| Linux | `client/linux/gsn-daemon-linux-x64-v2.3.5.tar.gz` | x64 |
-| iOS | `client/ios/README.md` | 需 Apple Developer 证书 |
+**源码位置**
 
-源码：
-- 前端：`client/src/`（Vite + HTML/JS）
-- Rust 壳：`client/src-tauri/`（Tauri 2）
+- 客户端工程：`client/`（前端 Vite + HTML/JS 在 `client/src/`，Rust 壳 `client/src-tauri/`，Android 工程 `client/src-tauri/gen/android`）
+- 桌面端源码目录：`desktop/`
+- 各平台本地构建说明：`client/platforms/`
 
-Release: https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.5
+**安装包（在 GitHub Release 下载，非仓库内路径）**
+
+| 平台 | 产物 | 说明 |
+|------|------|------|
+| macOS | `.dmg` / `.app` | Apple Silicon（Intel 可本地自行构建） |
+| Windows | `.msi` / `-setup.exe`（NSIS） | x64 |
+| Linux | `.deb` / `.AppImage` | x64 |
+| Android | `.apk` | universal / 分 ABI |
+| iOS | 见 `client/ios/README.md` | 需 Apple Developer 证书与描述文件，开源仓库不内置签名成品 |
+
+Release 下载：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.5
+
+**本地手动构建**
+
+```bash
+cd client
+npm install
+npm run build        # 前端
+npx tauri build      # 桌面安装包（需在对应系统上，并装好平台依赖）
+npx tauri android build --apk   # Android（需 JDK + Android SDK/NDK）
+```

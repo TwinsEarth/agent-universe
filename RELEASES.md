@@ -19,7 +19,8 @@ v1.0.0 (Genesis)
                                 ├── v2.3.1 (Swarm - 群体智能)
                                 ├── v2.3.2 (MCP+ACA - 兼容协议)
                                 ├── v2.3.3 (P2P Net - 网络应用)
-                                └── v2.3.4 (Market - 智能体市场) ← 当前
+                                ├── v2.3.4 (Market - 智能体市场)
+                                └── v2.3.5 (Client - 跨平台客户端) ← 当前
 ```
 
 ## 大版本详情
@@ -212,6 +213,35 @@ Mac mini M4
 
 **测试基线**：144/144 通过，端到端演示真实运行
 
+### v2.3.5 - Client（跨平台客户端）
+
+**核心内容**：Tauri 2 跨平台客户端，CLI / REST API / MCP 三大连接层重构
+
+**系统架构**：
+```
+接入层：CLI(gsn) · REST /api/v1 · MCP · Tauri 客户端
+        ↓
+MarketActorHandle（actor + mpsc/oneshot，独占 AgentMarket）
+        ↓
+Registry / Discovery / Matching / QA(BFT-lite) / Settlement
+        ↓
+libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
+```
+
+**核心机制**：
+| 机制 | 说明 |
+|------|------|
+| Tauri 客户端 | macOS/Windows/Linux GUI + Android APK，iOS 需开发者证书 |
+| 安装包产出 | client-build.yml 打 tag 时自动构建并发布到 GitHub Release |
+| CLI | gsn 子命令：version/identity/daemon/mcp/market |
+| REST | /api/v1 完整端点，与传输解耦的 route() |
+| MCP | 18 个 market_* 工具，tools/call 真实执行（stdio/sse） |
+| Actor 模型 | MarketActorHandle 独占市场，消除异步共享 Mutex 死锁 |
+| 真实网络 | libp2p 0.54 bind 端口，rusqlite 落盘 ~/.gsn/data |
+| 缺陷修复 | 数据目录字面 ~ 不展开（default_data_dir/expand_tilde） |
+
+**测试基线**：Rust 154/154、Python 6/6、JS 8/8 通过；CLI/REST/MCP 三层真机走通完整市场闭环且守恒成立
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -257,6 +287,7 @@ Mac mini M4
 - ✅ **MCP/ACA 兼容协议**（v2.3.2）
 - ✅ **P2P 网络应用**（v2.3.3）
 - ✅ **智能体市场 Agent Market**（v2.3.4）
+- ✅ **跨平台客户端 + CLI/REST/MCP 重构**（v2.3.5）
 
 ### 技术栈
 

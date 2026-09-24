@@ -1,5 +1,5 @@
 // lib/market.js
-// v2.3.4 Agent Market：注册 / 发布 / 投标 / 匹配 / 结算 / 罚没 / 守恒
+// v2.3.5 Agent Market：注册 / 发布 / 投标 / 匹配 / 结算 / 罚没 / 守恒
 
 const { Task, TaskStatus } = require('./models');
 

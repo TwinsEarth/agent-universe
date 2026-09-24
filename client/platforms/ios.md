@@ -1,5 +1,7 @@
 # iOS 构建
 
+> **成品说明**：iOS 需 Apple Developer 证书与描述文件，开源仓库与 CI 不内置签名成品；需按以下步骤在 macOS 上自行构建签名，或参考 `client/ios/README.md`。
+
 ## 前置要求
 
 - macOS（必须）

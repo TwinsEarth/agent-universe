@@ -7,7 +7,7 @@ const { AgentCard, Task, TaskStatus } = require('./lib/models');
 const { MemoryDHT, ShardedIndex, shardOf } = require('./lib/dht');
 const { AgentMarket, Bid, Reputation, MIN_STAKE } = require('./lib/market');
 
-const version = '2.3.4';
+const version = '2.3.5';
 
 /**
  * AgentUniverse 门面：聚合身份、网络、市场能力

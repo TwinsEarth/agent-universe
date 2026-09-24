@@ -353,3 +353,29 @@ fn test_mcp_http_notification_returns_202() {
         assert_eq!(r.status, 202);
     });
 }
+
+#[test]
+fn test_data_dir_tilde_expansion() {
+    use gsn_core::node::{default_data_dir, expand_tilde};
+    use std::path::PathBuf;
+
+    // 默认数据目录不得是字面 "~"，否则会在 CWD 下创建 ~ 目录。
+    let d = default_data_dir();
+    assert!(!d.starts_with("~"), "default_data_dir 不应以字面 ~ 开头: {:?}", d);
+
+    // ~/.gsn/data 必须展开到真实 home。
+    let expanded = expand_tilde(PathBuf::from("~/.gsn/data"));
+    assert!(!expanded.starts_with("~"), "~ 未被展开: {:?}", expanded);
+    if let Ok(home) = std::env::var("HOME") {
+        assert!(expanded.starts_with(&home), "应位于 HOME 下: {:?} (HOME={})", expanded, home);
+        assert!(expanded.ends_with(".gsn/data"));
+    }
+
+    // 普通相对路径保持不变。
+    let rel = expand_tilde(PathBuf::from("local/data"));
+    assert_eq!(rel, PathBuf::from("local/data"));
+
+    // 绝对路径（不以 ~ 开头）保持不变。
+    let abs = expand_tilde(PathBuf::from("/var/lib/gsn"));
+    assert_eq!(abs, PathBuf::from("/var/lib/gsn"));
+}

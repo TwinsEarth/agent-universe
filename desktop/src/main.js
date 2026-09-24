@@ -1,4 +1,4 @@
-// Agent Universe v2.3.4 — 桌面客户端前端
+// Agent Universe v2.3.5 — 桌面客户端前端
 // 直接引入 AgentMarket（不触发 node:crypto 的 Keypair），用固定 DID 演示市场结算链路
 
 import { AgentMarket, MIN_STAKE } from '@twinsearth/agent-universe/lib/market.js';

@@ -137,7 +137,9 @@ jobs:
 
       - name: Build APK
         working-directory: client
-        run: npx tauri android build --apk
+        # --debug：AGP 用调试密钥自动签名，产出可直接侧载安装的 APK；
+        # 开源仓库未内置 release keystore，上架商店需另配签名（见 client/platforms/android.md）
+        run: npx tauri android build --apk --debug
 
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2

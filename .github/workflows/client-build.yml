@@ -111,9 +111,12 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # 覆盖 action 默认的遗留 'tools' 包（新版 cmdline-tools 已移除，安装会失败）
+          packages: "platform-tools"
 
       - name: Install NDK
-        run: yes | sdkmanager --licenses >/dev/null 2>&1; sdkmanager "ndk;27.2.12479018" "platform-tools" "build-tools;34.0.0"
+        run: yes | sdkmanager --licenses >/dev/null 2>&1; sdkmanager "ndk;27.2.12479018" "platform-tools" "build-tools;34.0.0" "platforms;android-34"
 
       - name: Linux dependencies
         run: |

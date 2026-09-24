@@ -1,0 +1,55 @@
+[package]
+name = "gsn-core"
+version = "0.2.35"
+edition = "2021"
+description = "Agent Universe 核心库 v2.3.4: 智能体市场 - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+license = "MIT"
+repository = "https://github.com/TwinsEarth/agent-universe"
+homepage = "https://github.com/TwinsEarth/agent-universe"
+documentation = "https://github.com/TwinsEarth/agent-universe/tree/main/docs"
+keywords = ["p2p", "agent", "decentralized", "swarm", "libp2p"]
+categories = ["concurrency", "network-programming"]
+publish = true
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "gsn-daemon"
+path = "src/bin/gsn-daemon.rs"
+
+[[bin]]
+name = "gsn"
+path = "src/bin/gsn.rs"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+rand = "0.8"
+ed25519-dalek = "2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+libp2p = { version = "0.54", features = [
+    "tokio",
+    "tcp",
+    "noise",
+    "yamux",
+    "kad",
+    "gossipsub",
+    "identify",
+    "dns",
+    "request-response",
+    "macros",
+] }
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[dev-dependencies]

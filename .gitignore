@@ -1,61 +1,55 @@
-# ===== Rust =====
-target/
-**/target/
-*.rs.bk
+# Rust
+gsn-core/target/
+**/*.rs.bk
 *.pdb
-Cargo.lock.bak
 
-# ===== Python =====
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
-*.egg
 dist/
 build/
 .eggs/
+*.egg
 .tox/
 .coverage
 htmlcov/
 .pytest_cache/
-.mypy_cache/
-.ipynb_checkpoints/
 
-# ===== Node =====
-node_modules/
-npm-debug.log*
-
-# ===== 密钥 / 凭证（绝不入库）=====
-.npmrc
-.env
-.env.*
-*.pem
-*.key
-secrets/
-
-# ===== Unity / Tuanjie =====
-[Ll]ibrary/
-[Tt]emp/
-[Oo]bj/
-[Bb]uild/
-[Bb]uilds/
-[Ll]ogs/
-[Uu]ser[Ss]ettings/
-*.csproj
-*.unityproj
-*.sln
-*.user
-*.pidb
-*.booproj
-
-# ===== OS / IDE =====
-.DS_Store
-Thumbs.db
+# IDE
 .idea/
 .vscode/
 *.swp
+*.swo
+*~
+.DS_Store
 
-# ===== 大型临时产物 =====
-*.zip
-*.tar.gz
-*.bundle
+# Env
+.env
+.env.local
+*.pem
+*.key
+
+# Data
+*.db
+*.sqlite
+data/
+volumes/
+
+# Logs
+*.log
+logs/
+
+# Local cargo registry
+config.json
+
+# Runtime data
+gsn-core/.gsn/
+gsn-core/~
+
+# OS files
+Thumbs.db
+
+# npm local auth (contains token)
+.npmrc

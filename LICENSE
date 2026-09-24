@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 The TwinsEarth Authors
+Copyright (c) 2026 Agent Universe Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,12 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-注意：本 LICENSE 仅适用于顶层整合层文档（README、docs/ 等）。
-各子项目保留其原始许可证：
-  - udos-reasoning-engine/  → Apache License 2.0
-  - PixelToCivilization/    → MIT License
-  - agent-universe/         → MIT License
-详见 LICENSES-README.md。

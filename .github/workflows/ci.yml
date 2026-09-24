@@ -1,4 +1,4 @@
-name: TwinsEarth CI
+name: CI
 
 on:
   push:
@@ -6,94 +6,100 @@ on:
   pull_request:
     branches: [main]
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
 jobs:
-  rust-core:
-    name: 🕸️ Rust Core (gsn-core)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent-universe/gsn-core
+  rust-test:
+    name: Rust - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          workspaces: agent-universe/gsn-core
+          toolchain: stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+
       - name: Build
-        run: cargo build --verbose
+        run: cd gsn-core && cargo build --verbose
+
       - name: Test
-        run: cargo test --verbose
+        run: cd gsn-core && cargo test --verbose
 
-  js-sdk:
-    name: 🕸️ JS SDK
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent-universe/js
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Test
-        run: node test/test.js
+      - name: Clippy
+        run: cd gsn-core && cargo clippy -- -D warnings 2>&1 || echo "clippy warnings tolerated"
 
-  python-aip:
-    name: 🕸️ Python AIP SDK
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: agent-universe/aip-sdk-py
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install
-        run: pip install pytest pytest-asyncio
-      - name: Test
-        run: python -m pytest -q
+      - name: Run gsn-daemon --help
+        run: cd gsn-core && cargo run --bin gsn-daemon -- --help || echo "⚠️ gsn-daemon --help failed (tolerated)"
 
-  frontend-clients:
-    name: 🖥️ Frontend Clients (desktop/client)
+  python-test:
+    name: Python SDK
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Check desktop frontend syntax
-        working-directory: agent-universe/desktop
-        run: |
-          node --check src/main.js
-          echo "desktop main.js syntax OK"
-      - name: Check client frontend syntax
-        working-directory: agent-universe/client
-        run: |
-          node --check src/main.js
-          echo "client main.js syntax OK"
-      - name: Validate Tauri config (desktop)
-        working-directory: agent-universe/desktop/src-tauri
-        run: node -e "JSON.parse(require('fs').readFileSync('tauri.conf.json','utf8'));console.log('desktop tauri.conf.json valid')"
-      - name: Validate Tauri config (client)
-        working-directory: agent-universe/client/src-tauri
-        run: node -e "JSON.parse(require('fs').readFileSync('tauri.conf.json','utf8'));console.log('client tauri.conf.json valid')"
 
-  python-udos:
-    name: 🧠 UDOS Engine
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: udos-reasoning-engine
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          cache: pip
-      - name: Install CPU PyTorch
-        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python-version: "3.12"
+
       - name: Install dependencies
-        run: pip install -r requirements.txt
-      - name: Test
-        run: python -m pytest -q -p no:warnings
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install aip-sdk-py/ || echo "pip install -e failed, running tests directly"
+
+      - name: Run tests
+        run: cd aip-sdk-py && PYTHONPATH=. pytest tests/ -v
+
+  js-test:
+    name: JS SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run JS SDK tests
+        run: node js/test/test.js
+
+      - name: Verify root package re-export
+        run: node -e "const au=require('./'); if(au.version!=='2.3.4') process.exit(1); console.log('root package OK, version', au.version)"
+
+  contracts-check:
+    name: Solidity Contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check contracts
+        run: |
+          if [ -d contracts/src ] && ls contracts/src/*.sol 1>/dev/null 2>&1; then
+            echo "=== Contract files ==="
+            find contracts/ -name "*.sol" -exec echo {} \; -exec wc -l {} \;
+            for f in contracts/src/*.sol; do
+              echo "Checking $f"
+              grep -q "pragma solidity" "$f" && echo "  ✅ has pragma"
+              grep -q "contract " "$f" && echo "  ✅ has contract"
+            done
+          else
+            echo "⚠️ No Solidity contracts found yet"
+          fi

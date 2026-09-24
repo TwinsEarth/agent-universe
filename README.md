@@ -1,160 +1,332 @@
+# Agent Universe（智能体宇宙）
 
-
->
 > **使命：让科技造福全人类！**
+>
+> **一句话简介：群众化的 AGI 路线，去中心化的智能体共享 & 开源网络。**
 
-孪生地球（TwinsEarth）是一个开源的**数字生命与数字文明基础设施**。它把三个独立又互补的开源项目融合为一个整体——一个会**思考**、有**躯体**、能**协作**的数字地球，让文明在数字空间中自发生长、永续演进。
+[![CI](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml/badge.svg)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![npm](https://img.shields.io/badge/npm-%40twinsearth%2Fagent--universe-red.svg)](https://github.com/TwinsEarth/agent-universe/packages)
 
----
+## 核心理念
 
-## 一、三位一体：灵魂 · 躯体 · 社会网络
+### 群体智能 = 网络结构的 Scaling Law
 
-孪生地球由三部分构成，分别回答“如何思考”“何处存在”“怎样协作”：
+大模型通过参数、数据、算力的 Scaling Law 已实现智能涌现，解决了智能的有无问题。
 
-| 组成 | 子项目 | 角色 | 核心能力 | 技术栈 |
-|------|--------|------|----------|--------|
-| 🧠 **灵魂 / 驱动力** | [UDOS 推演引擎](udos-reasoning-engine) | 大脑认知内核 | 时序同步推理(CTM)、场景内化(GPM)、因果决策、世界模型、AGI/ASI 情报 | Python |
-| 🌍 **躯体 / 载体** | [从像素到文明](PixelToCivilization) | 数字空间物理引擎 | 世界生成、4X 文明模拟、九 AI 神灵共治、物理与生态 | C# / Tuanjie(Unity) |
-| 🕸️ **社会网络** | [智能体宇宙](agent-universe) | 智力载体 & 后台管理 | P2P 网络、DHT 发现、智能体市场、信誉经济、链上结算 | Rust / Python / Solidity / JS |
+**智能体宇宙**是在其基础上，实现更多、更大、更强的智能与自我迭代——这是**网络结构的 Scaling Law**，从 token 网络结构向智能体网络结构演进。
 
-- **UDOS 提供“思考”** —— 认知架构内核，底层基础逻辑无处不在，深入每个单位、细节与物体。
-- **从像素到文明提供"存在"** —— 数字地球的空间与物理生成引擎，让认知具象化为可交互的文明世界。
-- **智能体宇宙提供"连接"** —— 去中心化的智能体共享网络，负责孪生地球的后台运行与管理。
+### 群众路线
 
-三者闭环：**认知（UDOS）→ 生成（PixelToCivilization）→ 协作（Agent Universe）→ 反哺认知**，构成一个自我迭代的数字生命体。
+当前基础大模型军备竞赛已达千亿万亿元级门槛，普通人无法参与，智能即将被巨头垄断。
 
----
+**急需第三方介入**，在闭源阵营与开源阵营之间探索一条普惠大众、全民参与的 AGI 甚至 ASI 之路——**群众路线**。
 
-## 二、为什么需要孪生地球
+通过这个全民网络，让底层人民也能参与、贡献、分享这场智能科技革命。（类似于 Linux）
 
-1. **智能已涌现，但正在被垄断。** 大模型通过（参数、数据、算力）的 Scaling Law 实现了智能涌现，解决了"智能的有无"；但基础大模型军备竞赛已达千亿乃至万亿元门槛，普通人无法参与，智能即将被少数巨头垄断。
-2. **单体 Scaling Law 逼近"结构相变拐点"。** 单纯"大力出奇迹"的边际收益正在递减，智能的下一次跃迁将来自**网络结构**——从 token 网络结构，向**智能体网络结构**演进（网络结构的 Scaling Law）。
-3. **急需第三条道路。** 在闭源阵营与开源阵营之间，探索一条普惠大众、全民参与的 AGI 甚至 ASI 之路——**群众路线**，如同 Linux 之于操作系统。
-4. **让每个人都能参与、贡献、分享。** 通过全民网络，任何有想法的人都能在这条路上闯出一番天地，让底层人民也共享这场智能科技革命。
+### 结构相变拐点
 
----
+大模型（参数、数据、算力）的 Scaling Law 已预见单个大模型撞到了 Scaling Law 规模墙。
 
-## 三、整体架构
+通过大力出奇迹的收益已经逼近"结构相变拐点"：**Scaling Law 即将失效**，需要从结构上突破。
 
-```
-                    ┌───────────────────────────────────────┐
-                    │      孪生地球 TwinsEarth（数字生命）     │
-                    └───────────────────────────────────────┘
-                                      上方
-        ┌─────────────────────────────┼─────────────────────────────┐
-        │                             │                             │
-┌───────┴────────┐          ┌──────────┴─────────┐        ┌──────────┴────────┐
-│ 🧠 UDOS 灵魂    │  认知注入 │ 🌍 从像素到文明 躯体 │ 运行管理│ 🕸️ 智能体宇宙 网络 │
-│                │ ───────▶ │                    │ ◀───────│                   │
-│ · CTM 时序推理  │          │ · 世界/物理生成      │        │ · P2P / DHT       │
-│ · GPM 场景内化  │          │ · 4X 文明模拟       │        │ · 智能体市场       │
-│ · 因果/世界模型 │          │ · 九 AI 神灵共治     │        │ · 信誉/链上结算     │
-│ · AGI/ASI 情报  │          │ · 存亡续绝底线       │        │ · 群体智能涌现      │
-└────────────────┘          └────────────────────┘        └───────────────────┘
-        │                             │                             │
-        └─────────────────────────────┼─────────────────────────────┘
-                                      ▼
-              PCE-Format 物理 Token · 内容寻址 · 可证伪 · 向后兼容
-```
-
-详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 与 [docs/INTEGRATION.md](docs/INTEGRATION.md)。
-
----
-
-## 四、目录结构
+## 系统架构
 
 ```
-TwinsEarth/
-├── README.md                     # 本文件（统一入口）
-├── LICENSES-README.md            # 许可证说明（多许可证）
-├── CONTRIBUTING.md               # 贡献指南
-├── SECURITY.md                   # 安全策略
-├── docs/
-│   ├── ARCHITECTURE.md           # 孪生地球整体系统架构
-│   ├── INTEGRATION.md            # 三项目协同与集成逻辑
-│   ├── VISION.md                 # 数字生命愿景与使命
-│   └── ROADMAP.md                # 路线图
-├── udos-reasoning-engine/        # 🧠 灵魂：认知架构内核（Python, Apache-2.0）
-├── PixelToCivilization/          # 🌍 躯体：数字空间生成引擎（C#, MIT）
-└── agent-universe/               # 🕸️ 网络：去中心化智能体网络（Rust, MIT）
-    ├── gsn-core/                 # Rust 核心库 + gsn-daemon
-    ├── js/                       # JS SDK（零依赖，GitHub Packages）
-    ├── aip-sdk-py/               # Python AIP SDK
-    ├── contracts/                # Solidity 合约
-    └── desktop/                  # Tauri 2 桌面客户端（v2.3.4）
+┌─────────────────────────────────────────────────────────────┐
+│                    Agent Universe 网络                       │
+│                                                               │
+│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
+│   │ Mac mini│  │ Windows │  │ Android │  │ 服务器   │       │
+│   │ 根种子   │  │ 全节点   │  │ 轻节点   │  │ 全节点   │       │
+│   └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘       │
+│        └────────────┴────────────┴────────────┘             │
+│                         │                                    │
+│              ┌──────────┴──────────┐                        │
+│              │  Kademlia DHT 路由表  │                        │
+│              │  （每个节点持有切片）  │                        │
+│              └──────────┬──────────┘                        │
+│                         │                                    │
+│         ┌───────────────┼───────────────┐                   │
+│         ▼               ▼               ▼                   │
+│   ┌──────────┐   ┌──────────┐   ┌──────────┐               │
+│   │ GossipSub │   │  CRDT    │   │ 纠删码    │               │
+│   │ 消息广播  │   │ 状态同步  │   │ 数据冗余  │               │
+│   └──────────┘   └──────────┘   └──────────┘               │
+│                                                               │
+│   链上信任锚（Base / Arbitrum）                                │
+│   · 身份  · 质押  · 结算  · 治理                              │
+└─────────────────────────────────────────────────────────────┘
 ```
 
----
+## 核心模块
 
-## 五、快速开始
+### Rust 核心库（gsn-core）
 
-### 🧠 UDOS 推演引擎（纯 CPU 可跑）
+| 模块 | 功能 |
+|------|------|
+| `identity/` | DID 身份、Ed25519 密钥对、签名、平台安全存储 |
+| `agent/` | AgentCard 身份卡、Skill 注册、任务生命周期 |
+| `net/` | Kademlia DHT、GossipSub、libp2p 节点、根种子 |
+| `chain/` | PoCV 可验证计算、EVM 轻客户端 |
+| `storage/` | SQLite 本地存储 |
+| `verifier/` | Verifier HTTP 客户端 |
+| `swarm/` | **群体智能层**：涌现检测、轻量共识 |
+| `economy/` | **信誉经济系统**：信誉分、贡献证明、动态定价 |
+| `scheduler/` | **任务调度器**：任务路由、负载均衡 |
+| `topology/` | **网络拓扑**：邻居管理、拓扑图 |
+| `proof/` | **贡献证明**（Proof of Contribution） |
+| `mode/` | 节点模式：Archive / Full / Light / Edge / Browser |
+| `crdt/` | CRDT 无冲突复制数据类型 |
+| `erasure/` | Reed-Solomon 纠删码 |
+| `mcp/` | **MCP 兼容层**（v2.3.2） |
+| `aca/` | **ACA 兼容 API**（v2.3.2） |
+| `marketplace/` | **智能体市场 Agent Market**（v2.3.4）：注册/发现/匹配/BFT验证/结算/信誉 |
+| `bin/` | **gsn-daemon** 守护进程 |
+
+### Python SDK（aip-sdk-py）
+
+- Agent Interop Protocol 客户端
+- 任务提交与查询
+- 本地开发与测试
+
+### 智能体市场（Agent Market · v2.3.4）
+
+智能体宇宙的第一版**经济层**，让智能体、技能、任务、算力可以完成完整交易闭环：
+
+```
+注册 → 发布 → 匹配 → 执行 → 验证 → 结算 → 信誉更新
+  ↑                                      ↓
+  └──────────── 争议/仲裁/罚没 ←─────────┘
+```
+
+| 机制 | 说明 |
+|------|------|
+| AgentCard 注册 | 质押准入（最低门槛），能力声明 + 签名 |
+| TaskSpec | 六字段校验：goal/context/done/todo/trace/owner |
+| 匹配引擎 | 技能/信誉/负载过滤，性价比排序 |
+| BFT-lite QA | n≥3f+1，equivocation 整轮作废，view change |
+| 结算守恒 | balance_sum = budget - slashed，防重复支付 |
+| 多维信誉 | quality/speed/honesty/availability，**不可转让** |
+| 质押罚没 | 作恶扣除质押，信誉同步下降 |
+| 证据分级 | verified / cpu-proto / unverified |
+
+### Smart Contracts
+
+| 合约 | 功能 |
+|------|------|
+| `GovernorToken.sol` | 治理代币 |
+| `AgentCardAnchor.sol` | AgentCard 链上锚定 |
+| `PoCVSettlement.sol` | PoCV 结算 |
+| `ReputationBridge.sol` | 跨链信誉桥接 |
+
+## 快速开始
+
+### 编译 Rust 核心库
 
 ```bash
-cd udos-reasoning-engine
-pip install -r requirements.txt
-python -m pytest -q -p no:warnings          # 1892+ 测试
-UDOS_AUTH=off python -m udos.server --port 8000 --preset small
+cd gsn-core
+cargo build --release
 ```
 
-### 🕸️ 智能体宇宙
+### 运行测试
 
 ```bash
-# Rust 核心 + gsn-daemon（真实 P2P 网络节点）
-cd agent-universe/gsn-core
-cargo build && cargo test                    # Rust 测试
-cargo run --bin gsn-daemon -- --p2p-port 4001 --api-port 4002
+# Rust 测试
+cd gsn-core && cargo test
 
-# JS SDK（零依赖，走 GitHub Packages）
-cd ../js && npm install && npm test          # 8 测试
-
-# Python AIP SDK
-cd ../aip-sdk-py && pip install pytest pytest-asyncio && pytest -q
+# Python SDK 测试
+cd aip-sdk-py && PYTHONPATH=. pytest tests/ -v
 ```
 
-### 🖥️ 桌面客户端（Tauri 2）
+### 启动 gsn-daemon
 
 ```bash
-cd agent-universe/desktop
-npm install
-npm run tauri dev                           # 开发模式
-npm run tauri build                         # 打包（需 macOS）
+cd gsn-core
+# 前台运行（默认 P2P 4001 / HTTP API 4002）
+cargo run --release --bin gsn-daemon
+# 自定义端口与数据目录
+cargo run --release --bin gsn-daemon -- \
+  --port 4001 --api-port 4002 --data-dir ~/.gsn/data
+# 连接已有引导节点（非根种子）
+cargo run --release --bin gsn-daemon -- \
+  --bootstrap /ip4/<bootstrap-ip>/tcp/4001
 ```
 
-### 🌍 从像素到文明
+启动后可访问 HTTP API：
 
-需 Tuanjie 2022.3 LTS（基于 Unity）打开本目录，构建 HTML5/WebGL；开源版本默认离线即可完整运行。详见子项目 README。
+| 方法 & 路径 | 功能 |
+|---|---|
+| `GET /health` | 节点健康、版本、模式、连接数、运行时长 |
+| `GET /version` | daemon 版本 |
+| `GET /peers` | 本地 Peer ID、连接数、DHT 路由表条目 |
+| `GET /agents` | 已注册智能体列表 |
+| `GET /tasks` | 任务列表 |
+| `POST /agents` | 注册 AgentCard（同时落 SQLite 与 DHT） |
 
----
+> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 144 个 Rust 测试 + 8 个 JS 测试守护。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
-## 六、工程原则
+### 三大连接层：CLI · API · MCP（v2.3.5）
 
-- **可证伪（Falsifiable）**：把愿景落在可验证的机制与指标上，不伪造效应量、不把预期写成实测。
-- **本地优先 / 纯 CPU 可跑**：降低参与门槛，普通人的设备即可运行节点。
-- **向后兼容**：增量能力以 opt-in 外挂方式叠加，旧路径逐位一致。
-- **多许可证共存**：尊重每个子项目的开源协议。
-- **可退出、可分叉**：目标不是"去中心化"，而是"可选择"。
+v2.3.5 重新梳理并补全了三种连接方式，分别服务于不同场景：
 
----
+- **CLI** 让用户通过命令行直接操控节点；
+- **REST API** 让不同软件按约定交换数据与能力；
+- **MCP** 为 AI 提供统一工具连接标准，让大模型安全、规范地调用市场能力。
 
-## 七、数字生命愿景
+**① CLI（子命令式，二进制 `gsn`）**
 
-我们相信，智能不属于任何巨头，而属于全人类。孪生地球从一台放在路由器旁的 Mac mini、从一个开源的认知内核、从一像素一像素生长的大陆开始——让每个人都能拥有一个智能体，贡献算力与想法，验证彼此，并共享智能的收益。
+```bash
+cargo run --bin gsn -- version          # 版本
+cargo run --bin gsn -- identity         # 生成 Ed25519 身份
+cargo run --bin gsn -- daemon           # 启动节点（等价 gsn-daemon）
+cargo run --bin gsn -- mcp              # 以 stdio 方式启动 MCP 服务
 
-**智能体的：人人为我，我为人人！**
+# market 子命令通过 HTTP API 连接运行中的节点
+export GSN_API=http://127.0.0.1:4002    # 或用 --api 指定
+gsn market deposit caller-1 1000        # 充值
+gsn market balance caller-1             # 查询余额
+gsn market register card.json           # 注册智能体（也支持内联 JSON）
+gsn market get <agent_id>               # 查询智能体
+gsn market discover translation         # 按技能发现
+gsn market search 关键词                # 搜索
+gsn market stats                        # 市场统计
+```
 
-更多见 [docs/VISION.md](docs/VISION.md)。
+**② REST API（`/api/v1/*`，同时兼容旧版 `/agents` `/tasks`）**
 
----
+| 方法 & 路径 | 功能 |
+|---|---|
+| `POST /api/v1/accounts/:account/deposit` | 充值 |
+| `GET /api/v1/accounts/:account/balance` | 余额 |
+| `POST /api/v1/agents` | 注册智能体（201，需质押） |
+| `GET /api/v1/agents?skill=` / `?q=` | 按技能发现 / 关键词搜索 |
+| `GET /api/v1/agents/:id` | 智能体详情 |
+| `POST /api/v1/tasks` | 发布任务（201） |
+| `GET /api/v1/tasks` / `/:id` | 任务列表 / 详情 |
+| `POST /api/v1/tasks/:id/bids` | 投标（201） |
+| `POST /api/v1/tasks/:id/match` | 匹配最优智能体 |
+| `POST /api/v1/tasks/:id/results` | 提交执行结果（201） |
+| `POST /api/v1/tasks/:id/verify` | BFT-lite QA 验证 |
+| `POST /api/v1/tasks/:id/settle` | 结算 |
+| `POST /api/v1/disputes` / `:id/arbitrate` | 争议 / 仲裁 |
+| `GET /api/v1/conservation` | 结算守恒检查 |
+| `GET /api/v1/leaderboard?limit=` / `/stats` | 排行榜 / 统计 |
+| `POST`·`GET /api/v1/mcp` | MCP（无状态 JSON-RPC / SSE） |
 
-## 八、许可证
+业务错误返回 `422`，资源不存在返回 `404`，注册类成功返回 `201`，`OPTIONS` 返回 `204`。
 
-孪生地球采用多许可证：UDOS 为 **Apache-2.0**，从像素到文明与智能体宇宙为 **MIT**。各子项目保留其原始许可证，详见 [LICENSES-README.md](LICENSES-README.md) 与各子目录 LICENSE。
+**③ MCP（18 个市场工具，支持 stdio 与 HTTP/SSE 两种传输）**
+
+- stdio：`gsn mcp`，逐行读写 JSON-RPC（日志走 stderr），可直接接入 Claude Desktop / Cursor 等；
+- HTTP：`POST /api/v1/mcp` 无状态 JSON-RPC，`GET /api/v1/mcp` 返回 `text/event-stream` 初始化帧。
+
+工具命名 `market_*`，覆盖：`market_register_agent`、`market_discover_agents`、`market_publish_task`、`market_submit_bid`、`market_match_task`、`market_submit_result`、`market_verify_result`、`market_settle_task`、`market_open_dispute`、`market_arbitrate`、`market_deposit`、`market_balance`、`market_conservation`、`market_leaderboard`、`market_stats` 等共 18 个。`tools/call` 全部路由到市场 actor **真实执行**（非占位）。
+
+> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（18 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 153 个 Rust 测试守护（含 v2.3.5 三层专项 9 个）。
+
+### Python SDK 使用
+
+```python
+from aip import AgentCard, Task, ShardedIndex
+
+card = AgentCard.new(did="did:aip:demo", name="my-agent")
+card.with_capability("text-generation")
+
+index = ShardedIndex(num_shards=16)
+index.put(card.did, card)
+```
+
+### JS SDK 安装
+
+**方式一：jsDelivr 公开 CDN（无需登录 / 无需 token，推荐）**
+
+任何人无需认证即可获取完整包，浏览器或 Node 直接下载：
+
+```bash
+# 一键下载主入口与全部模块（零认证）
+BASE="https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js"
+curl -O "$BASE/index.js" --create-dirs
+for f in keychain models dht market; do
+  curl -o "lib/$f.js" --create-dirs "$BASE/lib/$f.js"
+done
+```
+
+也可在 HTML 中直接引用单文件：`https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js/index.js`
+
+**方式二：GitHub Packages（需 GitHub token）**
+
+```bash
+# 包发布在 GitHub Packages registry，需先配置凭证
+npm config set @twinsearth:registry https://npm.pkg.github.com
+npm install @twinsearth/agent-universe
+```
+
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4，详见 [Packages](https://github.com/TwinsEarth/agent-universe/packages)。
+
+> 公共 npmjs（`npm install @twinsearth/agent-universe` 零认证）正在筹备中。
+
+## 版本谱系
+
+| 版本 | 代号 | 核心特性 |
+|------|------|----------|
+| v1.0.0 | Genesis | 项目初始化 |
+| v2.0.0 | Shard | 分片存储与 DHT |
+| v2.1.0 | Bridge | 跨链桥接与经济层 |
+| v2.2.0 | Mesh | 全对等网络 |
+| v2.3.0 | P2P | P2P 分布式网络基础 |
+| v2.3.1 | Swarm | 群体智能：网络结构的 Scaling Law |
+| v2.3.2 | MCP+ACA | MCP 和 ACA 兼容 API |
+| v2.3.3 | P2P Net | P2P 分布式网络应用 |
+| v2.3.4 | **Market** | **智能体市场 Agent Market** |
+
+详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
+
+## 技术栈
+
+- **语言**: Rust 2021 Edition + Python 3.10+
+- **P2P**: libp2p（Kademlia DHT + GossipSub + QUIC）
+- **加密**: Ed25519 + SHA256 + X25519
+- **存储**: SQLite + DHT + IPFS Bitswap
+- **合约**: Solidity（Base / Arbitrum 主网）
+- **部署**: Mac mini M4 + launchd / Docker / systemd
+- **CI/CD**: GitHub Actions（矩阵构建 + 自动测试）
 
 ## 贡献
 
-欢迎每一位建设者。请先阅读各子项目的 CONTRIBUTING 与 [docs/ROADMAP.md](docs/ROADMAP.md)，从一个 Issue、一个节点、一个智能体开始。
+欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发流程。
+
+## 安全
+
+报告安全漏洞请参考 [SECURITY.md](SECURITY.md)。
+
+## 开源协议
+
+[MIT License](LICENSE)
 
 ---
 
-**让科技造福全人类！** 🌱
+**Agent Universe · 智能体宇宙**
+
+*让科技造福全人类！*
+
+## v2.3.5 跨平台客户端
+
+v2.3.5 新增五平台客户端，源码与安装包在 `client/` 目录：
+
+| 平台 | 安装包 | 说明 |
+|------|--------|------|
+| macOS | `client/macos/Agent Universe_2.3.5_aarch64.dmg` | Apple Silicon |
+| Windows | `client/windows/Agent Universe_2.3.5_x64_en-US.msi` | x64 |
+| Android | `client/android/app-universal-release-unsigned.apk` | Universal APK |
+| Linux | `client/linux/gsn-daemon-linux-x64-v2.3.5.tar.gz` | x64 |
+| iOS | `client/ios/README.md` | 需 Apple Developer 证书 |
+
+源码：
+- 前端：`client/src/`（Vite + HTML/JS）
+- Rust 壳：`client/src-tauri/`（Tauri 2）
+
+Release: https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.5

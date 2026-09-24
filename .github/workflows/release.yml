@@ -1,143 +1,90 @@
-name: Release - 五平台安装包
+name: Release
 
 on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 env:
-  NODE_VERSION: "20"
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build-linux:
-    name: 🐧 Linux
-    runs-on: ubuntu-22.04
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: agent-universe/client/src-tauri
-      - name: 系统依赖
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-      - name: 前端
-        working-directory: agent-universe/client
-        run: |
-          npm install
-          npm run build
-      - name: Tauri 构建
-        working-directory: agent-universe/client
-        run: npx tauri build
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-packages
-          path: agent-universe/client/src-tauri/target/release/bundle/
 
-  build-macos:
-    name: 🍎 macOS
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
         with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: agent-universe/client/src-tauri
-      - name: 前端
-        working-directory: agent-universe/client
-        run: |
-          npm install
-          npm run build
-      - name: Tauri 构建
-        working-directory: agent-universe/client
-        run: npx tauri build
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-packages
-          path: agent-universe/client/src-tauri/target/release/bundle/
+          targets: ${{ matrix.target }}
 
-  build-windows:
-    name: 🪟 Windows
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Cache cargo
+        uses: actions/cache@v4
         with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: agent-universe/client/src-tauri
-      - name: 前端
-        working-directory: agent-universe/client
-        run: |
-          npm install
-          npm run build
-      - name: Tauri 构建
-        working-directory: agent-universe/client
-        run: npx tauri build
-      - name: 上传产物
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-packages
-          path: agent-universe/client/src-tauri/target/release/bundle/
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            gsn-core/target
+          key: ${{ runner.os }}-release-cargo-${{ matrix.target }}-${{ hashFiles('gsn-core/Cargo.toml') }}
 
-  build-android:
-    name: 🤖 Android (配置验证)
+      - name: Build
+        run: cd gsn-core && cargo build --release --target ${{ matrix.target }} --bin gsn-daemon
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          cd gsn-core/target/${{ matrix.target }}/release
+          tar czf ../../../gsn-daemon-${{ matrix.target }}.tar.gz gsn-daemon
+          ls -lh ../../../gsn-daemon-${{ matrix.target }}.tar.gz
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          cd gsn-core/target/${{ matrix.target }}/release
+          Compress-Archive -Path gsn-daemon.exe -DestinationPath ../../../gsn-daemon-${{ matrix.target }}.zip
+          ls -lh ../../../gsn-daemon-${{ matrix.target }}.zip
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} gsn-core/gsn-daemon-*.tar.gz gsn-core/gsn-daemon-*.zip --clobber
+
+  python-sdk:
+    name: Python SDK Package
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
-      - name: 前端
-        working-directory: agent-universe/client
-        run: |
-          npm install
-          npm run build
-      - name: Tauri Android init（验证配置）
-        working-directory: agent-universe/client
-        run: npx tauri android init
-      - name: 说明
-        run: |
-          echo "Android APK 构建需要完整 Gradle + JDK 环境。"
-          echo "请在本地安装 Android Studio 后执行: npx tauri android build"
-          echo "配置已通过 tauri android init 验证。"
 
-  build-ios:
-    name: 🍏 iOS (配置验证)
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          node-version: ${{ env.NODE_VERSION }}
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-ios
-      - name: 前端
-        working-directory: agent-universe/client
+          python-version: "3.12"
+
+      - name: Build package
         run: |
-          npm install
-          npm run build
-      - name: Tauri iOS init（验证配置）
-        working-directory: agent-universe/client
-        run: npx tauri ios init
-      - name: 说明
+          python -m pip install --upgrade pip build
+          cd aip-sdk-py && python -m build
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "iOS .ipa 需要 Apple Developer 证书签名。"
-          echo "请在本地 macOS + Xcode 环境执行: npx tauri ios build"
-          echo "配置已通过 tauri ios init 验证。"
+          gh release upload ${{ github.ref_name }} aip-sdk-py/dist/* --clobber

@@ -1,53 +1,57 @@
-# 贡献指南
+# Contributing to Agent Universe
 
-感谢你对孪生地球（TwinsEarth）的兴趣！我们欢迎任何形式的贡献——代码、文档、测试、设计、想法，或只是一个 Issue。
+感谢你对 Agent Universe 的兴趣！我们欢迎任何形式的贡献。
 
-## 我们欢迎什么
-
-- 🐛 报告 Bug
-- ✨ 新功能提案
-- 📝 文档改进
-- 🧪 测试补充
-- 🐳 翻译
-- 🎨 UI/UX 改进
-
-## 开始之前
-
-1. 浏览 [Issues](https://github.com/TwinsEarth/TwinsEarth/issues)，看看是否有人已经提出。
-2. 对于新功能，先开一个 Issue 讨论，避免做了大量工作后被拒绝。
-3. 阅读 [docs/VISION.md](docs/VISION.md) 与 [docs/ROADMAP.md](docs/ROADMAP.md)，了解项目方向。
-
-## 开发环境
+## 快速开始
 
 ```bash
-# 克隆
-git clone https://github.com/TwinsEarth/TwinsEarth.git
-cd TwinsEarth
+# 克隆仓库
+git clone https://github.com/TwinsEarth/agent-universe.git
+cd agent-universe
 
-# 按子项目分别设置开发环境（见各子目录 README）
-# - udos-reasoning-engine/   Python, 纯 CPU
-# - agent-universe/gsn-core/  Rust
-# - agent-universe/js/        Node.js
-# - PixelToCivilization/      Tuanjie/Unity
+# Rust 核心库
+cd gsn-core
+cargo build
+cargo test
+
+# Python SDK
+cd ../aip-sdk-py
+pip install -e .
+pytest
 ```
+
+## 开发流程
+
+1. Fork 本仓库
+2. 创建特性分支：`git checkout -b feature/your-feature`
+3. 确保所有测试通过：`cargo test && pytest`
+4. 提交代码：`git commit -m "feat: 描述你的改动"`
+5. 推送到分支：`git push origin feature/your-feature`
+6. 创建 Pull Request
 
 ## 提交规范
 
-- Commit message 使用祈使句（如 `fix: 修复结算重复支付`）
-- 一个 commit 做一件事
-- 保持 CI 绿色：提交前本地跑过相关测试
+我们使用 [Conventional Commits](https://www.conventionalcommits.org/)：
 
-## 代码风格
+- `feat:` 新功能
+- `fix:` 修复 bug
+- `docs:` 文档更新
+- `refactor:` 代码重构
+- `test:` 测试相关
+- `ci:` CI/CD 相关
+- `chore:` 杂项
 
-- **Rust**：`cargo fmt` + `cargo clippy`
-- **Python**：遵循 PEP 8，优先类型标注
-- **JS/TS**：无分号，2 空格缩进
-- **C#**：遵循 Unity 官方风格
+## 版本号
 
-## 许可证
+- 大版本：不兼容的 API 变更
+- 小版本：向下兼容的功能新增
+- 修订号：向下兼容的问题修复
 
-提交代码即表示你同意你的贡献按各子项目对应许可证发布（见 [LICENSES-README.md](LICENSES-README.md)）。
+## 报告问题
 
----
+- Bug 报告：[Issues](https://github.com/TwinsEarth/agent-universe/issues)
+- 安全问题：请先参考 [SECURITY.md](SECURITY.md)
 
-**让科技造福全人类！** 🌱
+## 行为准则
+
+参与本项目即表示同意遵守 [Code of Conduct](CODE_OF_CONDUCT.md)。

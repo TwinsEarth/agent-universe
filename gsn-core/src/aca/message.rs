@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use crate::identity::Ed25519Signer;
+use super::crypto::{canonical_payload, sign_hex, verify_hex};
 use super::manifest::AgentManifest;
 use super::envelope::TaskEnvelope;
 use super::receipt::Receipt;
@@ -104,5 +106,20 @@ impl AcaMessage {
     /// 检查是否是广播消息
     pub fn is_broadcast(&self) -> bool {
         self.to_did == "*"
+    }
+
+    /// 规范待签名载荷
+    pub fn signing_payload(&self) -> Vec<u8> {
+        canonical_payload(self)
+    }
+
+    /// 用发送者密钥对消息签名
+    pub fn sign(&mut self, signer: &Ed25519Signer) {
+        self.signature = sign_hex(self, signer);
+    }
+
+    /// 用发送者公钥验证消息签名
+    pub fn verify(&self, pubkey: &[u8]) -> bool {
+        verify_hex(self, &self.signature, pubkey)
     }
 }

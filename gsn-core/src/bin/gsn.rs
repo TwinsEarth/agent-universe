@@ -26,7 +26,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v2.3.5");
+            println!("agent-universe v2.3.6");
             0
         }
         "help" | "--help" | "-h" => {

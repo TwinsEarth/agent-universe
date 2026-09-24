@@ -62,16 +62,11 @@ pub async fn handle_post(body: &str, market: &MarketActorHandle) -> McpHttp {
     let id = req.id.clone();
     let response = match req.method_enum() {
         McpMethod::Initialize => {
-            let result = json!({
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {
-                    "name": "gsn-agent-market-http",
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": { "tools": { "listChanged": false } },
-            });
+            let caps = json!({ "tools": { "listChanged": false } });
+            let result = initialize_result_value("gsn-agent-market-http", caps, None);
             McpResponse::success(id, result)
         }
+        McpMethod::Ping => McpResponse::success(id, json!({})),
         McpMethod::ToolsList => McpResponse::success(id, json!({"tools": tools})),
         McpMethod::ToolsCall => {
             let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");

@@ -4,6 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
+use crate::identity::Ed25519Signer;
+use super::crypto::{canonical_payload, sign_hex, verify_hex};
 
 /// 收据状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,5 +106,20 @@ impl Receipt {
     /// 是否需要仲裁
     pub fn needs_arbitration(&self) -> bool {
         self.status == ReceiptStatus::Disputed
+    }
+
+    /// 规范待签名载荷
+    pub fn signing_payload(&self) -> Vec<u8> {
+        canonical_payload(self)
+    }
+
+    /// 用执行方密钥对收据签名
+    pub fn sign(&mut self, signer: &Ed25519Signer) {
+        self.signature = sign_hex(self, signer);
+    }
+
+    /// 用执行方公钥验证收据签名
+    pub fn verify(&self, pubkey: &[u8]) -> bool {
+        verify_hex(self, &self.signature, pubkey)
     }
 }

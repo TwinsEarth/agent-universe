@@ -1,6 +1,6 @@
 name: Client Build
 
-# 打版本 tag（如 v2.3.5）时自动构建各平台 Tauri 客户端与 Android APK，
+# 打版本 tag（如 v2.3.6）时自动构建各平台 Tauri 客户端与 Android APK，
 # 并发布到对应 GitHub Release。iOS 需 Apple 开发者证书，不在此产出（见 client/ios）。
 on:
   push:

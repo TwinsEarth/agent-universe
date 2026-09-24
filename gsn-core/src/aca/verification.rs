@@ -62,6 +62,68 @@ impl VerificationLevel {
             VerificationLevel::L4Committee => "争议任务、协议升级",
         }
     }
+
+    /// 映射到市场 BFT-lite QA 委员会配置
+    ///
+    /// 打通 ACA 验证分层与市场验收：
+    /// - L0/L2/L3：单证明即可（自报 / TEE / zk，单验证者）。
+    /// - L1：ACA 语义为 2-of-3 执行冗余；落到市场 BFT-lite 验收采用
+    ///   n=3f+1=4、需 2f+1=3 票通过（f=1）。
+    /// - L4：n=3f+1=7、需 2f+1=5 票通过（f=2）。
+    pub fn market_qa(&self) -> QaCommitteeSpec {
+        match self {
+            VerificationLevel::L0Sample => QaCommitteeSpec {
+                committee_size: 1,
+                approvals_needed: 1,
+                max_faulty: 0,
+            },
+            VerificationLevel::L1Redundant => QaCommitteeSpec {
+                committee_size: 4,
+                approvals_needed: 3,
+                max_faulty: 1,
+            },
+            VerificationLevel::L2TEE => QaCommitteeSpec {
+                committee_size: 1,
+                approvals_needed: 1,
+                max_faulty: 0,
+            },
+            VerificationLevel::L3ZkML => QaCommitteeSpec {
+                committee_size: 1,
+                approvals_needed: 1,
+                max_faulty: 0,
+            },
+            VerificationLevel::L4Committee => QaCommitteeSpec {
+                committee_size: 7,
+                approvals_needed: 5,
+                max_faulty: 2,
+            },
+        }
+    }
+}
+
+/// 市场 BFT-lite QA 委员会配置（ACA → 市场验收口径）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QaCommitteeSpec {
+    /// 委员会总人数 n
+    pub committee_size: u32,
+    /// 通过所需最少票数
+    pub approvals_needed: u32,
+    /// 可容忍的最大作恶节点数 f
+    pub max_faulty: u32,
+}
+
+impl QaCommitteeSpec {
+    /// 校验 BFT-lite 不变量
+    ///
+    /// - 单证明级别（TEE/zk/自报）：n=1、需 1 票、f=0。
+    /// - 委员会级别：n=3f+1 且通过阈值=2f+1。
+    pub fn is_valid(&self) -> bool {
+        if self.committee_size == 1 {
+            return self.approvals_needed == 1 && self.max_faulty == 0;
+        }
+        self.committee_size == 3 * self.max_faulty + 1
+            && self.approvals_needed == 2 * self.max_faulty + 1
+    }
 }
 
 /// 验证策略

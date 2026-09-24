@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Agent Universe Client",
-  "version": "2.3.5",
+  "version": "2.3.6",
   "identifier": "com.twinsearth.auclient",
   "build": {
     "frontendDist": "../dist",
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Universe v2.3.5",
+        "title": "Agent Universe v2.3.6",
         "width": 920,
         "height": 720,
         "minWidth": 720,

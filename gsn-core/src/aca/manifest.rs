@@ -2,6 +2,8 @@
 //!
 //! 增强版 AgentCard：能力声明、硬件画像、验证模式、质押、信誉引用
 
+use crate::identity::Ed25519Signer;
+use super::crypto::{canonical_payload, sign_hex, verify_hex};
 use serde::{Deserialize, Serialize};
 
 /// 硬件画像
@@ -127,5 +129,20 @@ impl AgentManifest {
         let stake_score = (self.stake as f64 / 10000.0).min(50.0);
         let verify_score = self.verification_modes.len() as f64 * 10.0;
         hw_score + stake_score + verify_score
+    }
+
+    /// 规范待签名载荷
+    pub fn signing_payload(&self) -> Vec<u8> {
+        canonical_payload(self)
+    }
+
+    /// 用发布者密钥对 manifest 签名（写入 signature 字段）
+    pub fn sign(&mut self, signer: &Ed25519Signer) {
+        self.signature = sign_hex(self, signer);
+    }
+
+    /// 用发布者公钥验证 manifest 签名
+    pub fn verify(&self, pubkey: &[u8]) -> bool {
+        verify_hex(self, &self.signature, pubkey)
     }
 }

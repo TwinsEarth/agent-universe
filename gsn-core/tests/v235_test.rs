@@ -1,4 +1,4 @@
-//! v2.3.5 MCP / CLI / API 三层集成测试
+//! v2.3.6 MCP / CLI / API 三层集成测试
 //!
 //! 不依赖真实网络端口：直接调用与传输解耦的
 //! - REST: `api::rest::route`
@@ -21,7 +21,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn info() -> NodeInfo {
     NodeInfo {
-        version: "0.2.35".to_string(),
+        version: "0.2.36".to_string(),
         mode: "full".to_string(),
         p2p_port: 4001,
         connected_peers: 0,

@@ -6,8 +6,10 @@ const { Keypair } = require('./lib/keychain');
 const { AgentCard, Task, TaskStatus } = require('./lib/models');
 const { MemoryDHT, ShardedIndex, shardOf } = require('./lib/dht');
 const { AgentMarket, Bid, Reputation, MIN_STAKE } = require('./lib/market');
+const { McpHttpClient, McpError, MCP_PROTOCOL_VERSION } = require('./lib/mcp');
+const aca = require('./lib/aca');
 
-const version = '2.3.5';
+const version = '2.3.6';
 
 /**
  * AgentUniverse 门面：聚合身份、网络、市场能力
@@ -49,4 +51,21 @@ module.exports = {
   Bid,
   Reputation,
   MIN_STAKE,
+  // MCP
+  McpHttpClient,
+  McpError,
+  MCP_PROTOCOL_VERSION,
+  // ACA（跨语言对齐身份与协议对象）
+  AipIdentity: aca.AipIdentity,
+  buildManifest: aca.buildManifest,
+  buildEnvelope: aca.buildEnvelope,
+  buildMessage: aca.buildMessage,
+  buildReceipt: aca.buildReceipt,
+  handshakeMessage: aca.handshakeMessage,
+  proposalMessage: aca.proposalMessage,
+  receiptMessage: aca.receiptMessage,
+  verifyManifest: aca.verifyManifest,
+  verifyMessage: aca.verifyMessage,
+  verifyReceipt: aca.verifyReceipt,
+  verifyReceiptResult: aca.verifyReceiptResult,
 };

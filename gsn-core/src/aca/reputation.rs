@@ -87,26 +87,39 @@ impl MultiReputation {
         raw * decay_factor
     }
 
-    /// 记录一次成功交互
-    pub fn record_success(&mut self, dim: ReputationDimension, amount: f64) {
-        let entry = self.scores.entry(dim).or_insert(5000.0);
-        *entry = (*entry + amount).min(10000.0);
-        self.interactions += 1;
-        self.last_updated = std::time::SystemTime::now()
+    /// 固化时间衰减：把衰减应用到全部维度分数并更新 last_updated
+    ///
+    /// 在 record_success / record_failure 之前调用，保证加减分基于
+    /// "已衰减到当前时刻" 的分数，而不是未衰减的历史 raw 值。
+    fn apply_decay(&mut self) {
+        let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        let elapsed = now.saturating_sub(self.last_updated);
+        if elapsed > 0 {
+            let factor = 0.5f64.powf(elapsed as f64 / self.half_life_secs as f64);
+            for value in self.scores.values_mut() {
+                *value *= factor;
+            }
+            self.last_updated = now;
+        }
+    }
+
+    /// 记录一次成功交互
+    pub fn record_success(&mut self, dim: ReputationDimension, amount: f64) {
+        self.apply_decay();
+        let entry = self.scores.entry(dim).or_insert(5000.0);
+        *entry = (*entry + amount).min(10000.0);
+        self.interactions += 1;
     }
 
     /// 记录一次失败交互
     pub fn record_failure(&mut self, dim: ReputationDimension, amount: f64) {
+        self.apply_decay();
         let entry = self.scores.entry(dim).or_insert(5000.0);
         *entry = (*entry - amount).max(0.0);
         self.interactions += 1;
-        self.last_updated = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
     }
 
     /// 综合声誉分（加权平均）

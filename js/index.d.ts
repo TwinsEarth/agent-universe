@@ -106,3 +106,104 @@ export class AgentUniverse {
   register(card: AgentCard): AgentCard;
   discover(capability: string): AgentCard[];
 }
+
+// ── MCP ──
+export const MCP_PROTOCOL_VERSION: string;
+
+export class McpError extends Error {
+  code: number;
+}
+
+export class McpHttpClient {
+  initialized: boolean;
+  constructor(baseUrl?: string, path?: string, timeout?: number);
+  initialize(): Promise<{
+    protocolVersion: string;
+    serverInfo: { name: string; version: string };
+  }>;
+  ping(): Promise<boolean>;
+  listTools(): Promise<
+    Array<{
+      name: string;
+      description?: string;
+      inputSchema: Record<string, unknown>;
+    }>
+  >;
+  callTool(
+    name: string,
+    args?: Record<string, unknown>
+  ): Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+}
+
+// ── ACA ──
+export class AipIdentity {
+  did: string;
+  readonly publicKey: Buffer;
+  static generate(): AipIdentity;
+  static fromSeed(seed: Buffer | Uint8Array): AipIdentity;
+  signObject(obj: Record<string, unknown>): string;
+  signInto(obj: Record<string, unknown>): Record<string, unknown>;
+  static verifyObject(obj: Record<string, unknown>, rawPub: Buffer): boolean;
+}
+
+export function buildManifest(
+  identity: AipIdentity,
+  name: string,
+  capabilities: string[],
+  opts?: Record<string, unknown>
+): Record<string, unknown>;
+
+export function buildEnvelope(
+  requesterDid: string,
+  capability: string,
+  outputSpec: string,
+  opts?: Record<string, unknown>
+): Record<string, unknown>;
+
+export function buildMessage(
+  identity: AipIdentity,
+  msgType: string,
+  toDid: string,
+  payload: unknown
+): Record<string, unknown>;
+
+export function buildReceipt(
+  identity: AipIdentity,
+  taskId: string,
+  result: Buffer,
+  opts?: Record<string, unknown>
+): Record<string, unknown>;
+
+export function handshakeMessage(
+  identity: AipIdentity,
+  manifest: Record<string, unknown>
+): Record<string, unknown>;
+
+export function proposalMessage(
+  identity: AipIdentity,
+  toDid: string,
+  envelope: Record<string, unknown>
+): Record<string, unknown>;
+
+export function receiptMessage(
+  identity: AipIdentity,
+  toDid: string,
+  receipt: Record<string, unknown>
+): Record<string, unknown>;
+
+export function verifyManifest(
+  manifest: Record<string, unknown>,
+  rawPub: Buffer
+): boolean;
+export function verifyMessage(
+  message: Record<string, unknown>,
+  rawPub: Buffer
+): boolean;
+export function verifyReceipt(
+  receipt: Record<string, unknown>,
+  rawPub: Buffer
+): boolean;
+export function verifyReceiptResult(
+  receipt: Record<string, unknown>,
+  result: Buffer
+): boolean;

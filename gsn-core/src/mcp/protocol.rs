@@ -13,11 +13,16 @@ pub enum RequestId {
     String(String),
 }
 
+/// MCP 协议版本（MCP 2024-11-05）
+pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
+
 /// MCP 标准方法
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum McpMethod {
     /// 初始化握手
     Initialize,
+    /// 心跳（MCP 规范，初始化后客户端周期性发送）
+    Ping,
     /// 列出工具
     ToolsList,
     /// 调用工具
@@ -38,6 +43,7 @@ impl McpMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
             McpMethod::Initialize => "initialize",
+            McpMethod::Ping => "ping",
             McpMethod::ToolsList => "tools/list",
             McpMethod::ToolsCall => "tools/call",
             McpMethod::ResourcesList => "resources/list",
@@ -51,6 +57,7 @@ impl McpMethod {
     pub fn from_str(s: &str) -> Self {
         match s {
             "initialize" => McpMethod::Initialize,
+            "ping" => McpMethod::Ping,
             "tools/list" => McpMethod::ToolsList,
             "tools/call" => McpMethod::ToolsCall,
             "resources/list" => McpMethod::ResourcesList,
@@ -169,31 +176,80 @@ impl McpResponse {
     }
 }
 
-/// MCP 初始化参数
+/// MCP 客户端/服务器实体信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EntityInfo {
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+}
+
+/// MCP 初始化参数（MCP 2024-11-05）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeParams {
     pub protocol_version: String,
-    pub client_name: String,
-    pub client_version: String,
+    pub client_info: EntityInfo,
+    #[serde(default)]
+    pub capabilities: Value,
 }
 
 impl Default for InitializeParams {
     fn default() -> Self {
         Self {
-            protocol_version: "2024-11-05".to_string(),
-            client_name: "gsn-client".to_string(),
-            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            protocol_version: MCP_PROTOCOL_VERSION.to_string(),
+            client_info: EntityInfo {
+                name: "gsn-client".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            capabilities: Value::Object(serde_json::Map::new()),
         }
     }
 }
 
-/// MCP 初始化结果
+/// MCP 服务器信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerInfo {
+    pub name: String,
+    pub version: String,
+}
+
+/// MCP 初始化结果（MCP 2024-11-05）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InitializeResult {
     pub protocol_version: String,
-    pub server_name: String,
-    pub server_version: String,
+    pub server_info: ServerInfo,
     pub capabilities: ServerCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+}
+
+/// 构造标准 initialize 结果 JSON
+///
+/// server / stdio / sse 三处统一复用，避免手写不一致：
+/// - `server_name`：服务器名
+/// - `capabilities`：能力声明 JSON
+/// - `instructions`：可选的使用说明
+pub fn initialize_result_value(
+    server_name: &str,
+    capabilities: Value,
+    instructions: Option<&str>,
+) -> Value {
+    let mut v = serde_json::json!({
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "serverInfo": {
+            "name": server_name,
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "capabilities": capabilities,
+    });
+    if let Some(text) = instructions {
+        v.as_object_mut()
+            .unwrap()
+            .insert("instructions".to_string(), serde_json::json!(text));
+    }
+    v
 }
 
 /// 服务器能力声明
@@ -205,6 +261,17 @@ pub struct ServerCapabilities {
     pub resources: Option<ResourcesCapability>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prompts: Option<PromptsCapability>,
+}
+
+impl ServerCapabilities {
+    /// 仅声明 tools 能力（市场 MCP 服务使用）
+    pub fn tools_only() -> Self {
+        Self {
+            tools: Some(ToolsCapability { list_changed: false }),
+            resources: None,
+            prompts: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

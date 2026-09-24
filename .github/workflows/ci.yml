@@ -82,7 +82,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='2.3.5') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='2.3.6') process.exit(1); console.log('root package OK, version', au.version)"
 
   contracts-check:
     name: Solidity Contracts

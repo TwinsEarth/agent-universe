@@ -66,6 +66,7 @@ pub async fn run_stdio() -> anyhow::Result<()> {
         let method = req.method_enum();
         let response = match method {
             McpMethod::Initialize => initialize_response(id, &tools),
+            McpMethod::Ping => McpResponse::success(id, json!({})),
             McpMethod::ToolsList => {
                 let result = json!({ "tools": tools });
                 McpResponse::success(id, result)
@@ -99,22 +100,17 @@ pub async fn run_stdio() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 构造 initialize 响应
+/// 构造 initialize 响应（标准部分复用统一构造，追加 gsn 扩展）
 fn initialize_response(id: RequestId, tools: &[ToolDefinition]) -> McpResponse {
-    let result = serde_json::json!({
-        "protocolVersion": "2024-11-05",
-        "serverInfo": {
-            "name": "gsn-agent-market",
-            "version": env!("CARGO_PKG_VERSION"),
-        },
-        "capabilities": {
-            "tools": { "listChanged": false },
-        },
-        "gsn": {
+    let caps = json!({ "tools": { "listChanged": false } });
+    let mut result = initialize_result_value("gsn-agent-market", caps, None);
+    result.as_object_mut().unwrap().insert(
+        "gsn".to_string(),
+        json!({
             "tool_count": tools.len(),
             "description": "Agent Universe 智能体市场 MCP 服务",
-        }
-    });
+        }),
+    );
     McpResponse::success(id, result)
 }
 

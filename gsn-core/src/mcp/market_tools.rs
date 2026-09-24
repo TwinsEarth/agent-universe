@@ -135,29 +135,18 @@ trait ParamBuilder {
 
 impl ParamBuilder for ToolDefinition {
     fn param(mut self, name: &str, ty: &str, desc: &str, required: bool) -> Self {
-        let mut p = ToolParameter {
-            name: name.to_string(),
-            param_type: ty.to_string(),
-            description: desc.to_string(),
-            required,
-            enum_values: None,
+        // object/array 类型在 schema 里补充对应结构
+        let schema = if ty == "object" {
+            json!({"type": "object", "description": desc})
+        } else if ty == "array" {
+            json!({"type": "array", "description": desc})
+        } else {
+            json!({"type": ty, "description": desc})
         };
-        // object/array 类型在 schema 里补充
-        self.input_schema.properties.insert(
-            name.to_string(),
-            if ty == "object" {
-                json!({"type": "object", "description": desc})
-            } else if ty == "array" {
-                json!({"type": "array", "description": desc})
-            } else {
-                json!({"type": ty, "description": desc})
-            },
-        );
+        self.input_schema.properties.insert(name.to_string(), schema);
         if required {
             self.input_schema.required.push(name.to_string());
         }
-        // 避免 unused 警告
-        let _ = &mut p.enum_values;
         self
     }
 }

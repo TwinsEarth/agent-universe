@@ -39,6 +39,8 @@ impl Default for ToolSchema {
 pub struct ToolDefinition {
     pub name: String,
     pub description: String,
+    /// MCP 规范字段为 inputSchema（camelCase）
+    #[serde(rename = "inputSchema")]
     pub input_schema: ToolSchema,
     /// GSN 扩展：能力标签
     #[serde(default)]
@@ -103,7 +105,11 @@ pub enum ToolContent {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image")]
-    Image { data: String, mime_type: String },
+    Image {
+        data: String,
+        #[serde(rename = "mimeType")]
+        mime_type: String,
+    },
     #[serde(rename = "resource")]
     Resource { resource: serde_json::Value },
 }

@@ -167,11 +167,11 @@ cargo run --release --bin gsn-daemon -- \
 | `GET /tasks` | 任务列表 |
 | `POST /agents` | 注册 AgentCard（同时落 SQLite 与 DHT） |
 
-> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 144 个 Rust 测试 + 8 个 JS 测试守护。链上结算与跨主机多节点 DHT 联调为下一步目标。
+> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 155 个 Rust 测试 + 17 个 Python 测试 + 12 个 JS 测试守护，跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
-### 三大连接层：CLI · API · MCP（v2.3.5）
+### 三大连接层：CLI · API · MCP（v2.3.5 引入，v2.3.6 深化）
 
-v2.3.5 重新梳理并补全了三种连接方式，分别服务于不同场景：
+v2.3.5 重新梳理并补全三种连接方式，v2.3.6 进一步把 MCP 真实化、把 ACA 身份与签名补全，并让 Rust/Python/JS 三端在身份与协议层跨语言对齐。三者分别服务于不同场景：
 
 - **CLI** 让用户通过命令行直接操控节点；
 - **REST API** 让不同软件按约定交换数据与能力；
@@ -226,7 +226,7 @@ gsn market stats                        # 市场统计
 
 工具命名 `market_*`，覆盖：`market_register_agent`、`market_discover_agents`、`market_publish_task`、`market_submit_bid`、`market_match_task`、`market_submit_result`、`market_verify_result`、`market_settle_task`、`market_open_dispute`、`market_arbitrate`、`market_deposit`、`market_balance`、`market_conservation`、`market_leaderboard`、`market_stats` 等共 18 个。`tools/call` 全部路由到市场 actor **真实执行**（非占位）。
 
-> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（18 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 153 个 Rust 测试守护（含 v2.3.5 三层专项 9 个）。
+> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（18 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 155 个 Rust 测试守护，跨语言签名测试保证 Rust/Python/JS 三端身份、规范载荷与签名逐字节一致、可互验。
 
 ### Python SDK 使用
 
@@ -258,7 +258,7 @@ npm install @twinsearth/agent-universe
 # 一键下载主入口与全部模块（零认证）
 BASE="https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js"
 curl -O "$BASE/index.js" --create-dirs
-for f in keychain models dht market; do
+for f in keychain models dht market aca mcp; do
   curl -o "lib/$f.js" --create-dirs "$BASE/lib/$f.js"
 done
 ```
@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -289,6 +289,7 @@ npm install @twinsearth/agent-universe
 | v2.3.3 | P2P Net | P2P 分布式网络应用 |
 | v2.3.4 | Market | 智能体市场 Agent Market |
 | v2.3.5 | **Client** | **跨平台客户端 + CLI/REST/MCP 重构** |
+| v2.3.6 | **MCP/ACA** | **MCP/ACA 深化重构 + 三端跨语言可信对齐** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
@@ -351,3 +352,32 @@ npm run build        # 前端
 npx tauri build      # 桌面安装包（需在对应系统上，并装好平台依赖）
 npx tauri android build --apk   # Android（需 JDK + Android SDK/NDK）
 ```
+
+## v2.3.6 MCP/ACA 深化与跨语言可信对齐
+
+v2.3.6 把 MCP 从占位门面重写为真实工具协议，把 ACA 的身份与规范签名补全，并让 Rust/Python/JavaScript 三端在身份、规范载荷与签名层面逐字节对齐、可互验。
+
+**统一身份与规范签名**
+
+三端身份口径一致：Ed25519 原始 32 字节公钥 → SHA256 前 8 字节 → `did:aip:<16hex>`；规范载荷为移除 `signature` 键后紧凑、键按字典序、非 ASCII 不转义的 JSON 字节。
+
+```js
+const { AipIdentity, buildManifest } = require('@twinsearth/agent-universe');
+const id = AipIdentity.generate();
+const manifest = buildManifest(id, 'MyAgent', ['text-generation'], { stake: 100 });
+AipIdentity.verifyObject(manifest, id.publicKey);   // true
+```
+
+**MCP 客户端连接节点**
+
+```js
+const { McpHttpClient } = require('@twinsearth/agent-universe');
+const mcp = new McpHttpClient('http://127.0.0.1:4002');
+await mcp.initialize();
+const tools = await mcp.listTools();        // 18 个工具，字段为规范 inputSchema
+await mcp.callTool('market_stats', {});    // 经 daemon 真实路由执行
+```
+
+Python 侧对应 `aip.AipIdentity`、`aip.build_manifest`、`aip.McpHttpClient`、`aip.MarketClient`，与 JS/Rust 同口径。固定种子（32 字节 `0x01`）下三端公钥、DID、签名逐字节一致，篡改载荷或使用他人公钥即被拒绝。
+
+Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.6

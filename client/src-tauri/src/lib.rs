@@ -1,4 +1,4 @@
-// Agent Universe v2.3.5 — Tauri 2 跨平台客户端
+// Agent Universe v2.3.6 — Tauri 2 跨平台客户端
 // 一套源码覆盖 macOS / Windows / Linux / iOS / Android
 
 #[tauri::command]
@@ -21,7 +21,7 @@ fn get_platform() -> String {
 
 #[tauri::command]
 fn get_sdk_version() -> String {
-    "2.3.5".to_string()
+    "2.3.6".to_string()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

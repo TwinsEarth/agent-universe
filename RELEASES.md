@@ -20,7 +20,8 @@ v1.0.0 (Genesis)
                                 ├── v2.3.2 (MCP+ACA - 兼容协议)
                                 ├── v2.3.3 (P2P Net - 网络应用)
                                 ├── v2.3.4 (Market - 智能体市场)
-                                └── v2.3.5 (Client - 跨平台客户端) ← 当前
+                                ├── v2.3.5 (Client - 跨平台客户端)
+                                └── v2.3.6 (MCP/ACA - 跨语言可信对齐) ← 当前
 ```
 
 ## 大版本详情
@@ -242,6 +243,22 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **测试基线**：Rust 154/154、Python 6/6、JS 8/8 通过；CLI/REST/MCP 三层真机走通完整市场闭环且守恒成立
 
+### v2.3.6 - MCP/ACA 深化重构（跨语言可信对齐）
+
+**核心内容**：MCP 真实化、ACA 身份/签名补全、Rust/Python/JS 三端跨语言可信对齐
+
+**核心机制**：
+| 机制 | 说明 |
+|------|------|
+| MCP 字段规范 | inputSchema/mimeType camelCase，补齐 ping 与标准 initialize |
+| MCP 真实路由 | tools/call 经 MarketMcpBridge 真实执行，18 个 market_* 工具 |
+| ACA 签名 | 新增 crypto/runtime，manifest/message/receipt 加签可验 |
+| 信誉与验证 | 信誉时间衰减固化，BFT 委员会规格 n≥3f+1 |
+| 跨语言对齐 | 同种子下三端公钥/DID/载荷/签名逐字节一致、可互验 |
+| 统一身份 | did:aip:<sha256(原始32字节公钥)前8字节> |
+
+**测试基线**：Rust **155**、Python **17**、JS **12** 全部通过；MCP 三端真机 initialize/ping/tools-list/tools-call，市场闭环结算 amount=50、守恒 conserved=True
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -288,6 +305,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **P2P 网络应用**（v2.3.3）
 - ✅ **智能体市场 Agent Market**（v2.3.4）
 - ✅ **跨平台客户端 + CLI/REST/MCP 重构**（v2.3.5）
+- ✅ **MCP/ACA 深化重构 + 三端跨语言可信对齐**（v2.3.6）
 
 ### 技术栈
 

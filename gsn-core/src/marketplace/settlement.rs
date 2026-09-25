@@ -53,6 +53,10 @@ pub struct SettlementEngine {
     total_budget: f64,
     /// 总罚没
     total_slashed: f64,
+    /// 增量维护的账户余额总和（v2.4.0：O(1)，不再每次扫表）
+    balance_sum: f64,
+    /// 增量维护的已支付总额（Completed 累计）
+    total_paid_acc: f64,
 }
 
 impl SettlementEngine {
@@ -63,6 +67,8 @@ impl SettlementEngine {
             settled_tasks: std::collections::HashSet::new(),
             total_budget: 0.0,
             total_slashed: 0.0,
+            balance_sum: 0.0,
+            total_paid_acc: 0.0,
         }
     }
 
@@ -70,6 +76,7 @@ impl SettlementEngine {
     pub fn deposit(&mut self, account: &str, amount: f64) {
         *self.balances.entry(account.to_string()).or_insert(0.0) += amount;
         self.total_budget += amount;
+        self.balance_sum += amount;
     }
 
     /// 获取余额
@@ -120,6 +127,8 @@ impl SettlementEngine {
             *self.balances.entry(payer.to_string()).or_insert(0.0) -= actual_amount;
             // 加款
             *self.balances.entry(payee.to_string()).or_insert(0.0) += actual_amount;
+            // 内部转账：balance_sum 不变；已支付总额增量
+            self.total_paid_acc += actual_amount;
         }
 
         self.settled_tasks.insert(task_id.to_string());
@@ -146,10 +155,11 @@ impl SettlementEngine {
         }
         *self.balances.entry(account.to_string()).or_insert(0.0) -= amount;
         self.total_slashed += amount;
+        self.balance_sum -= amount;
         Ok(amount)
     }
 
-    /// 守恒检查
+    /// 守恒检查（O(1)，读增量维护字段）
     ///
     /// 资金守恒：
     /// - 充值增加系统总余额
@@ -159,20 +169,31 @@ impl SettlementEngine {
     /// 不变量：balance_sum = total_budget - total_slashed
     /// 约束：total_paid ≤ total_budget
     pub fn conservation_check(&self) -> ConservationReport {
+        let expected_sum = self.total_budget - self.total_slashed;
+        let conserved = (self.balance_sum - expected_sum).abs() < 0.001
+            && self.total_paid_acc <= self.total_budget + 0.001;
+
+        ConservationReport {
+            total_budget: self.total_budget,
+            total_paid: self.total_paid_acc,
+            total_slashed: self.total_slashed,
+            balance_sum: self.balance_sum,
+            conserved,
+        }
+    }
+
+    /// 全量对账（O(N)，运维/审计用，不在主路径）
+    pub fn audit_full_scan(&self) -> ConservationReport {
         let total_paid: f64 = self
             .records
             .iter()
             .filter(|r| r.reason == SettlementReason::Completed)
             .map(|r| r.amount)
             .sum();
-
         let balance_sum: f64 = self.balances.values().sum();
-
-        // 守恒：当前所有余额 = 总预算 - 总罚没
         let expected_sum = self.total_budget - self.total_slashed;
         let conserved = (balance_sum - expected_sum).abs() < 0.001
             && total_paid <= self.total_budget + 0.001;
-
         ConservationReport {
             total_budget: self.total_budget,
             total_paid,
@@ -187,11 +208,7 @@ impl SettlementEngine {
     }
 
     pub fn total_paid(&self) -> f64 {
-        self.records
-            .iter()
-            .filter(|r| r.reason == SettlementReason::Completed)
-            .map(|r| r.amount)
-            .sum()
+        self.total_paid_acc
     }
 
     fn now() -> u64 {
@@ -205,5 +222,29 @@ impl SettlementEngine {
 impl Default for SettlementEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn incremental_matches_full_scan() {
+        let mut e = SettlementEngine::new();
+        e.deposit("alice", 1000.0);
+        e.deposit("bob", 500.0);
+        e.settle("t1", "alice", "carol", 200.0, SettlementReason::Completed).unwrap();
+        e.settle("t2", "bob", "dave", 100.0, SettlementReason::Completed).unwrap();
+        e.slash("carol", 50.0).unwrap();
+        // 增量 O(1) 与全量 O(N) 对账必须一致
+        let inc = e.conservation_check();
+        let full = e.audit_full_scan();
+        assert!((inc.balance_sum - full.balance_sum).abs() < 0.001);
+        assert!((inc.total_paid - full.total_paid).abs() < 0.001);
+        assert!(inc.conserved);
+        assert!(full.conserved);
+        // balance_sum = 1500 - 50 = 1450
+        assert!((inc.balance_sum - 1450.0).abs() < 0.001);
     }
 }

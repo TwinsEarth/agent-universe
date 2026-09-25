@@ -1,0 +1,10 @@
+flowchart LR
+    A["充值 Deposit"] --> B["质押 Stake"]
+    B --> C["发布任务 Task"]
+    C --> D["投标 Bid"]
+    D --> E["匹配 Match"]
+    E --> F["执行 Execute"]
+    F --> G["QA验收 n>=3f+1"]
+    G --> H["结算 守恒账本"]
+    H --> I["信誉 Reputation"]
+    I -->|罚没 Slash| B

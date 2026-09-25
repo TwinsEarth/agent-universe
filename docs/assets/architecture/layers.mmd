@@ -1,0 +1,18 @@
+flowchart TB
+    subgraph CLI["客户端层"]
+        DESK["desktop/ Tauri2 -> macOS/Win/Linux"]
+        CLIENT["client/ + platforms/ 五平台"]
+    end
+    subgraph SDK["SDK 绑定层"]
+        JS["js/ @twinsearth/agent-universe@2.3.6"]
+        PY["aip-sdk-py/ Python SDK"]
+    end
+    subgraph CORE["gsn-core Rust 2021 (25 模块)"]
+        I["identity agent net chain storage crdt erasure swarm economy scheduler topology mcp aca api marketplace proof inference collaboration crowdsource security"]
+    end
+    subgraph CHAIN["链上锚 contracts/ Solidity Base/Arbitrum"]
+        SC["身份 / 质押 / 结算"]
+    end
+    CLI --> SDK
+    SDK --> CORE
+    CORE --> CHAIN

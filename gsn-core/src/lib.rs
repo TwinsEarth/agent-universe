@@ -29,6 +29,8 @@ pub mod inference;
 pub mod crowdsource;
 pub mod security;
 pub mod nat;
+pub mod memory;
+pub mod sandbox;
 pub mod marketplace;
 pub mod api;
 pub mod node;

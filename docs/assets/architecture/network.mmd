@@ -1,0 +1,9 @@
+flowchart TB
+    RS["根种子 root_seed (Mac mini)"]
+    FN["全节点 GsnNode :4001"]
+    LN["轻节点 Android"]
+    RS -->|Kademlia DHT| FN
+    FN <-->|GossipSub 广播| FN
+    FN --> LN
+    API["HTTP API :4002  /health /version /peers"]
+    FN -.-> API

@@ -101,11 +101,11 @@ mod tests {
     #[test]
     fn lru_eviction_under_capacity() {
         let mut m = EnhancedMemory::new(2);
-        m.write(RatedMemory::new("a", &["x"], "1", 0.5));
-        m.write(RatedMemory::new("b", &["x"], "2", 0.5));
-        // 访问 a，使 b 成为 LRU
-        m.query("x", "a");
-        m.write(RatedMemory::new("c", &["x"], "3", 0.5));
+        m.write(RatedMemory::new("a", &["x"], "alpha", 0.5));
+        m.write(RatedMemory::new("b", &["x"], "beta", 0.5));
+        // 只访问 a（关键词命中），使 b 成为 LRU
+        m.query("", "alpha");
+        m.write(RatedMemory::new("c", &["x"], "gamma", 0.5));
         assert_eq!(m.len(), 2);
         assert!(m.store.contains_key("a"));
         assert!(!m.store.contains_key("b"));

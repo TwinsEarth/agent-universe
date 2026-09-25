@@ -290,6 +290,13 @@ npm install @twinsearth/agent-universe
 | v2.3.4 | Market | 智能体市场 Agent Market |
 | v2.3.5 | **Client** | **跨平台客户端 + CLI/REST/MCP 重构** |
 | v2.3.6 | **MCP/ACA** | **MCP/ACA 深化重构 + 三端跨语言可信对齐** |
+| v2.4.0 | **Govern** | **CPU 治理轻量化：结算守恒 O(1) 增量维护 + Sandbox trait（Docker/Firecracker）** |
+| v2.4.1 | **Layer** | **Lv1–Lv7 分层拓扑：扇入有界、边数亚二次、路由≤7 跳 + TopologyRouter 降级** |
+| v2.4.2 | **Memory** | **个体内部记忆库 + 群体外部共享记忆库** |
+| v2.4.3 | **3-Tier Memory** | **分层主体记忆（Lv1–Lv7）+ 跨代记忆哈希链** |
+| v2.4.4 | **Memory+** | **个体记忆增强：标签/关键词检索、记忆评价防污染、LRU 压缩遗忘** |
+| v2.4.5 | **Handoff** | **TransferBundle 六字段交接 + TraceLedger 审计 + 证据三级标签** |
+| v2.4.6 | **Flywheel** | **群体智能飞轮：协同→经验→优化结构→闭环** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
@@ -385,5 +392,6 @@ Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.
 ## 文档
 
 - **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md) — 技术架构与系统框架、网络结构与安全机制、功能模块与产品功能（含分层图）。
+- **设计文档 v2.4.0–v2.4.1**：[docs/design-v2.4.0-v2.4.1.md](docs/design-v2.4.0-v2.4.1.md) — CPU 治理轻量化与 Lv1–Lv7 分层拓扑设计。
 - 深度分析 v2.3.4：[docs/v2.3.4-deep-analysis.md](docs/v2.3.4-deep-analysis.md)
 - 部署与验证报告：[docs/部署与验证报告-2026-09-23.md](docs/%E9%83%A8%E7%BD%B2%E4%B8%8E%E9%AA%8C%E8%AF%81%E6%8A%A5%E5%91%8A-2026-09-23.md)

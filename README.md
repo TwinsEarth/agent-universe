@@ -381,3 +381,9 @@ await mcp.callTool('market_stats', {});    // 经 daemon 真实路由执行
 Python 侧对应 `aip.AipIdentity`、`aip.build_manifest`、`aip.McpHttpClient`、`aip.MarketClient`，与 JS/Rust 同口径。固定种子（32 字节 `0x01`）下三端公钥、DID、签名逐字节一致，篡改载荷或使用他人公钥即被拒绝。
 
 Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.6
+
+## 文档
+
+- **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md) — 技术架构与系统框架、网络结构与安全机制、功能模块与产品功能（含分层图）。
+- 深度分析 v2.3.4：[docs/v2.3.4-deep-analysis.md](docs/v2.3.4-deep-analysis.md)
+- 部署与验证报告：[docs/部署与验证报告-2026-09-23.md](docs/%E9%83%A8%E7%BD%B2%E4%B8%8E%E9%AA%8C%E8%AF%81%E6%8A%A5%E5%91%8A-2026-09-23.md)

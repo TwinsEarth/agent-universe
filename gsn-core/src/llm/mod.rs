@@ -6,9 +6,13 @@
 pub mod openai;
 pub mod gemini;
 pub mod anthropic;
+pub mod doubao;
+pub mod domestic;
 pub mod adapter;
 
 pub use openai::{MockOpenAiClient, OaChatRequest, OaChatResponse, OpenAiClient, OpenAiModel, OaMessage, OaRole};
 pub use gemini::{GeRequest, GeResponse, GeminiClient, GeminiModel, MockGeminiClient};
 pub use anthropic::{AnRequest, AnResponse, AnthropicClient, AnthropicModel, MockAnthropicClient, AnMessage, AnRole};
-pub use adapter::{AnthropicAdapter, GeminiAdapter, LlmBackend, LlmResult, OpenAiAdapter};
+pub use doubao::{DbChatRequest, DbChatResponse, DoubaoClient, DoubaoModel, MockDoubaoClient, DbMessage, DbRole};
+pub use domestic::{DomesticClient, DomesticModel, DomesticProvider, MockDomesticClient};
+pub use adapter::{AnthropicAdapter, DomesticAdapter, DoubaoAdapter, GeminiAdapter, LlmBackend, LlmResult, OpenAiAdapter};

@@ -182,7 +182,7 @@ mod tests {
 
     #[test]
     fn adapter_propose_into_deliberation() {
-        use crate::collaboration::hetero_llm::{Deliberation, Proposal};
+        use crate::collaboration::hetero_llm::Deliberation;
         let cfg = DeepSeekConfig::default();
         let adapter = DeepSeekAdapter::new(cfg, MockDeepSeekClient { answer: "A".into(), reasoning: None });
         let mut d = Deliberation::new();

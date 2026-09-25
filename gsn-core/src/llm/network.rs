@@ -8,11 +8,6 @@
 //! 无论在国内网络、国外网络还是跳转网络，都能正确路由。
 
 use std::collections::HashMap;
-use super::openai::OpenAiModel;
-use super::gemini::GeminiModel;
-use super::anthropic::AnthropicModel;
-use super::doubao::DoubaoModel;
-use super::domestic::{DomesticModel, DomesticProvider};
 
 /// 网络区域。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -387,7 +382,7 @@ mod tests {
 
 // ===== v2.5.2: 自动降级协商 =====
 
-use crate::collaboration::hetero_llm::{Deliberation, LlmModel, Proposal};
+use crate::collaboration::hetero_llm::{Deliberation, LlmModel};
 
 /// 降级事件记录。
 #[derive(Debug, Clone)]
@@ -490,6 +485,7 @@ impl RegionAwareDeliberation {
 #[cfg(test)]
 mod downgrade_tests {
     use super::*;
+    use crate::collaboration::hetero_llm::Proposal;
 
     fn m(id: &str, family: &str, weight: f64) -> LlmModel {
         LlmModel { id: id.into(), family: family.into(), weight }

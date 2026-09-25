@@ -297,6 +297,7 @@ npm install @twinsearth/agent-universe
 | v2.4.4 | **Memory+** | **个体记忆增强：标签/关键词检索、记忆评价防污染、LRU 压缩遗忘** |
 | v2.4.5 | **Handoff** | **TransferBundle 六字段交接 + TraceLedger 审计 + 证据三级标签** |
 | v2.4.6 | **Flywheel** | **群体智能飞轮：协同→经验→优化结构→闭环** |
+| v2.4.7 | **Hetero LLM** | **异构 LLM 多智能体：跨智能体协同、评分内部投票、跨模型记忆协作** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

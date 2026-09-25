@@ -1,6 +1,6 @@
 {
   "name": "@twinsearth/agent-universe",
-  "version": "2.4.6",
+  "version": "2.4.7",
   "description": "Agent Universe - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络。使命：让科技造福全人类！",
   "main": "index.js",
   "types": "index.d.ts",

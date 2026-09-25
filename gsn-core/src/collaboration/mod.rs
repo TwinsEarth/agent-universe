@@ -3,6 +3,9 @@
 //! 三层结构：MCP Agent（中央资源调度）→ Route Agent（边缘路由转发）→ End Agent（终端设备交互）
 //! Group/Scene 逻辑隔离，支持家庭、企业、教育等多场景
 
+pub mod hetero_llm;
+pub use hetero_llm::{CrossModelMemory, Deliberation, LlmModel, Proposal};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

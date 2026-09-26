@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.5.5，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.5.6，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -306,6 +306,7 @@ npm install @twinsearth/agent-universe
 | v2.5.3 | **Mesh** | **Mesh 自组网：心跳 / 广播 / 嗅探 / 会话，临时 SN↔永久身份绑定** |
 | v2.5.4 | **Traversal** | **NAT 穿透：Circuit Relay v2 + AutoNAT + DCUtR + Ping，跨网中继** |
 | v2.5.5 | **Relay Pool** | **Relay 节点池管理 + 多通道智能切换（默认 3 条，掉线自动补）** |
+| v2.5.6 | **Regression** | **历史 Bug 回归套件：test/ 14 条 + Rust 网络回归，CI 强制全量回归，修新 bug 先加用例** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

@@ -2,6 +2,24 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.5.6] - 2026-09-27
+
+### 新增：历史 Bug 回归套件（Regression Suite）
+
+- **test/regression.js**：14 条历史 bug 回归（A 版本一致性 4 / B 编译CI守卫 4 / C 市场重复防护 4 / D 资金守恒 2），本地 14/14 通过。
+- **gsn-core/tests/regression_net.rs**：随机临时身份构造节点，subscribe→publish 不 panic；InsufficientPeers 判为正常。
+- **一键脚本**：test/run-all.sh（Linux/macOS）、test/run-all.ps1（Windows）；test/README.md 用例索引与易踩坑清单。
+- **CI 接入**：ci.yml JS job 新增回归步骤，每次 push/PR 强制跑、失败禁止发版。
+
+### 修复
+
+- **bump-version.sh 自身 5 处缺陷**：`$V_` 变量名、sed 正则 `\+` 转义、gsn-core 版本四段误拼、ci.yml sed 空格/转义、新增 client/desktop lib.rs 与 Identify 两条规则。
+- 全仓 bump 到 npm 2.5.6 / gsn-core 0.2.56。
+
+### 验证
+
+- JS SDK 12 项、历史回归 14/14、Rust cargo test 0 failed。
+
 ## [v2.5.5] - 2026-09-26
 
 ### 新增：Relay 节点池管理 + 多通道智能切换
@@ -172,7 +190,7 @@ Kimi（月之暗面）、通义千问（阿里）、智谱 GLM、MiniMax、腾�
 - **ACA 兼容 API**：`aca/` 模块，信封/清单/消息/收据/信誉/验证
 - 八层协议栈完整定义
 - 四个协议对象：Agent Manifest / Task Envelope / Receipt / Reputation
-- 五级验证分层（L0-L4）
+- 五级验证分层：L0-L4
 
 ## [v2.3.1] - 2026-09-23
 
@@ -187,7 +205,7 @@ Kimi（月之暗面）、通义千问（阿里）、智谱 GLM、MiniMax、腾�
 ### 修复
 
 - erasure decode：真正的 Reed-Solomon 解码
-- pocv verify_proof：真实 Proof of Computation 验证
+- pocv verify_proof：真实的 Proof of Computation 验证
 - reputation decay：时间衰减拼写修复
 
 ## [v2.3.0] - 2026-09-23

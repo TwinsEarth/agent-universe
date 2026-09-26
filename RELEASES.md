@@ -37,7 +37,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.2 (Net Partition - 网络分区降级)
                                                         ├── v2.5.3 (Mesh - 自组网)
                                                         ├── v2.5.4 (Traversal - NAT 穿透)
-                                                        └── v2.5.5 (Relay Pool - 中继池+多通道) ← 当前
+                                                        ├── v2.5.5 (Relay Pool - 中继池+多通道)
+                                                        └── v2.5.6 (Regression - 历史 Bug 回归套件) ← 当前
 ```
 
 ## 大版本详情
@@ -315,6 +316,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：Relay 节点池管理（初始 1 万、每月 +1 万、硬上限=运行年限×10 万；专用/自有/第三方/通用四类；每小时巡检、DHT 发现、失败 3 次标记 dead 并清理）；方案 2/3/4 全部支持、任一失败自动切换，多 relay 多通道默认同时在线 3 条、掉线 ensure 秒级补全。gsn-core **0.2.55**。Mac↔Windows 经公共 relay 互见、remove 一条后 ensure 自动补新 relay、互见维持，三端真机验证通过。详见 [releases/v2.5.5.md](releases/v2.5.5.md)。
 
+### v2.5.6 - Regression（历史 Bug 回归套件）
+
+**核心内容**：把 v1.0.0~v2.5.5 开发中踩过、修过的全部 bug / 遗漏 / 注意事项固化为每次必跑的回归测试。新增 `test/regression.js`（14 条：版本一致性 / 编译CI守卫 / 市场重复防护 / 资金守恒）、`gsn-core/tests/regression_net.rs`（subscribe→publish 不 panic）、`test/run-all.sh` / `run-all.ps1` 一键全量、`test/README.md` 用例索引与易踩坑清单；CI 强制跑回归、失败禁止发版；修复 `bump-version.sh` 自身 5 处缺陷。gsn-core **0.2.56**。验证 JS 12 项、回归 14/14、Rust 0 failed。详见 [releases/v2.5.6.md](releases/v2.5.6.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -373,6 +378,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **国内外网络分区感知与自动降级**（v2.5.2）
 - ✅ **Mesh 自组网 + NAT 穿透（Circuit Relay v2/AutoNAT/DCUtR）**（v2.5.3–v2.5.4）
 - ✅ **Relay 节点池 + 多通道智能切换**（v2.5.5）
+- ✅ **历史 Bug 回归套件 + CI 强制全量回归（失败禁止发版）**（v2.5.6）
 
 ### 技术栈
 

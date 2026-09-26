@@ -56,9 +56,9 @@ pub struct P2pPeer {
 }
 
 impl P2pPeer {
-    /// 创建新节点，自动生成 Ed25519 身份
+    /// 创建新节点，从 ~/.gsn/identity.key 加载身份；不存在则生成并持久化
     pub fn new() -> anyhow::Result<Self> {
-        let local_key = identity::Keypair::generate_ed25519();
+        let local_key = load_or_create_identity()?;
         Self::with_identity(local_key)
     }
 
@@ -228,4 +228,32 @@ impl P2pPeer {
             .map(|peer_id| peer_id.to_string())
             .collect()
     }
+}
+
+/// v2.5.3: 从磁盘加载 libp2p 身份密钥；不存在则生成 Ed25519 并保存
+///
+/// 持久化路径: `~/.gsn/identity.key`（protobuf 编码）
+/// 保证同一台机器跨重启 Peer ID 稳定，DID 绑定可保持
+pub fn load_or_create_identity() -> anyhow::Result<identity::Keypair> {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
+    let dir = std::path::Path::new(&home).join(".gsn");
+    let key_path = dir.join("identity.key");
+
+    if key_path.exists() {
+        let bytes = std::fs::read(&key_path)?;
+        match identity::Keypair::from_protobuf_encoding(&bytes) {
+            Ok(kp) => return Ok(kp),
+            Err(e) => {
+                eprintln!("⚠️ identity.key 损坏，重新生成: {}", e);
+            }
+        }
+    }
+
+    let kp = identity::Keypair::generate_ed25519();
+    std::fs::create_dir_all(&dir)?;
+    let encoded = kp.to_protobuf_encoding()?;
+    std::fs::write(&key_path, encoded)?;
+    Ok(kp)
 }

@@ -4,12 +4,14 @@
 
 use futures::StreamExt;
 use libp2p::{
+    autonat, dcutr,
     gossipsub::{
         self, ConfigBuilder as GossipsubConfigBuilder, IdentTopic, MessageAuthenticity,
     },
     identify::{self, Config as IdentifyConfig},
     identity,
     kad::{self, store::MemoryStore, Config as KadConfig, Quorum, Record, RecordKey},
+    ping, relay,
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
@@ -22,6 +24,14 @@ pub struct PeerBehaviour {
     pub kademlia: kad::Behaviour<MemoryStore>,
     pub gossipsub: gossipsub::Behaviour,
     pub identify: identify::Behaviour,
+    /// v2.5.4: Circuit Relay v2 客户端（通过中继节点跨 NAT）
+    pub relay_client: relay::client::Behaviour,
+    /// v2.5.4: AutoNAT（自动检测 NAT 类型）
+    pub autonat: autonat::Behaviour,
+    /// v2.5.4: DCUtR（TCP 打洞直连）
+    pub dcutr: dcutr::Behaviour,
+    /// v2.5.4: Ping（连接保活）
+    pub ping: ping::Behaviour,
 }
 
 #[derive(Debug)]
@@ -29,6 +39,10 @@ pub enum PeerEvent {
     Kademlia(kad::Event),
     Gossipsub(gossipsub::Event),
     Identify(identify::Event),
+    RelayClient(relay::client::Event),
+    AutoNat(autonat::Event),
+    Dcutr(dcutr::Event),
+    Ping(ping::Event),
 }
 
 impl From<kad::Event> for PeerEvent {
@@ -44,6 +58,26 @@ impl From<gossipsub::Event> for PeerEvent {
 impl From<identify::Event> for PeerEvent {
     fn from(e: identify::Event) -> Self {
         PeerEvent::Identify(e)
+    }
+}
+impl From<relay::client::Event> for PeerEvent {
+    fn from(e: relay::client::Event) -> Self {
+        PeerEvent::RelayClient(e)
+    }
+}
+impl From<autonat::Event> for PeerEvent {
+    fn from(e: autonat::Event) -> Self {
+        PeerEvent::AutoNat(e)
+    }
+}
+impl From<dcutr::Event> for PeerEvent {
+    fn from(e: dcutr::Event) -> Self {
+        PeerEvent::Dcutr(e)
+    }
+}
+impl From<ping::Event> for PeerEvent {
+    fn from(e: ping::Event) -> Self {
+        PeerEvent::Ping(e)
     }
 }
 
@@ -73,7 +107,12 @@ impl P2pPeer {
                 libp2p::noise::Config::new,
                 libp2p::yamux::Config::default,
             )?
-            .with_behaviour(|key| {
+            // v2.5.4: 启用 Circuit Relay v2 客户端，支持通过中继跨 NAT
+            .with_relay_client(
+                libp2p::noise::Config::new,
+                libp2p::yamux::Config::default,
+            )?
+            .with_behaviour(|key, relay_client| {
                 // Kademlia DHT（在 Config 上设置查询超时）
                 let store = MemoryStore::new(peer_id);
                 let mut kad_config =
@@ -94,14 +133,35 @@ impl P2pPeer {
 
                 // Identify
                 let identify = identify::Behaviour::new(IdentifyConfig::new(
-                    "/gsn/0.2.34".to_string(),
+                    "/gsn/0.2.54".to_string(),
                     key.public(),
                 ));
+
+                // AutoNAT：自动检测 NAT 状态
+                let autonat_config = autonat::Config {
+                    retry_interval: Duration::from_secs(10),
+                    refresh_interval: Duration::from_secs(30),
+                    confidence_max: 1,
+                    ..Default::default()
+                };
+                let autonat = autonat::Behaviour::new(peer_id, autonat_config);
+
+                // DCUtR：TCP 打洞
+                let dcutr = dcutr::Behaviour::new(peer_id);
+
+                // Ping：连接保活
+                let ping = ping::Behaviour::new(
+                    ping::Config::new().with_interval(Duration::from_secs(15)),
+                );
 
                 PeerBehaviour {
                     kademlia,
                     gossipsub,
                     identify,
+                    relay_client,
+                    autonat,
+                    dcutr,
+                    ping,
                 }
             })?
             .build();
@@ -223,6 +283,52 @@ impl P2pPeer {
 
     /// 已连接对等节点的 peer_id 列表
     pub fn connected_peer_ids(&self) -> Vec<String> {
+        self.swarm
+            .connected_peers()
+            .map(|peer_id| peer_id.to_string())
+            .collect()
+    }
+
+    // ─────────────── v2.5.4 NAT 穿透增强 ───────────────
+
+    /// 连接公共 libp2p 网络：bootstrap 节点 + Circuit Relay 中继
+    ///
+    /// 公共节点同时支持 DHT 路由发现和 relay 中继，
+    /// 节点在 NAT 后可通过中继被其他节点 dial 到。
+    pub fn bootstrap_public_network(&mut self) -> Vec<String> {
+        // libp2p 官方公共 bootstrap/relay 节点
+        let public_addrs: Vec<&str> = vec![
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19UokH",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+        ];
+
+        let mut initiated = Vec::new();
+        for addr_str in public_addrs {
+            if let Ok(multi) = addr_str.parse::<Multiaddr>() {
+                if self.swarm.dial(multi).is_ok() {
+                    initiated.push(addr_str.to_string());
+                    self.bootstrapped.push(addr_str.to_string());
+                }
+            }
+        }
+        initiated
+    }
+
+    /// AutoNAT 检测到的 NAT 状态
+    pub fn nat_status(&self) -> String {
+        match self.swarm.behaviour().autonat.nat_status() {
+            autonat::NatStatus::Unknown => "unknown".to_string(),
+            autonat::NatStatus::Public(_) => "public".to_string(),
+            autonat::NatStatus::Private => "private_nat".to_string(),
+        }
+    }
+
+    /// 已连接的中继节点数量（relay client 持有的 reservation）
+    pub fn connected_relays(&self) -> Vec<String> {
+        // relay client 通过 reservation 保持与中继的连接，
+        // 这些 peer 出现在 swarm connected_peers 中
         self.swarm
             .connected_peers()
             .map(|peer_id| peer_id.to_string())

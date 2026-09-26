@@ -25,6 +25,10 @@ pub enum PeerCommand {
     AddBootstrap { addr: String, reply: oneshot::Sender<Result<(), String>> },
     /// v2.5.3: 列出已连接对等节点 peer_id
     ListPeers { reply: oneshot::Sender<Vec<String>> },
+    /// v2.5.4: 连接公共 libp2p bootstrap/relay 网络
+    BootstrapPublic { reply: oneshot::Sender<Vec<String>> },
+    /// v2.5.4: 获取 AutoNAT 检测的 NAT 状态
+    NatStatus { reply: oneshot::Sender<String> },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -34,6 +38,8 @@ pub struct PeerInfo {
     pub routing_entries: usize,
     pub listen_addrs: Vec<String>,
     pub bootstrapped: Vec<String>,
+    /// v2.5.4: AutoNAT 检测的 NAT 状态
+    pub nat_status: String,
 }
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
@@ -165,6 +171,7 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
                 routing_entries: peer.routing_table_size(),
                 listen_addrs: peer.listen_addrs(),
                 bootstrapped: peer.bootstrapped(),
+                nat_status: peer.nat_status(),
             };
             let _ = reply.send(info);
         }
@@ -195,6 +202,14 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
         PeerCommand::ListPeers { reply } => {
             let peers = peer.connected_peer_ids();
             let _ = reply.send(peers);
+        }
+        PeerCommand::BootstrapPublic { reply } => {
+            let initiated = peer.bootstrap_public_network();
+            let _ = reply.send(initiated);
+        }
+        PeerCommand::NatStatus { reply } => {
+            let status = peer.nat_status();
+            let _ = reply.send(status);
         }
     }
 }
@@ -265,6 +280,32 @@ async fn handle_network_api(
         match rx.await {
             Ok(Ok(())) => (201, serde_json::json!({"status":"bootstrap_initiated","addr":addr}).to_string()),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.4: POST /bootstrap-public — 连接公共 libp2p 中继网络
+    else if method == "POST" && (path == "/bootstrap-public" || path == "/bootstrap-public/") {
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::BootstrapPublic { reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(initiated) => (201, serde_json::json!({
+                "status":"public_network_bootstrap_initiated",
+                "initiated": initiated,
+                "count": initiated.len()
+            }).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.4: GET /nat — 获取 AutoNAT 检测的 NAT 状态
+    else if method == "GET" && (path == "/nat" || path == "/nat/") {
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::NatStatus { reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(status) => (200, serde_json::json!({"nat_status": status}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
     }

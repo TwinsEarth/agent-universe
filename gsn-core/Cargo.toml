@@ -1,6 +1,6 @@
 [package]
 name = "gsn-core"
-version = "0.2.53"
+version = "0.2.54"
 edition = "2021"
 description = "Agent Universe 核心库 v2.3.6: 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
@@ -47,6 +47,10 @@ libp2p = { version = "0.54", features = [
     "dns",
     "request-response",
     "macros",
+    "relay",
+    "autonat",
+    "dcutr",
+    "ping",
 ] }
 futures = "0.3"
 tracing = "0.1"

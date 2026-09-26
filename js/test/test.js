@@ -41,8 +41,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.5.5', () => {
-  assert.strictEqual(version, '2.5.5');
+test('版本号为 2.5.6', () => {
+  assert.strictEqual(version, '2.5.6');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -68,7 +68,6 @@ test('AgentCard 能力与技能', () => {
 // 4. Task 状态机
 test('Task 状态机合法流转且拒绝非法转移', () => {
   const t = new Task('t1', 'write doc');
-  t.transition(TaskStatus.OPEN);
   t.assign('did:au:worker');
   t.start();
   t.complete();

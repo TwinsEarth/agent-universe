@@ -16,6 +16,7 @@ use libp2p::{
     Multiaddr, PeerId, SwarmBuilder,
 };
 use libp2p::core::transport::ListenerId;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// 网络行为组合
@@ -88,8 +89,9 @@ pub struct P2pPeer {
     pub swarm: Swarm<PeerBehaviour>,
     /// v2.5.3: 已发起过 bootstrap 连接的地址
     bootstrapped: Vec<String>,
-    /// v2.5.4: 当前 circuit relay listener（续期前主动移除，避免地址累积）
-    relay_listener_id: Option<ListenerId>,
+    /// v2.5.5: 多 relay 通道映射：relay peer id → circuit listener。
+    /// 方案 4：多个 relay 同时 listen、持有多组 reservation，续期前按 relay 主动移除旧 listener。
+    relay_listeners: HashMap<String, ListenerId>,
 }
 
 impl P2pPeer {
@@ -110,7 +112,12 @@ impl P2pPeer {
                 libp2p::noise::Config::new,
                 libp2p::yamux::Config::default,
             )?
-            // v2.5.4: 启用 DNS 解析（/dns4、/dns6、/dnsaddr），公共 bootstrap 依赖
+            // v2.5.5: 叠加 QUIC（UDP），支持 UDP 打洞直连（方案 3），与 TCP 共存。
+            // QUIC 属于 OtherTransport 层，必须在 with_dns / with_websocket 之前接入：
+            // with_tcp 返回 QuicPhase，其上 with_quic 经 or_transport 叠加 QUIC（保留 TCP）。
+            .with_quic()
+            // v2.5.4: 启用 DNS 解析（/dns4、/dns6、/dnsaddr），公共 bootstrap 依赖。
+            // OtherTransportPhase.with_dns 推进 phase 时保留已组合的 TCP+QUIC，再包上 DNS。
             .with_dns()?
             // v2.5.4: 叠加 WebSocket（/ws、/wss），与 TCP 共存（or_transport）。
             // wss 走 443 端口 + 域名，在受限/国内网络下抗干扰，用于经 relay 稳定建立 reservation。
@@ -145,7 +152,7 @@ impl P2pPeer {
 
                 // Identify
                 let identify = identify::Behaviour::new(IdentifyConfig::new(
-                    "/gsn/0.2.54".to_string(),
+                    "/gsn/0.2.55".to_string(),
                     key.public(),
                 ));
 
@@ -179,8 +186,22 @@ impl P2pPeer {
             .build();
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
+        // v2.5.5: 同时监听 QUIC/UDP（随机端口），节点对外具备 UDP/QUIC 地址，可用于打洞
+        swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
-        Ok(Self { peer_id, swarm, bootstrapped: Vec::new(), relay_listener_id: None })
+        Ok(Self {
+            peer_id,
+            swarm,
+            bootstrapped: Vec::new(),
+            relay_listeners: HashMap::new(),
+        })
+    }
+
+    /// v2.5.5: 在指定 UDP 端口监听 QUIC（与 TCP P2P 同端口，便于固定映射/打洞）
+    pub fn listen_quic_port(&mut self, port: u16) -> anyhow::Result<Multiaddr> {
+        let addr: Multiaddr = format!("/ip4/0.0.0.0/udp/{}/quic-v1", port).parse()?;
+        self.swarm.listen_on(addr.clone())?;
+        Ok(addr)
     }
 
     /// 在指定端口监听
@@ -246,6 +267,15 @@ impl P2pPeer {
             .get_closest_peers(peer);
     }
 
+    /// v2.5.5: 触发一次 DHT 随机节点发现（随机 Peer 查 closest peers），
+    /// 扩充 kbucket；新节点经 Identify 上报协议，支持 hop 的会被纳入 relay 候选池。
+    pub fn discover_random_peers(&mut self) {
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .get_closest_peers(PeerId::random());
+    }
+
     /// 轮询一次 swarm 事件
     pub async fn next_event(&mut self) -> SwarmEvent<PeerEvent> {
         self.swarm.next().await.expect("swarm stream never ends")
@@ -293,35 +323,64 @@ impl P2pPeer {
         Ok(())
     }
 
-    /// v2.5.4: 经 Circuit Relay v2 中继监听（在 relay 上建立并持有 reservation）
+    /// v2.5.5: 经 Circuit Relay v2 中继监听（多通道版）。
     ///
-    /// 关键区别：普通 `dial` 只建立一次性连接，Kademlia 用完即关，
-    /// **不会**产生 reservation。relay v2 要求 client 对一个以
-    /// `/p2p-circuit` 结尾的地址调用 `listen_on`，relay_client 才会：
-    /// 连接 relay → identify 确认 hop 协议 → 请求 reservation →
-    /// reservation 接受后持久保持连接，本机才可被其他节点经中继 dial 到。
+    /// 以 relay 的 Peer ID 为 key：同一 relay 重复调用（80s 续期）会先移除该 relay
+    /// 的旧 circuit listener 再重新 listen，避免地址累积；不同 relay 各自独立持有
+    /// listener 与 reservation，从而同时在线多条中继通道（方案 4）。
     ///
-    /// 入参 `relay_addr` 为中继节点 multiaddr，例如
-    /// `/ip4/15.235.144.210/tcp/4001/p2p/QmcZf59b...`，
+    /// 入参 `relay_addr` 为中继节点 multiaddr（含 /p2p/<relay_peer>），
     /// 方法自动追加 `/p2p-circuit`。
     pub fn listen_via_relay(&mut self, relay_addr: &str) -> Result<(), String> {
         let base: Multiaddr = relay_addr
             .parse()
             .map_err(|e| format!("relay multiaddr 解析失败: {}", e))?;
+        let relay_key = extract_relay_peer_id(&base).unwrap_or_else(|| relay_addr.to_string());
         let circuit = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
-        // v2.5.4: 续期前主动移除旧 circuit listener。真机实测 relay client 内部
-        // reservation 过期/自动续期不可靠，旧 listener 不自动关闭、重复 listen 会累积
-        // circuit 地址；主动 remove_listener 可可靠关闭，保证恒为 1 个 listener、2 个地址。
-        if let Some(old) = self.relay_listener_id.take() {
+
+        // 该 relay 已有 listener（续期场景）→ 先移除，保证每个 relay 恒为 1 个 listener
+        if let Some(old) = self.relay_listeners.remove(&relay_key) {
             let removed = self.swarm.remove_listener(old);
-            eprintln!("🧹 移除旧 relay listener {:?} (removed={})", old, removed);
+            eprintln!("🧹 移除 relay {} 旧 listener (removed={})", relay_key, removed);
         }
         let listener_id = self
             .swarm
             .listen_on(circuit)
             .map_err(|e| format!("relay listen 失败: {}", e))?;
-        self.relay_listener_id = Some(listener_id);
+        self.relay_listeners.insert(relay_key, listener_id);
         Ok(())
+    }
+
+    /// v2.5.5: 关闭并移除某一条 relay 通道（传入 relay Peer ID 或完整 multiaddr）
+    pub fn remove_relay(&mut self, relay_addr_or_id: &str) -> bool {
+        if let Some(old) = self.relay_listeners.remove(relay_addr_or_id) {
+            return self.swarm.remove_listener(old);
+        }
+        if let Ok(base) = relay_addr_or_id.parse::<Multiaddr>() {
+            if let Some(key) = extract_relay_peer_id(&base) {
+                if let Some(old) = self.relay_listeners.remove(&key) {
+                    return self.swarm.remove_listener(old);
+                }
+            }
+        }
+        false
+    }
+
+    /// v2.5.5: 仅 dial 候选 relay（不 listen、不建 reservation），用于健康探测；
+    /// dial 成功后 Identify 事件会报告其支持的协议，据此判断是否提供 hop。
+    pub fn probe_relay(&mut self, relay_addr: &str) -> Result<(), String> {
+        let base: Multiaddr = relay_addr
+            .parse()
+            .map_err(|e| format!("relay multiaddr 解析失败: {}", e))?;
+        self.swarm
+            .dial(base)
+            .map_err(|e| format!("probe dial 失败: {}", e))?;
+        Ok(())
+    }
+
+    /// v2.5.5: 当前持有 circuit listener 的 relay Peer ID 列表（多通道）
+    pub fn active_relay_ids(&self) -> Vec<String> {
+        self.relay_listeners.keys().cloned().collect()
     }
 
     /// 已连接对等节点的 peer_id 列表
@@ -377,6 +436,14 @@ impl P2pPeer {
             .map(|peer_id| peer_id.to_string())
             .collect()
     }
+}
+
+/// v2.5.5: 从 multiaddr 中提取 relay 的 Peer ID（/p2p/<PeerId>）
+pub fn extract_relay_peer_id(addr: &Multiaddr) -> Option<String> {
+    addr.iter().find_map(|p| match p {
+        libp2p::multiaddr::Protocol::P2p(pid) => Some(pid.to_string()),
+        _ => None,
+    })
 }
 
 /// v2.5.3: 从磁盘加载 libp2p 身份密钥；不存在则生成 Ed25519 并保存

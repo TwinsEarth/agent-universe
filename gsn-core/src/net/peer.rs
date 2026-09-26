@@ -107,6 +107,8 @@ impl P2pPeer {
                 libp2p::noise::Config::new,
                 libp2p::yamux::Config::default,
             )?
+            // v2.5.4: 启用 DNS 解析（/dns4、/dns6、/dnsaddr），公共 bootstrap 依赖
+            .with_dns()?
             // v2.5.4: 启用 Circuit Relay v2 客户端，支持通过中继跨 NAT
             .with_relay_client(
                 libp2p::noise::Config::new,

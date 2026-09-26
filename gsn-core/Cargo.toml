@@ -51,6 +51,8 @@ libp2p = { version = "0.54", features = [
     "autonat",
     "dcutr",
     "ping",
+    "rsa",
+    "ed25519",
 ] }
 futures = "0.3"
 tracing = "0.1"

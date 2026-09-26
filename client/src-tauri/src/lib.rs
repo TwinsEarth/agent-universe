@@ -29,5 +29,5 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![get_platform, get_sdk_version])
         .run(tauri::generate_context!())
-        .expect(error while running tauri application");
+        .expect("error while running tauri application");
 }

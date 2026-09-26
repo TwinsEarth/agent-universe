@@ -158,21 +158,38 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Configure registry auth
+        id: tok
         run: |
           if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
             echo "::warning::NPM_TOKEN secret not set; skipping npm publish. Add it in repo Settings -> Secrets."
-            exit 0
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc
+            echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc
 
-      - name: Verify version matches tag
+      - name: Resolve version (tag push or manual dispatch)
+        id: ver
+        if: steps.tok.outputs.ready == 'true'
         run: |
-          TAG="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ github.event.inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME}"
+          fi
+          VER="${VER#v}"
+          echo "resolved=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version matches
+        if: steps.tok.outputs.ready == 'true'
+        run: |
+          TAG="${{ steps.ver.outputs.resolved }}"
           PKG=$(node -p "require('./package.json').version")
-          echo "tag=$TAG package=$PKG"
-          if [ "$TAG" != "$PKG" ]; then echo "::error::package.json version $PKG != tag $TAG"; exit 1; fi
+          echo "expected=$TAG package=$PKG"
+          if [ "$TAG" != "$PKG" ]; then echo "::error::package.json version $PKG != $TAG"; exit 1; fi
 
       - name: Publish to npm
+        if: steps.tok.outputs.ready == 'true'
         run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -247,7 +247,7 @@ impl P2pPeer {
 
     /// 订阅 GossipSub 主题
     pub fn subscribe(&mut self, topic: &str) -> anyhow::Result<()> {
-        let t = IdentTopic::new(t);
+        let t = IdentTopic::new(topic);
         self.swarm.behaviour_mut().gossipsub.subscribe(&t)?;
         Ok(())
     }

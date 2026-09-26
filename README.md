@@ -400,6 +400,7 @@ Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.
 
 ## 文档
 
+- **版本号登记表（发版必读）**：[docs/version-checklist.md](docs/version-checklist.md) — 全仓所有版本声明点清单 + 发版 SOP；一键改版本见 `scripts/bump-version.sh`。
 - **架构文档 v2.5.5**：[docs/architecture-v2.5.5.md](docs/architecture-v2.5.5.md) — v2.5.x 全量：Lv1–Lv7 分层拓扑、三层记忆共享、异构 LLM 适配层、网络分区降级、Mesh 自组网、Relay 池与多通道、三端跨网真机实测。
 - **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md) — 技术架构与系统框架、网络结构与安全机制、功能模块与产品功能（含分层图）。
 - **设计文档 v2.4.0–v2.4.1**：[docs/design-v2.4.0-v2.4.1.md](docs/design-v2.4.0-v2.4.1.md) — CPU 治理轻量化与 Lv1–Lv7 分层拓扑设计。

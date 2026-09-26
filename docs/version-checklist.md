@@ -98,6 +98,9 @@
 ## 四、发版 SOP（标准流程）
 
 ```bash
+# 0. 前置：GitHub repo Settings -> Secrets 配好 NPM_TOKEN（npmjs granular token）。
+#    配一次即可；不配则 publish.yml 的 npm-publish job 会 warning 跳过，不阻塞 Release。
+
 # 1. 一键改所有"版本声明点"（输入 npm 版本号，自动算 Rust 线）
 bash scripts/bump-version.sh 2.5.6
 
@@ -116,6 +119,18 @@ git add -A
 git -c user.name="TwinsEarth" -c user.email="dev@twinsearth.local" \
   commit -m "chore(vX.Y.Z): 全仓版本号统一到 vX.Y.Z"
 git push origin main
+
+# 6. 打 tag 并推送 —— 触发整条发布流水线：
+#    publish.yml: 自动 gh release create + 构建 gsn-daemon(linux/mac) + Python wheel
+#                 + npm publish @twinsearth/agent-universe@X.Y.Z
+#    release.yml: 三平台 gsn-daemon 二进制上传 Release
+git -c user.name="TwinsEarth" -c user.email="dev@twinsearth.local" \
+  tag -a vX.Y.Z -m "Agent Universe vX.Y.Z"
+git push origin vX.Y.Z
+
+# 7. 验证：GitHub Releases 页出现 vX.Y.Z、npm view @twinsearth/agent-universe version 是新版
 ```
+
+> **版本线决策（2026-09-26 确认）**：v2.4.0 ~ v2.5.4 不补历史 git tag（代码已演进、补打会触发大量 CI 且产物与版本号不符）；它们的 release note 已在 `releases/` 归档、谱系已在 README/RELEASES 列出。**从 v2.5.5 起启用新流水线：打 tag → 自动建 GitHub Release → 自动构建产物 → 自动发 npm。**
 
 > **新增版本点时**：在新文件/新模块里写了版本号常量、窗口标题、版本打印后，**立即回到本登记表追加一行**，并在 `scripts/bump-version.sh` 里加对应替换规则——这样下一个版本就不会漏。

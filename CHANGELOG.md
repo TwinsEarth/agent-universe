@@ -2,6 +2,105 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.5.5] - 2026-09-26
+
+### 新增：Relay 节点池管理 + 多通道智能切换
+
+- **Relay 节点池**：新增 `relay_pool/mod.rs`，容量策略 1 万起步、每月 +1 万、硬上限=运行年限×10 万；四类分类（专用/自有/第三方/通用）优先级选择；每小时巡检、DHT 发现、失败 3 次标记 dead 并清理。
+- **多通道**：`net/peer.rs` 多 relay 通道，`DEFAULT_PARALLEL_RELAYS = 3`；QUIC/UDP 与 TCP 共存；`ensure_channels` 掉线秒级自动补全。
+- **网络 API**：新增 `/api/v1/network/relays*`（get/add/remove/expand/discover/ensure）。
+- **真机验证**：Mac↔Windows 经公共 relay 互见；remove 一条后 ensure 自动补新 relay、互见维持；lib 单测 61、集成 10 通过。
+
+## [v2.5.4] - 2026-09-26
+
+### 新增：NAT 穿透增强（Traversal）
+
+真实 libp2p 层加入 Circuit Relay v2、AutoNAT、DCUtR 打洞、Ping 保活，跨不同 NAT 节点经公共中继互连。
+
+## [v2.5.3] - 2026-09-26
+
+### 新增：Mesh 自组网
+
+新增 `mesh/` 模块：心跳（Online/Suspicious/Offline 三态）、广播、嗅探、会话；自组网分配临时 SN 并绑定永久身份识别码。
+
+## [v2.5.2] - 2026-09-26
+
+### 新增：网络分区感知与自动降级
+
+国内/国外模型分两个独立网络组进程隔离运行；NetworkRouter 按网络可达性路由；外网不可达时自动降级为仅国内模型协商投票。
+
+## [v2.5.1] - 2026-09-26
+
+### 新增：国内六大模型统一适配
+
+Kimi（月之暗面）、通义千问（阿里）、智谱 GLM、MiniMax、腾讯混元（元宝）、小米 MiLM，统一接入 `llm/domestic.rs` 与异构协商系统。
+
+## [v2.5.0] - 2026-09-26
+
+### 新增：豆包 / 火山引擎方舟适配
+
+新增 `llm/doubao.rs`，支持 doubao-seed-2-1-pro/turbo 深度思考模型、最高 1024K 上下文。
+
+## [v2.4.9] - 2026-09-26
+
+### 新增：OpenAI / Gemini / Anthropic 适配
+
+新增 `llm/openai.rs`、`llm/gemini.rs`、`llm/anthropic.rs`，各自精确复刻官方 API 格式，统一接入异构 LLM 协商。
+
+## [v2.4.8] - 2026-09-26
+
+### 新增：DeepSeek 模型适配层
+
+新增 `deepseek/`（adapter/protocol/recipe/tokenizer），精确复刻官方提示词编码、多协议格式互转、token 级编解码与上下文预算。
+
+## [v2.4.7] - 2026-09-26
+
+### 新增：异构 LLM 多智能体
+
+新增 `collaboration/hetero_llm.rs`：跨智能体协同、独立推理后评估/评分/内部投票、跨模型记忆协作。
+
+## [v2.4.6] - 2026-09-26
+
+### 新增：群体智能飞轮
+
+`memory/flywheel.rs`：跨模型协同（误差独立性）→ 结构决定增长曲线 → 三层记忆后训练 → 经验回流优化结构 → 再协同闭环。
+
+## [v2.4.5] - 2026-09-26
+
+### 新增：交接协议 / 审计 / 可信度
+
+`memory/handoff.rs` TransferBundle 六字段机械校验；TraceLedger 哈希链审计轨迹；证据三级标签随数据流动。
+
+## [v2.4.4] - 2026-09-26
+
+### 新增：个体记忆增强
+
+`memory/enhanced.rs`：多模态标签/关键词/向量检索、记忆评价防污染、LRU 压缩与遗忘。
+
+## [v2.4.3] - 2026-09-26
+
+### 新增：三层记忆共享
+
+`memory/layered.rs`、`memory/shared_memory.rs`：个体/群体/跨代记忆；分层主体记忆（Lv1–Lv7）+ 跨代记忆哈希链。
+
+## [v2.4.2] - 2026-09-26
+
+### 新增：个体 + 群体记忆
+
+`memory/agent_memory.rs`：个体内部记忆库 + 外部共享记忆库。
+
+## [v2.4.1] - 2026-09-26
+
+### 新增：Lv1–Lv7 分层拓扑
+
+`topology/layer.rs`、`topology/router.rs`：分层拓扑应对通信墙，扇入有界 ≤9、边数亚二次、路由 ≤7 跳；不可达降级回扁平。
+
+## [v2.4.0] - 2026-09-26
+
+### 新增：CPU 治理轻量化
+
+结算守恒改 O(1) 增量维护；Sandbox 抽象为 trait（Docker / Firecracker microVM）。面向智能体 CPU 密集负载，治理开销 O(1)、不扫全表。
+
 ## [v2.3.6] - 2026-09-24
 
 ### 新增：MCP/ACA 深化重构 + 三端跨语言可信对齐

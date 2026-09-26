@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.5.5，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -298,6 +298,14 @@ npm install @twinsearth/agent-universe
 | v2.4.5 | **Handoff** | **TransferBundle 六字段交接 + TraceLedger 审计 + 证据三级标签** |
 | v2.4.6 | **Flywheel** | **群体智能飞轮：协同→经验→优化结构→闭环** |
 | v2.4.7 | **Hetero LLM** | **异构 LLM 多智能体：跨智能体协同、评分内部投票、跨模型记忆协作** |
+| v2.4.8 | **DeepSeek** | **DeepSeek 模型适配层：提示词编码、协议互转、token 编解码** |
+| v2.4.9 | **Multi-LLM** | **OpenAI / Gemini / Anthropic 三大后端适配** |
+| v2.5.0 | **Doubao** | **豆包 / 火山引擎方舟适配（Seed 2.1，1024K）** |
+| v2.5.1 | **CN Models** | **国内六大模型统一适配：Kimi / 千问 / 智谱 / MiniMax / 混元 / 小米** |
+| v2.5.2 | **Net Partition** | **国内外模型网络分区感知 + 外网不可达自动降级** |
+| v2.5.3 | **Mesh** | **Mesh 自组网：心跳 / 广播 / 嗅探 / 会话，临时 SN↔永久身份绑定** |
+| v2.5.4 | **Traversal** | **NAT 穿透：Circuit Relay v2 + AutoNAT + DCUtR + Ping，跨网中继** |
+| v2.5.5 | **Relay Pool** | **Relay 节点池管理 + 多通道智能切换（默认 3 条，掉线自动补）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
@@ -392,7 +400,9 @@ Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.
 
 ## 文档
 
+- **架构文档 v2.5.5**：[docs/architecture-v2.5.5.md](docs/architecture-v2.5.5.md) — v2.5.x 全量：Lv1–Lv7 分层拓扑、三层记忆共享、异构 LLM 适配层、网络分区降级、Mesh 自组网、Relay 池与多通道、三端跨网真机实测。
 - **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md) — 技术架构与系统框架、网络结构与安全机制、功能模块与产品功能（含分层图）。
 - **设计文档 v2.4.0–v2.4.1**：[docs/design-v2.4.0-v2.4.1.md](docs/design-v2.4.0-v2.4.1.md) — CPU 治理轻量化与 Lv1–Lv7 分层拓扑设计。
 - 深度分析 v2.3.4：[docs/v2.3.4-deep-analysis.md](docs/v2.3.4-deep-analysis.md)
 - 部署与验证报告：[docs/部署与验证报告-2026-09-23.md](docs/%E9%83%A8%E7%BD%B2%E4%B8%8E%E9%AA%8C%E8%AF%81%E6%8A%A5%E5%91%8A-2026-09-23.md)
+- 旗舰论文归档：[docs/papers/](docs/papers/) — 46 篇 × 三语言（zh / zhen / en）共 138 篇 PDF，含 P0d 群体智能旗舰。

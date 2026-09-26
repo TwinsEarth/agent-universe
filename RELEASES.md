@@ -21,7 +21,23 @@ v1.0.0 (Genesis)
                                 ├── v2.3.3 (P2P Net - 网络应用)
                                 ├── v2.3.4 (Market - 智能体市场)
                                 ├── v2.3.5 (Client - 跨平台客户端)
-                                └── v2.3.6 (MCP/ACA - 跨语言可信对齐) ← 当前
+                                └── v2.3.6 (MCP/ACA - 跨语言可信对齐)
+                                      └── v2.4.0 (Govern - CPU 治理轻量化)
+                                            ├── v2.4.1 (Layer - Lv1–Lv7 分层拓扑)
+                                            ├── v2.4.2 (Memory - 个体+群体记忆)
+                                            ├── v2.4.3 (3-Tier Memory - 分层主体+跨代记忆)
+                                            ├── v2.4.4 (Memory+ - 检索/评价/压缩)
+                                            ├── v2.4.5 (Handoff - 交接/审计/证据分级)
+                                            ├── v2.4.6 (Flywheel - 群体智能飞轮)
+                                            ├── v2.4.7 (Hetero LLM - 异构多模型协商)
+                                            ├── v2.4.8 (DeepSeek - DeepSeek 适配)
+                                            └── v2.4.9 (Multi-LLM - OpenAI/Gemini/Anthropic)
+                                                  └── v2.5.0 (Doubao - 豆包/火山方舟)
+                                                        ├── v2.5.1 (CN Models - 国内六大模型)
+                                                        ├── v2.5.2 (Net Partition - 网络分区降级)
+                                                        ├── v2.5.3 (Mesh - 自组网)
+                                                        ├── v2.5.4 (Traversal - NAT 穿透)
+                                                        └── v2.5.5 (Relay Pool - 中继池+多通道) ← 当前
 ```
 
 ## 大版本详情
@@ -259,6 +275,46 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **测试基线**：Rust **155**、Python **17**、JS **12** 全部通过；MCP 三端真机 initialize/ping/tools-list/tools-call，市场闭环结算 amount=50、守恒 conserved=True
 
+### v2.4.0 - Govern（CPU 治理轻量化）
+
+**核心内容**：面向 CPU 密集型智能体负载，把治理开销压到 O(1)。结算守恒改为增量维护（balance_sum = budget - slashed 单调增量、不扫全表）；Sandbox 抽象为 trait（Docker 共享内核 / Firecracker microVM 两条实现），对齐白皮书「智能体编排占端到端 50–90% CPU」的成本约束。
+
+### v2.4.1 - Layer（Lv1–Lv7 分层拓扑）
+
+**核心内容**：用分层拓扑应对通信墙。从 P2P 扁平结构改为 Lv1 房间 → Lv2 楼宇 → … → Lv7 宇宙七层，扇入有界（≤9）、边数亚二次、路由 ≤7 跳；TopologyRouter 在分层不可达时降级回扁平直连。对应 P0b「星型 β=1 → 分层 β=0」的增长指数结论。
+
+### v2.4.2 ~ v2.4.6 - 记忆体系与飞轮
+
+- **v2.4.2 Memory**：个体内部记忆库 + 群体外部共享记忆库。
+- **v2.4.3 3-Tier Memory**：分层主体记忆（Lv1–Lv7 各层一份）+ 跨代记忆哈希链；个体记忆 / 群体记忆 / 跨代记忆三层共享。
+- **v2.4.4 Memory+**：个体记忆增强——标签/关键词/向量多模态检索、记忆评价防污染（区分好坏经验）、LRU 压缩与遗忘（不能无限增长）。
+- **v2.4.5 Handoff**：TransferBundle 六字段（Goal/Context/Done/Todo/Trace/Owner）机械校验；TraceLedger 哈希链审计轨迹；证据三级标签随数据流动。
+- **v2.4.6 Flywheel**：群体智能飞轮——跨模型协同（误差独立性）→ 结构决定曲线 → 三层记忆后训练 → 经验回流优化结构 → 再协同。
+
+### v2.4.7 ~ v2.4.9 - 异构 LLM 与模型适配
+
+- **v2.4.7 Hetero LLM**：异构大模型多智能体——跨智能体协同、独立推理后的评估/评分/内部投票（BFT-lite 委员会）、跨模型记忆协作。
+- **v2.4.8 DeepSeek**：deepseek-recipe 适配层——精确复刻官方提示词编码、多协议格式互转、token 级编解码与上下文预算。
+- **v2.4.9 Multi-LLM**：OpenAI Chat Completions / Google Gemini / Anthropic Messages 三大后端，各自精确复刻官方 API，统一接入 v2.4.7 协商系统。
+
+### v2.5.0 ~ v2.5.2 - 国产模型与网络分区
+
+- **v2.5.0 Doubao**：豆包 / 火山引擎方舟 Ark 适配（doubao-seed-2-1-pro/turbo，深度思考，最高 1024K 上下文）。
+- **v2.5.1 CN Models**：国内六大模型统一适配——Kimi（月之暗面）、通义千问（阿里）、智谱 GLM、MiniMax、腾讯混元（元宝）、小米 MiLM。
+- **v2.5.2 Net Partition**：国内/国外模型分两个独立网络组进程隔离运行；NetworkRouter 无论在国内/国外/跳转网络都能正确路由；外网不可达时自动降级为仅国内模型协商投票。
+
+### v2.5.3 - Mesh（自组网增强）
+
+**核心内容**：新增 `mesh/` 模块——心跳（Online/Suspicious/Offline 三态）、广播、嗅探、会话管理；自组网并分配临时 SN 唯一识别码、绑定永久身份识别码。gsn-core 0.2.53。
+
+### v2.5.4 - Traversal（NAT 穿透）
+
+**核心内容**：在真实 libp2p 层（非模拟 nat 模块）加入 Circuit Relay v2、AutoNAT、DCUtR 打洞与 Ping 保活，使分属不同 NAT 的节点经公共中继跨网互连。gsn-core 0.2.54。Mac↔Windows 跨网中继真机验证通过。
+
+### v2.5.5 - Relay Pool（中继池 + 多通道）
+
+**核心内容**：Relay 节点池管理（初始 1 万、每月 +1 万、硬上限=运行年限×10 万；专用/自有/第三方/通用四类；每小时巡检、DHT 发现、失败 3 次标记 dead 并清理）；方案 2/3/4 全部支持、任一失败自动切换，多 relay 多通道默认同时在线 3 条、掉线 ensure 秒级补全。gsn-core **0.2.55**。Mac↔Windows 经公共 relay 互见、remove 一条后 ensure 自动补新 relay、互见维持，三端真机验证通过。详见 [releases/v2.5.5.md](releases/v2.5.5.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -306,6 +362,17 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **智能体市场 Agent Market**（v2.3.4）
 - ✅ **跨平台客户端 + CLI/REST/MCP 重构**（v2.3.5）
 - ✅ **MCP/ACA 深化重构 + 三端跨语言可信对齐**（v2.3.6）
+- ✅ **CPU 治理轻量化 + Sandbox trait**（v2.4.0）
+- ✅ **Lv1–Lv7 分层拓扑**（v2.4.1）
+- ✅ **三层记忆共享 + 跨代记忆哈希链**（v2.4.2–v2.4.4）
+- ✅ **TransferBundle 交接 + TraceLedger 审计 + 证据分级**（v2.4.5）
+- ✅ **群体智能飞轮**（v2.4.6）
+- ✅ **异构 LLM 多模型协商投票**（v2.4.7）
+- ✅ **DeepSeek / OpenAI / Gemini / Anthropic 适配**（v2.4.8–v2.4.9）
+- ✅ **豆包 + 国内六大模型统一适配**（v2.5.0–v2.5.1）
+- ✅ **国内外网络分区感知与自动降级**（v2.5.2）
+- ✅ **Mesh 自组网 + NAT 穿透（Circuit Relay v2/AutoNAT/DCUtR）**（v2.5.3–v2.5.4）
+- ✅ **Relay 节点池 + 多通道智能切换**（v2.5.5）
 
 ### 技术栈
 

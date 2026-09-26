@@ -147,10 +147,15 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
 // ───────────────────────── swarm actor ─────────────────────────
 
 async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerCommand>) {
+    // 周期性驱动网络栈：Kademlia 路由刷新、AutoNAT 重测、dnsaddr 解析与连接
+    // 状态机都依赖被反复 poll；select! 在命令到达时会取消 next_event future，
+    // 部分子系统的 waker 无法保证唤醒，因此用一个静默 idle tick 兜底 poll。
+    let mut idle = tokio::time::interval(std::time::Duration::from_secs(5));
+    idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             event = peer.next_event() => {
-                tracing::debug!("libp2p event: {:?}", event);
+                log_swarm_event(&event);
             }
             maybe_cmd = cmd_rx.recv() => {
                 match maybe_cmd {
@@ -158,10 +163,35 @@ async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerComma
                     None => break,
                 }
             }
+            _ = idle.tick() => {
+                // 仅用于唤醒并重新 poll swarm，无额外动作
+            }
         }
     }
 }
 
+/// v2.5.4: 简洁记录关键 swarm 事件（连接建立/关闭/dial 错误/外部地址候选）
+fn log_swarm_event<TE: std::fmt::Debug>(event: &libp2p::swarm::SwarmEvent<TE>) {
+    use libp2p::swarm::SwarmEvent::*;
+    match event {
+        ConnectionEstablished { peer_id, endpoint, established_in, .. } => {
+            eprintln!("已连接 {peer_id} ({endpoint:?}, {established_in:?})");
+        }
+        ConnectionClosed { peer_id, .. } => {
+            eprintln!("连接关闭 {peer_id}");
+        }
+        OutgoingConnectionError { peer_id, error, .. } => {
+            eprintln!("出站连接失败 peer={peer_id:?}: {error:?}");
+        }
+        IncomingConnectionError { send_back_addr, error, .. } => {
+            eprintln!("入站连接失败 {send_back_addr}: {error:?}");
+        }
+        NewExternalAddrCandidate { address } => {
+            eprintln!("外部地址候选 {address}");
+        }
+        _ => {}
+    }
+}
 fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
     match cmd {
         PeerCommand::GetInfo { reply } => {

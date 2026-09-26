@@ -50,22 +50,34 @@ jobs:
         if: matrix.archive == 'tar.gz'
         run: |
           cd gsn-core/target/${{ matrix.target }}/release
-          tar czf ../../../gsn-daemon-${{ matrix.target }}.tar.gz gsn-daemon
-          ls -lh ../../../gsn-daemon-${{ matrix.target }}.tar.gz
+          OUT="$GITHUB_WORKSPACE/gsn-core/gsn-daemon-${{ matrix.target }}.tar.gz"
+          tar czf "$OUT" gsn-daemon
+          ls -lh "$OUT"
 
       - name: Package (zip)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          cd gsn-core/target/${{ matrix.target }}/release
-          Compress-Archive -Path gsn-daemon.exe -DestinationPath ../../../gsn-daemon-${{ matrix.target }}.zip
-          ls -lh ../../../gsn-daemon-${{ matrix.target }}.zip
+          $src = "gsn-core/target/${{ matrix.target }}/release/gsn-daemon.exe"
+          $dst = "gsn-core/gsn-daemon-${{ matrix.target }}.zip"
+          if (Test-Path $dst) { Remove-Item $dst -Force }
+          Compress-Archive -Path $src -DestinationPath $dst
+          Get-Item $dst | Select-Object FullName, Length
 
       - name: Upload to Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} gsn-core/gsn-daemon-*.tar.gz gsn-core/gsn-daemon-*.zip --clobber
+          shopt -s nullglob
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            files=( gsn-core/gsn-daemon-*.zip )
+          else
+            files=( gsn-core/gsn-daemon-*.tar.gz )
+          fi
+          if [ ${#files[@]} -eq 0 ]; then echo "::error::no artifact found for ${{ matrix.target }}"; exit 1; fi
+          echo "Uploading: ${files[*]}"
+          gh release upload ${{ github.ref_name }} "${files[@]}" --clobber
 
   python-sdk:
     name: Python SDK Package
@@ -82,9 +94,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           cd aip-sdk-py && python -m build
+          ls -lh dist/
 
       - name: Upload to Release
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ${{ github.ref_name }} aip-sdk-py/dist/* --clobber
+          shopt -s nullglob
+          files=( aip-sdk-py/dist/* )
+          if [ ${#files[@]} -eq 0 ]; then echo "::error::no python artifacts in aip-sdk-py/dist"; exit 1; fi
+          echo "Uploading: ${files[*]}"
+          gh release upload ${{ github.ref_name }} "${files[@]}" --clobber

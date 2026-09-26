@@ -5,9 +5,11 @@
 
 use crate::api::market_actor::MarketActorHandle;
 use crate::net::P2pPeer;
-use crate::storage::{PersistentStore, StoredAgent};
+use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
+use crate::storage::{PersistentStore, StoredAgent, StoredRelay};
 use crate::NodeMode;
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -31,6 +33,20 @@ pub enum PeerCommand {
     NatStatus { reply: oneshot::Sender<String> },
     /// v2.5.4: 经 Circuit Relay 中继监听（listen_on /p2p-circuit，建立并持有 reservation）
     ListenRelay { addr: String, reply: oneshot::Sender<Result<(), String>> },
+    /// v2.5.5: 探测候选 relay 是否提供 hop（dial + Identify 协议判定）
+    ProbeRelay { addr: String, reply: oneshot::Sender<Result<bool, String>> },
+    /// v2.5.5: relay 池报告（列表 + 容量快照 + 当前活跃通道）
+    ListRelayPool { reply: oneshot::Sender<serde_json::Value> },
+    /// v2.5.5: 手动加入 relay
+    AddRelay { addr: String, class: String, reply: oneshot::Sender<Result<(), String>> },
+    /// v2.5.5: 移除 relay（并关闭其通道）
+    RemoveRelayCmd { target: String, reply: oneshot::Sender<Result<(), String>> },
+    /// v2.5.5: 手动扩容（manual_bonus += amount），返回新有效上限
+    ExpandCapacity { amount: i64, reply: oneshot::Sender<Result<i64, String>> },
+    /// v2.5.5: 维持/补齐多通道到目标数（自动选择 + listen），返回活跃 relay
+    EnsureChannels { reply: oneshot::Sender<Vec<String>> },
+    /// v2.5.5: 触发 DHT 随机发现（扩充 hop 候选）
+    DiscoverRelays,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -148,37 +164,50 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
 
 // ───────────────────────── swarm actor ─────────────────────────
 
-async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerCommand>) {
+async fn run_swarm_actor(
+    mut peer: P2pPeer,
+    mut cmd_rx: mpsc::Receiver<PeerCommand>,
+    store: Arc<PersistentStore>,
+) {
     // 周期性驱动网络栈：Kademlia 路由刷新、AutoNAT 重测、dnsaddr 解析与连接
     // 状态机都依赖被反复 poll；select! 在命令到达时会取消 next_event future，
     // 部分子系统的 waker 无法保证唤醒，因此用一个静默 idle tick 兜底 poll。
     let mut idle = tokio::time::interval(std::time::Duration::from_secs(5));
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
-    // v2.5.4: relay reservation 自动续期守护。
-    // 真机实测（含禁用全部定时器、等同标准 libp2p 用法的对照实验）：relay client
-    // 内部 renewal_timeout（futures_timer）在本机始终未自动续期——reservation 120s
-    // 到期后无 renewal 事件，根因在 relay client/futures_timer 层，与 select! cancel 无关。
-    // 显式重新 listen_on 同一 /p2p-circuit 可稳定触发 renewal=true；为避免旧 listener
-    // 不自动关闭导致 circuit 地址累积，listen_via_relay 会在续期前主动 remove_listener。
-    // 故在应用层每 80s（<90s 内部续期点，远小于 120s 到期）显式续期一次。
+    // v2.5.4/5: relay reservation 应用层续期（真机实测 relay client 内部
+    // renewal_timeout 在本机始终不自动续期）。每 80s（<120s 到期）对**所有**
+    // 活跃 relay 通道显式续期；listen_via_relay 按 relay 先 remove 旧 listener 再建。
     let mut renew = tokio::time::interval(std::time::Duration::from_secs(80));
     renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let mut active_relay: Option<String> = None;
+
+    // v2.5.5: 多通道状态
+    //   active_relay_addrs: relay_id → addr（持有/待确认的通道，用于续期与切换）
+    //   pending_probes:     probe dial 后等待 Identify 上报协议的回调
+    //   connecting:         已发起 listen、尚未收到 ReservationReqAccepted 的 relay
+    let mut active_relay_addrs: HashMap<String, String> = HashMap::new();
+    let mut pending_probes: HashMap<PeerId, oneshot::Sender<Result<bool, String>>> = HashMap::new();
+    let mut connecting: HashSet<PeerId> = HashSet::new();
 
     loop {
         tokio::select! {
             event = peer.next_event() => {
                 log_swarm_event(&event);
+                let need_ensure = process_swarm_event(
+                    &mut peer, &event, &store,
+                    &mut active_relay_addrs, &mut pending_probes, &mut connecting,
+                );
+                if need_ensure {
+                    let held = ensure_channels(&mut peer, &store, &mut active_relay_addrs, &mut connecting);
+                    eprintln!("🔁 自动切换后当前通道: {:?}", held);
+                }
             }
             maybe_cmd = cmd_rx.recv() => {
                 match maybe_cmd {
-                    Some(cmd) => {
-                        if let PeerCommand::ListenRelay { addr, .. } = &cmd {
-                            active_relay = Some(addr.clone());
-                        }
-                        handle_peer_command(&mut peer, cmd);
-                    }
+                    Some(cmd) => handle_peer_command(
+                        &mut peer, cmd, &store,
+                        &mut active_relay_addrs, &mut pending_probes, &mut connecting,
+                    ),
                     None => break,
                 }
             }
@@ -186,14 +215,273 @@ async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerComma
                 // 仅用于唤醒并重新 poll swarm，无额外动作
             }
             _ = renew.tick() => {
-                if let Some(ref relay_addr) = active_relay {
-                    match peer.listen_via_relay(relay_addr) {
-                        Ok(_) => eprintln!("🔄 自动续期 relay reservation 已发起: {}", relay_addr),
-                        Err(e) => eprintln!("⚠️ 自动续期失败 [{}]: {}", relay_addr, e),
+                for (id, addr) in &active_relay_addrs {
+                    match peer.listen_via_relay(addr) {
+                        Ok(_) => eprintln!("🔄 续期 relay reservation 已发起: {}", id),
+                        Err(e) => eprintln!("⚠️ 续期失败 [{}]: {}", id, e),
                     }
                 }
             }
         }
+    }
+}
+
+// ─────────────── v2.5.5 事件处理：probe 结果 / hop 自动入池 / 掉线切换 ───────────────
+
+/// 当前 UTC RFC3339
+pub fn now_iso() -> String {
+    chrono::Utc::now().to_rfc3339()
+}
+
+/// 从 start_time(RFC3339) 计算已运行天数
+fn elapsed_days_since(start_iso: &str) -> i64 {
+    if start_iso.is_empty() {
+        return 0;
+    }
+    match chrono::DateTime::parse_from_rfc3339(start_iso) {
+        Ok(t) => (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_days(),
+        Err(_) => 0,
+    }
+}
+
+/// 计算当前 relay 池容量快照
+pub fn current_capacity(store: &PersistentStore) -> relay_pool::CapacitySnapshot {
+    let start = store
+        .get_meta("relay_pool:start_time")
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let manual: i64 = store
+        .get_meta("relay_pool:manual_bonus")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let days = elapsed_days_since(&start);
+    let size = store.relay_count().unwrap_or(0) as i64;
+    relay_pool::capacity_snapshot(days, manual, size)
+}
+
+/// 从 Identify 上报的 listen_addrs 中构造一个可用的 relay multiaddr（追加 /p2p）
+fn build_relay_multiaddr(peer_id: &PeerId, info: &libp2p::identify::Info) -> Option<String> {
+    let public_ip4 = |s: &str| -> bool {
+        s.contains("/ip4/")
+            && !s.contains("127.0.0.1")
+            && !s.contains("/ip4/192.168.")
+            && !s.contains("/ip4/10.")
+            && !s.contains("/ip4/172.")
+    };
+    for a in &info.listen_addrs {
+        let s = a.to_string();
+        if public_ip4(&s) {
+            return Some(format!("{}/p2p/{}", s, peer_id));
+        }
+    }
+    // 域名 / AutoTLS / wss 地址（抗网络干扰）
+    for a in &info.listen_addrs {
+        let s = a.to_string();
+        if s.contains("/dns") || s.contains("/tls/ws") || s.contains("/wss") {
+            return Some(format!("{}/p2p/{}", s, peer_id));
+        }
+    }
+    info.listen_addrs.first().map(|a| format!("{}/p2p/{}", a, peer_id))
+}
+
+/// Identify 发现支持 hop 的公网节点：自动纳入 relay 池（DHT 发现扩充）
+fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: &PersistentStore) {
+    let id = peer_id.to_string();
+    let exists = store.load_relays().map(|v| v.iter().any(|r| r.relay_id == id)).unwrap_or(false);
+    if exists {
+        let _ = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso());
+        return;
+    }
+    let cap = current_capacity(store);
+    if cap.remaining <= 0 {
+        return; // 池满
+    }
+    if let Some(addr) = build_relay_multiaddr(peer_id, info) {
+        let relay = StoredRelay {
+            relay_id: id.clone(),
+            multiaddr: addr,
+            class: RelayClass::ThirdParty.as_str().to_string(),
+            status: "healthy".to_string(),
+            healthy: true,
+            fail_count: 0,
+            limit_sec: 0,
+            data_bytes: 0,
+            last_check: now_iso(),
+            created_at: now_iso(),
+        };
+        if store.upsert_relay(&relay).is_ok() {
+            eprintln!("➕ 自动纳入新 hop relay: {}", id);
+        }
+    }
+}
+
+/// 处理 swarm 事件中的关键状态变更；返回 true 表示有通道掉线、需要重新 ensure
+fn process_swarm_event(
+    peer: &mut P2pPeer,
+    event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent>,
+    store: &PersistentStore,
+    active: &mut HashMap<String, String>,
+    pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
+    connecting: &mut HashSet<PeerId>,
+) -> bool {
+    use libp2p::swarm::SwarmEvent::*;
+    let mut need_ensure = false;
+    match event {
+        ConnectionClosed { peer_id, .. } => {
+            let id = peer_id.to_string();
+            if active.remove(&id).is_some() || connecting.remove(peer_id) {
+                peer.remove_relay(&id);
+                let _ = store.mark_relay_failed(&id, &now_iso());
+                eprintln!("🔌 中继通道掉线 {}，准备自动切换", id);
+                need_ensure = true;
+            }
+        }
+        OutgoingConnectionError { peer_id, .. } => {
+            if let Some(pid) = peer_id {
+                if connecting.remove(pid) {
+                    let id = pid.to_string();
+                    active.remove(&id);
+                    peer.remove_relay(&id);
+                    let _ = store.mark_relay_failed(&id, &now_iso());
+                    eprintln!("❌ relay {} 连接失败，准备自动切换", id);
+                    need_ensure = true;
+                }
+            }
+        }
+        Behaviour(bev) => {
+            use crate::net::peer::PeerEvent::*;
+            match bev {
+                RelayClient(rc) => {
+                    use libp2p::relay::client::Event as RcEvent;
+                    if let RcEvent::ReservationReqAccepted { relay_peer_id, renewal, limit } = rc {
+                        let id = relay_peer_id.to_string();
+                        connecting.remove(relay_peer_id);
+                        let (dur, data) = match limit {
+                            Some(l) => (
+                                l.duration().map(|d| d.as_secs() as i64).unwrap_or(0),
+                                l.data_in_bytes().map(|x| x as i64).unwrap_or(0),
+                            ),
+                            None => (0, 0),
+                        };
+                        let _ = store.set_relay_status(
+                            &id,
+                            true,
+                            "active",
+                            dur,
+                            data,
+                            &now_iso(),
+                        );
+                        eprintln!("✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)", id, renewal, dur, data);
+                    }
+                }
+                Identify(ie) => {
+                    if let libp2p::identify::Event::Received { peer_id, info, .. } = ie {
+                        let supports_hop = info.protocols.iter().any(|p| {
+                            let s = p.to_string();
+                            s.contains("circuit/relay") && s.ends_with("/hop")
+                        });
+                        if let Some(tx) = pending.remove(peer_id) {
+                            let _ = tx.send(Ok(supports_hop));
+                        }
+                        if supports_hop {
+                            auto_adopt_hop_relay(peer_id, info, store);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+    need_ensure
+}
+
+/// v2.5.5: 维持/补齐多通道到目标数（DEFAULT_PARALLEL_RELAYS）。
+/// 从健康池按分类优先级选 relay，listen_via_relay 发起，返回当前持有通道。
+fn ensure_channels(
+    peer: &mut P2pPeer,
+    store: &PersistentStore,
+    active: &mut HashMap<String, String>,
+    connecting: &mut HashSet<PeerId>,
+) -> Vec<String> {
+    let target = DEFAULT_PARALLEL_RELAYS;
+    let mut held: HashSet<String> = peer.active_relay_ids().into_iter().collect();
+    let relays = store.load_relays().unwrap_or_default();
+    let mut in_use = held.clone();
+    for p in connecting.iter() {
+        in_use.insert(p.to_string());
+    }
+
+    let mut guard = 0;
+    while held.len() < target && guard < 20 {
+        guard += 1;
+        match relay_pool::select_replacement(&relays, &in_use) {
+            Some(r) => {
+                match peer.listen_via_relay(&r.multiaddr) {
+                    Ok(_) => {
+                        eprintln!("🛰️ 发起 relay 通道: {}", r.relay_id);
+                        held.insert(r.relay_id.clone());
+                        in_use.insert(r.relay_id.clone());
+                        active.insert(r.relay_id.clone(), r.multiaddr.clone());
+                        if let Ok(pid) = r.relay_id.parse::<PeerId>() {
+                            connecting.insert(pid);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
+                        let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                        in_use.insert(r.relay_id.clone());
+                    }
+                }
+            }
+            None => break, // 无更多健康候选
+        }
+    }
+    held.into_iter().collect()
+}
+
+/// v2.5.5: 主动维护一轮（独立 task 调用）：发现 → probe 未知 → 补齐通道 → 清理 dead
+async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
+    // 1. DHT 随机发现（hop 节点会在 Identify 时自动入池）
+    let _ = cmd_tx.send(PeerCommand::DiscoverRelays).await;
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    // 2. probe 池中不健康/未知候选
+    let candidates = store.load_relays().unwrap_or_default();
+    for r in candidates.iter().filter(|x| !x.healthy) {
+        let (tx, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::ProbeRelay { addr: r.multiaddr.clone(), reply: tx }).await.is_err() {
+            continue;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
+            Ok(Ok(Ok(true))) => {
+                let _ = store.set_relay_status(&r.relay_id, true, "healthy", 0, 0, &now_iso());
+                eprintln!("✅ probe 确认 hop relay: {}", r.relay_id);
+            }
+            Ok(Ok(Ok(false))) => {
+                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+            }
+            _ => {
+                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+            }
+        }
+    }
+
+    // 3. 补齐多通道
+    let (tx, rx) = oneshot::channel();
+    if cmd_tx.send(PeerCommand::EnsureChannels { reply: tx }).await.is_ok() {
+        if let Ok(chans) = tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
+            eprintln!("🛰️ 当前多通道: {:?}", chans.unwrap_or_default());
+        }
+    }
+
+    // 4. 清理失效（dead）节点
+    let removed = store.delete_dead_relays().unwrap_or(0);
+    if removed > 0 {
+        eprintln!("🧹 清理 dead relay {} 个", removed);
     }
 }
 
@@ -241,7 +529,14 @@ fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent
         _ => {}
     }
 }
-fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
+fn handle_peer_command(
+    peer: &mut P2pPeer,
+    cmd: PeerCommand,
+    store: &PersistentStore,
+    active: &mut HashMap<String, String>,
+    pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
+    connecting: &mut HashSet<PeerId>,
+) {
     match cmd {
         PeerCommand::GetInfo { reply } => {
             let info = PeerInfo {
@@ -294,10 +589,138 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
             let result = peer.listen_via_relay(&addr);
             if result.is_ok() {
                 eprintln!("✅ relay reservation 监听已发起: {}", addr);
+                if let Ok(base) = addr.parse::<Multiaddr>() {
+                    if let Some(id) = crate::net::peer::extract_relay_peer_id(&base) {
+                        active.insert(id, addr.clone());
+                        if let Some(pid) =
+                            crate::net::peer::extract_relay_peer_id(&base).and_then(|s| s.parse::<PeerId>().ok())
+                        {
+                            connecting.insert(pid);
+                        }
+                    }
+                }
             } else {
                 eprintln!("⚠️ relay listen 失败 [{}]: {}", addr, result.as_ref().err().unwrap());
             }
             let _ = reply.send(result);
+        }
+        PeerCommand::ProbeRelay { addr, reply } => {
+            let base: Result<Multiaddr, _> = addr.parse();
+            match base {
+                Ok(base) => {
+                    let pid = crate::net::peer::extract_relay_peer_id(&base)
+                        .and_then(|s| s.parse::<PeerId>().ok());
+                    match peer.probe_relay(&addr) {
+                        Ok(_) => match pid {
+                            Some(pid) => {
+                                pending.insert(pid, reply);
+                            }
+                            // 无 /p2p：dial 后由 Identify 自动入池，无法关联本次 probe
+                            None => {
+                                let _ = reply.send(Ok(false));
+                            }
+                        },
+                        Err(e) => {
+                            let _ = reply.send(Err(e));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(format!("addr 解析失败: {}", e)));
+                }
+            }
+        }
+        PeerCommand::ListRelayPool { reply } => {
+            let relays = store.load_relays().unwrap_or_default();
+            let cap = current_capacity(store);
+            let active_ids = peer.active_relay_ids();
+            let v = serde_json::json!({
+                "relays": relays,
+                "capacity": cap,
+                "active": active_ids,
+                "target_channels": DEFAULT_PARALLEL_RELAYS,
+                "relay_count": relays.len(),
+            });
+            let _ = reply.send(v);
+        }
+        PeerCommand::AddRelay { addr, class, reply } => {
+            let base: Result<Multiaddr, _> = addr.parse();
+            match base {
+                Ok(base) => {
+                    match crate::net::peer::extract_relay_peer_id(&base) {
+                        Some(id) => {
+                            let cap = current_capacity(store);
+                            let exists = store
+                                .load_relays()
+                                .map(|v| v.iter().any(|r| r.relay_id == id))
+                                .unwrap_or(false);
+                            if !exists && cap.remaining <= 0 {
+                                let _ = reply.send(Err("relay_pool_full".to_string()));
+                                return;
+                            }
+                            let cls = if class.is_empty() {
+                                RelayClass::General
+                            } else {
+                                RelayClass::from_str(&class)
+                            };
+                            let relay = StoredRelay {
+                                relay_id: id,
+                                multiaddr: addr,
+                                class: cls.as_str().to_string(),
+                                status: "unknown".to_string(),
+                                healthy: false,
+                                fail_count: 0,
+                                limit_sec: 0,
+                                data_bytes: 0,
+                                last_check: now_iso(),
+                                created_at: now_iso(),
+                            };
+                            let res = store.upsert_relay(&relay).map_err(|e| e.to_string());
+                            let _ = reply.send(res);
+                        }
+                        None => {
+                            let _ = reply.send(Err("addr 缺少 /p2p/<peer_id>".to_string()));
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = reply.send(Err(format!("addr 解析失败: {}", e)));
+                }
+            }
+        }
+        PeerCommand::RemoveRelayCmd { target, reply } => {
+            peer.remove_relay(&target);
+            if let Ok(pid) = target.parse::<PeerId>() {
+                let id = pid.to_string();
+                active.remove(&id);
+                connecting.remove(&pid);
+                let _ = store.delete_relay(&id);
+            }
+            let _ = reply.send(Ok(()));
+        }
+        PeerCommand::ExpandCapacity { amount, reply } => {
+            if amount == 0 {
+                let _ = reply.send(Err("amount_zero".to_string()));
+                return;
+            }
+            let cur: i64 = store
+                .get_meta("relay_pool:manual_bonus")
+                .ok()
+                .flatten()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let new = (cur + amount).max(0);
+            let _ = store.set_meta("relay_pool:manual_bonus", &new.to_string());
+            let cap = current_capacity(store);
+            let _ = reply.send(Ok(cap.effective_cap));
+        }
+        PeerCommand::EnsureChannels { reply } => {
+            let held = ensure_channels(peer, store, active, connecting);
+            let _ = reply.send(held);
+        }
+        PeerCommand::DiscoverRelays => {
+            peer.discover_random_peers();
+            eprintln!("🔍 触发 DHT relay 候选发现");
         }
     }
 }
@@ -416,6 +839,87 @@ async fn handle_network_api(
         match rx.await {
             Ok(Ok(())) => (201, serde_json::json!({"status":"relay_listen_initiated","addr":addr}).to_string()),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.5: GET /relays — relay 池报告（列表 + 容量快照 + 活跃通道）
+    else if method == "GET" && (path == "/relays" || path == "/relays/") {
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::ListRelayPool { reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(v) => (200, v.to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.5: POST /relays/add — 手动加入 relay（body: {"addr":"...","class":"general"}）
+    else if method == "POST" && (path == "/relays/add" || path == "/relays/add/") {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+        let addr = v.get("addr").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let class = v.get("class").and_then(|a| a.as_str()).unwrap_or("general").to_string();
+        if addr.is_empty() {
+            return (400, serde_json::json!({"error":"missing_addr"}).to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::AddRelay { addr: addr.clone(), class, reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(Ok(())) => (201, serde_json::json!({"status":"relay_added","addr":addr}).to_string()),
+            Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.5: POST /relays/remove — 移除 relay 并关闭通道（body: {"target":"<peer_id 或 addr>"}）
+    else if method == "POST" && (path == "/relays/remove" || path == "/relays/remove/") {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+        let target = v.get("target").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        if target.is_empty() {
+            return (400, serde_json::json!({"error":"missing_target"}).to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::RemoveRelayCmd { target: target.clone(), reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(Ok(())) => (200, serde_json::json!({"status":"relay_removed","target":target}).to_string()),
+            Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.5: POST /relays/expand — 手动扩容（body: {"amount":50000}）
+    else if method == "POST" && (path == "/relays/expand" || path == "/relays/expand/") {
+        let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
+        let amount = v.get("amount").and_then(|a| a.as_i64()).unwrap_or(0);
+        if amount == 0 {
+            return (400, serde_json::json!({"error":"missing_or_zero_amount"}).to_string());
+        }
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::ExpandCapacity { amount, reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(Ok(cap)) => (200, serde_json::json!({"status":"capacity_expanded","effective_cap":cap}).to_string()),
+            Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // v2.5.5: POST /relays/discover — 触发 DHT relay 候选发现
+    else if method == "POST" && (path == "/relays/discover" || path == "/relays/discover/") {
+        if cmd_tx.send(PeerCommand::DiscoverRelays).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        (202, serde_json::json!({"status":"relay_discovery_initiated"}).to_string())
+    }
+    // v2.5.5: POST /relays/ensure — 立即补齐多通道
+    else if method == "POST" && (path == "/relays/ensure" || path == "/relays/ensure/") {
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::EnsureChannels { reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(chans) => (200, serde_json::json!({"active":chans,"count":chans.len()}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
     }
@@ -567,6 +1071,58 @@ async fn run_api_server(
 
 // ───────────────────────── 启动 ─────────────────────────
 
+/// v2.5.5: 社区 relay 候选（DHT 提取的公网 IP，启动时 dial，hop 即自动入池；
+/// 可用性实时验证，不保证长期在线）
+const COMMUNITY_RELAY_CANDIDATES: &[&str] = &[
+    "/ip4/103.6.150.240/tcp/35317",
+    "/ip4/148.135.195.208/tcp/4001",
+    "/ip4/157.180.13.174/tcp/4001",
+    "/ip4/160.119.251.84/tcp/4001",
+    "/ip4/181.47.9.240/tcp/4001",
+    "/ip4/188.241.98.55/tcp/4001",
+    "/ip4/198.96.88.176/tcp/4001",
+    "/ip4/202.181.177.191/tcp/4001",
+    "/ip4/207.148.5.75/tcp/4001",
+    "/ip4/23.145.40.189/tcp/4001",
+];
+
+/// v2.5.5: 初始化 relay 池——元数据（start_time/manual_bonus）+ 种子 relay
+fn init_relay_pool(store: &PersistentStore) {
+    if store.get_meta("relay_pool:start_time").ok().flatten().is_none() {
+        let _ = store.set_meta("relay_pool:start_time", &now_iso());
+    }
+    if store.get_meta("relay_pool:manual_bonus").ok().flatten().is_none() {
+        let _ = store.set_meta("relay_pool:manual_bonus", "0");
+    }
+    if store.relay_count().unwrap_or(0) == 0 {
+        // 已真机验证的社区 relay（kubo，hop+stop+dcutr，reservation 120s/128KB）
+        let seed_id = "12D3KooWJFBbD3czz9bpC4escx5izFKwaBj87XJ5r1rUpzPUu4WE";
+        let seed = StoredRelay {
+            relay_id: seed_id.to_string(),
+            multiaddr: format!("/ip4/148.113.166.44/tcp/4001/p2p/{}", seed_id),
+            class: RelayClass::ThirdParty.as_str().to_string(),
+            status: "active".to_string(),
+            healthy: true,
+            fail_count: 0,
+            limit_sec: 120,
+            data_bytes: 131072,
+            last_check: now_iso(),
+            created_at: now_iso(),
+        };
+        match store.upsert_relay(&seed) {
+            Ok(_) => println!("✅ Relay 池已初始化（种子 relay 148.113.166.44，初始上限 1 万）"),
+            Err(e) => eprintln!("⚠️ 种子 relay 写入失败: {}", e),
+        }
+    } else {
+        let cap = current_capacity(store);
+        println!(
+            "✅ Relay 池已存在（{} 节点 / 有效上限 {}）",
+            store.relay_count().unwrap_or(0),
+            cap.effective_cap
+        );
+    }
+}
+
 /// 启动节点（核心入口，gsn-daemon 与 gsn daemon 共用）
 pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v2.5.4: 初始化 tracing，使 libp2p 内部（relay/identify/autonat/dcutr/swarm）的
@@ -603,10 +1159,18 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         store.task_count().unwrap_or(0)
     );
 
+    // v2.5.5: 初始化 relay 池（start_time / manual_bonus / 种子 relay）
+    init_relay_pool(&store);
+
     let mut peer = P2pPeer::new().await?;
     match peer.listen_on_port(args.port) {
         Ok(_) => println!("✅ libp2p P2P 端口: {}", args.port),
         Err(e) => eprintln!("⚠️ P2P 端口 {} 绑定失败: {}", args.port, e),
+    }
+    // v2.5.5 方案3: QUIC/UDP 监听（与 TCP 同端口），用于 UDP 打洞与直连
+    match peer.listen_quic_port(args.port) {
+        Ok(a) => println!("✅ libp2p QUIC 端口: {}", a),
+        Err(e) => eprintln!("⚠️ QUIC 端口 {} 监听失败: {}", args.port, e),
     }
     for addr_str in &args.bootstrap {
         if let Ok(addr) = addr_str.parse::<Multiaddr>() {
@@ -616,13 +1180,39 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
             }
         }
     }
+    // v2.5.5: dial 社区 relay 候选（无 /p2p），Identify 发现 hop 即自动入池
+    for cand in COMMUNITY_RELAY_CANDIDATES {
+        if let Err(e) = peer.probe_relay(cand) {
+            eprintln!("⚠️ 社区候选 {} dial 失败: {}", cand, e);
+        }
+    }
 
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel::<PeerCommand>(64);
     println!("   Peer ID: {}", peer.peer_id);
     println!("   模式: {:?}", node_mode);
     let _ = peer.subscribe("gsn/agents");
     let _ = peer.subscribe("gsn/tasks");
-    tokio::spawn(run_swarm_actor(peer, peer_cmd_rx));
+    tokio::spawn(run_swarm_actor(peer, peer_cmd_rx, store.clone()));
+
+    // v2.5.5: 启动后初始化维护（等 8s 让 bootstrap 连接），随后每小时巡检一轮
+    {
+        let (s, t) = (store.clone(), peer_cmd_tx.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(8)).await;
+            run_relay_maintenance(s, t).await;
+        });
+    }
+    {
+        let (s, t) = (store.clone(), peer_cmd_tx.clone());
+        tokio::spawn(async move {
+            let mut hourly = tokio::time::interval(std::time::Duration::from_secs(3600));
+            hourly.tick().await; // 首次立即触发跳过（已由启动维护完成）
+            loop {
+                hourly.tick().await;
+                run_relay_maintenance(s.clone(), t.clone()).await;
+            }
+        });
+    }
 
     let market = MarketActorHandle::spawn();
     println!("✅ Agent Market actor 已启动");

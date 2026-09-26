@@ -57,6 +57,9 @@
 | D2 | `gsn-core/Cargo.toml` | `description = "...vX.Y.Z: ..."` 里的 npm 版本 | v2.5.5 | 描述串跟 npm |
 | D3 | `gsn-core/src/bin/gsn.rs` | `println!("agent-universe vX.Y.Z")` | v2.5.5 | `gsn --version` 输出 |
 | D4 | `gsn-core/src/lib.rs` | 头注释 `//! ... vX.Y.Z` | v2.5.5 | 库文档头 |
+| D5 | `gsn-core/Cargo.lock` | `[[package]] name="gsn-core"` 下的 `version` | 0.2.55 | **lock 同步**（bump 脚本按包名块改，不误伤依赖） |
+| D6 | `client/src-tauri/Cargo.lock` | `[[package]] name="au-client-universal"` 下的 `version` | 2.5.5 | client 壳 lock |
+| D7 | `desktop/src-tauri/Cargo.lock` | `[[package]] name="au-client"` 下的 `version` | — | desktop 壳 lock（首次 build 才生成，不存在则跳过） |
 
 ### E. Python SDK
 
@@ -70,6 +73,7 @@
 |---|---|---|---|---|
 | F1 | `.github/workflows/ci.yml` | `au.version!=='X.Y.Z'` 校验 | 2.5.5 | CI 强制版本一致 |
 | F2 | `.github/workflows/client-build.yml` | 注释里的示例 tag `（如 vX.Y.Z）` | v2.5.5 | 注释，不影响构建 |
+| F3 | `.github/workflows/publish.yml` | 不写死版本，用 `GITHUB_REF_NAME`；含 npm-publish job | — | 打 tag 自动发 Release+npm；需配 `NPM_TOKEN` secret |
 
 ---
 
@@ -82,6 +86,21 @@
 | G3 | `CHANGELOG.md` | **顶部**插入新版本条目（## [vX.Y.Z] - 日期） |
 | G4 | `releases/vX.Y.Z.md` | **新建** release note（照 `releases/v2.5.5.md` 模板） |
 | G5 | `docs/architecture-vX.Y.Z.md` | 大版本/有架构变化时**新建**架构文档（带分层图） |
+
+---
+
+## 二·补、发布物校验点（打 tag 后逐项核对，防"代码改了但没发布"）
+
+| # | 校验项 | 怎么验 | 通过标准 |
+|---|---|---|---|
+| H1 | git tag | `git ls-remote --tags origin vX.Y.Z` | 远程存在该 tag |
+| H2 | GitHub Release | `GET /releases/tags/vX.Y.Z` | 非 draft，assets 含二进制/wheel |
+| H3 | npm registry | `npm view @twinsearth/agent-universe version` | 返回 X.Y.Z（不是旧版） |
+| H4 | CI 状态 | Actions 页 ci.yml / publish.yml | 全部 conclusion=success |
+| H5 | Release badge | README 的 `shields.io/github/v/release` | 自动显示 vX.Y.Z |
+| H6 | Rust lock | `grep -A1 'name="gsn-core"' gsn-core/Cargo.lock` | version=0.2.YZ |
+
+> v2.5.5 起启用；v2.4.0~v2.5.4 历史版本不补 tag/Release/npm，仅以 `releases/` 文档归档。
 
 ---
 

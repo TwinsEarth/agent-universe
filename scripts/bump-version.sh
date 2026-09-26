@@ -43,6 +43,19 @@ sed -i "s|核心库 v$V:|核心库 v$NEW:|" gsn-core/Cargo.toml
 sed -i "s/println!(\"agent-universe v$V\")/println!(\"agent-universe v$NEW\")/" gsn-core/src/bin/gsn.rs
 sed -i "s|^//! Agent Universe gsn-core v$V|//! Agent Universe gsn-core v$NEW|" gsn-core/src/lib.rs
 
+# ── D2. Cargo.lock 本包版本（按包名块改，不误伤其他依赖；lock 不存在则跳过）──
+bump_lock() {
+  local lock="$1" pkg="$2" newver="$3"
+  [ -f "$lock" ] || return 0
+  awk -v pkg="$pkg" -v newver="$newver" '
+    $0=="name = \""pkg"\"" {print; getline; sub(/version = .*/, "version = \""newver"\""); print; next}
+    {print}
+  ' "$lock" > "$lock.tmp" && mv "$lock.tmp" "$lock"
+}
+bump_lock gsn-core/Cargo.lock gsn-core "$RUST"
+bump_lock client/src-tauri/Cargo.lock au-client-universal "$NEW"
+bump_lock desktop/src-tauri/Cargo.lock au-client "$NEW"
+
 # ── E. Python SDK ──
 sed -i "s/^version = \"$V\"/version = \"$NEW\"/" aip-sdk-py/pyproject.toml
 

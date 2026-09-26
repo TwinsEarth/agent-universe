@@ -15,6 +15,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
+use libp2p::core::transport::ListenerId;
 use std::time::Duration;
 
 /// 网络行为组合
@@ -87,17 +88,19 @@ pub struct P2pPeer {
     pub swarm: Swarm<PeerBehaviour>,
     /// v2.5.3: 已发起过 bootstrap 连接的地址
     bootstrapped: Vec<String>,
+    /// v2.5.4: 当前 circuit relay listener（续期前主动移除，避免地址累积）
+    relay_listener_id: Option<ListenerId>,
 }
 
 impl P2pPeer {
     /// 创建新节点，从 ~/.gsn/identity.key 加载身份；不存在则生成并持久化
-    pub fn new() -> anyhow::Result<Self> {
+    pub async fn new() -> anyhow::Result<Self> {
         let local_key = load_or_create_identity()?;
-        Self::with_identity(local_key)
+        Self::with_identity(local_key).await
     }
 
     /// 用指定身份创建节点
-    pub fn with_identity(local_key: identity::Keypair) -> anyhow::Result<Self> {
+    pub async fn with_identity(local_key: identity::Keypair) -> anyhow::Result<Self> {
         let peer_id = PeerId::from(local_key.public());
 
         let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
@@ -109,6 +112,13 @@ impl P2pPeer {
             )?
             // v2.5.4: 启用 DNS 解析（/dns4、/dns6、/dnsaddr），公共 bootstrap 依赖
             .with_dns()?
+            // v2.5.4: 叠加 WebSocket（/ws、/wss），与 TCP 共存（or_transport）。
+            // wss 走 443 端口 + 域名，在受限/国内网络下抗干扰，用于经 relay 稳定建立 reservation。
+            .with_websocket(
+                libp2p::noise::Config::new,
+                libp2p::yamux::Config::default,
+            )
+            .await?
             // v2.5.4: 启用 Circuit Relay v2 客户端，支持通过中继跨 NAT
             .with_relay_client(
                 libp2p::noise::Config::new,
@@ -170,7 +180,7 @@ impl P2pPeer {
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-        Ok(Self { peer_id, swarm, bootstrapped: Vec::new() })
+        Ok(Self { peer_id, swarm, bootstrapped: Vec::new(), relay_listener_id: None })
     }
 
     /// 在指定端口监听
@@ -216,7 +226,7 @@ impl P2pPeer {
 
     /// 订阅 GossipSub 主题
     pub fn subscribe(&mut self, topic: &str) -> anyhow::Result<()> {
-        let t = IdentTopic::new(topic);
+        let t = IdentTopic::new(t);
         self.swarm.behaviour_mut().gossipsub.subscribe(&t)?;
         Ok(())
     }
@@ -283,6 +293,37 @@ impl P2pPeer {
         Ok(())
     }
 
+    /// v2.5.4: 经 Circuit Relay v2 中继监听（在 relay 上建立并持有 reservation）
+    ///
+    /// 关键区别：普通 `dial` 只建立一次性连接，Kademlia 用完即关，
+    /// **不会**产生 reservation。relay v2 要求 client 对一个以
+    /// `/p2p-circuit` 结尾的地址调用 `listen_on`，relay_client 才会：
+    /// 连接 relay → identify 确认 hop 协议 → 请求 reservation →
+    /// reservation 接受后持久保持连接，本机才可被其他节点经中继 dial 到。
+    ///
+    /// 入参 `relay_addr` 为中继节点 multiaddr，例如
+    /// `/ip4/15.235.144.210/tcp/4001/p2p/QmcZf59b...`，
+    /// 方法自动追加 `/p2p-circuit`。
+    pub fn listen_via_relay(&mut self, relay_addr: &str) -> Result<(), String> {
+        let base: Multiaddr = relay_addr
+            .parse()
+            .map_err(|e| format!("relay multiaddr 解析失败: {}", e))?;
+        let circuit = base.with(libp2p::multiaddr::Protocol::P2pCircuit);
+        // v2.5.4: 续期前主动移除旧 circuit listener。真机实测 relay client 内部
+        // reservation 过期/自动续期不可靠，旧 listener 不自动关闭、重复 listen 会累积
+        // circuit 地址；主动 remove_listener 可可靠关闭，保证恒为 1 个 listener、2 个地址。
+        if let Some(old) = self.relay_listener_id.take() {
+            let removed = self.swarm.remove_listener(old);
+            eprintln!("🧹 移除旧 relay listener {:?} (removed={})", old, removed);
+        }
+        let listener_id = self
+            .swarm
+            .listen_on(circuit)
+            .map_err(|e| format!("relay listen 失败: {}", e))?;
+        self.relay_listener_id = Some(listener_id);
+        Ok(())
+    }
+
     /// 已连接对等节点的 peer_id 列表
     pub fn connected_peer_ids(&self) -> Vec<String> {
         self.swarm
@@ -301,7 +342,7 @@ impl P2pPeer {
         // libp2p 官方公共 bootstrap/relay 节点
         let public_addrs: Vec<&str> = vec![
             "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-            "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19UokH",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
             "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
             "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
         ];

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # bump-version.sh — 一键把全仓版本声明点改到新版本
-# 用法: bash scripts/bump-version.sh 2.5.6
+# 用法: bash scripts/bump-version.sh 2.5.7
 # 规则: npm X.Y.Z  <->  Rust gsn-core 0.2.(Y*10+Z)
 # 配套清单: docs/version-checklist.md （新增版本点时务必同步更新本脚本与清单）
 set -euo pipefail
 
 NEW="$1"
 if [[ ! "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "用法: $0 X.Y.Z  (例如 $0 2.5.6)"; exit 1
+  echo "用法: $0 X.Y.Z  (例如 $0 2.5.7)"; exit 1
 fi
 IFS='.' read -r X Y Z <<< "$NEW"
 RUST="0.2.$((Y*10+Z))"
@@ -15,7 +15,9 @@ echo ">>> npm 版本: $NEW   Rust gsn-core 版本: $RUST"
 
 cd "$(dirname "$0")/.."
 
-V="[0-9]+\\.[0-9]+\\.[0-9]+"   # 匹配任意 X.Y.Z
+# sed 默认是 BRE，+ 必须转义为 \+ 才是量词；\. 转义点。
+V="[0-9]\+\\.[0-9]\+\\.[0-9]\+"   # 匹配任意 X.Y.Z
+RV="0\\.2\\.[0-9]\+"              # 匹配任意 gsn-core 0.2.NN
 
 # ── A. npm / JS 包 ──
 for f in package.json js/package.json js/package-lock.json client/package.json client/package-lock.json desktop/package.json desktop/package-lock.json; do
@@ -35,13 +37,19 @@ for c in client desktop; do
   sed -i "s/Agent Universe v$V/Agent Universe v$NEW/g" $c/src-tauri/tauri.conf.json
   sed -i "s/\"$V\"\.to_string()/\"$NEW\".to_string()/" $c/src-tauri/src/lib.rs
 done
+# client/desktop lib.rs 头注释（v2.5.6 起补：此前漏改头注释）
+sed -i "s|// Agent Universe Tauri Client v$V|// Agent Universe Tauri Client v$NEW|" client/src-tauri/src/lib.rs
+sed -i "s|// Agent Universe Tauri Desktop v$V|// Agent Universe Tauri Desktop v$NEW|" desktop/src-tauri/src/lib.rs
 sed -i "s/v$V — 桌面客户端前端/v$NEW — 桌面客户端前端/" desktop/src/main.js
 
 # ── D. gsn-core (Rust 线) ──
-sed -i "s/^version = \"0\.2\.$V\"/version = \"$RUST\"/" gsn-core/Cargo.toml
+# gsn-core 版本是 0.2.NN（两段数字 + 补丁号），不能把三段 X.Y.Z 拼进去（会变成四段）。
+sed -i "s/^version = \"$RV\"/version = \"$RUST\"/" gsn-core/Cargo.toml
 sed -i "s|核心库 v$V:|核心库 v$NEW:|" gsn-core/Cargo.toml
 sed -i "s/println!(\"agent-universe v$V\")/println!(\"agent-universe v$NEW\")/" gsn-core/src/bin/gsn.rs
 sed -i "s|^//! Agent Universe gsn-core v$V|//! Agent Universe gsn-core v$NEW|" gsn-core/src/lib.rs
+# Identify 协议版本（信息字段，不参与连通协商）
+sed -i "s|/gsn/$RV|/gsn/$RUST|" gsn-core/src/net/peer.rs
 
 # ── D2. Cargo.lock 本包版本（按包名块改，不误伤其他依赖；lock 不存在则跳过）──
 bump_lock() {
@@ -60,14 +68,36 @@ bump_lock desktop/src-tauri/Cargo.lock au-client "$NEW"
 sed -i "s/^version = \"$V\"/version = \"$NEW\"/" aip-sdk-py/pyproject.toml
 
 # ── F. CI ──
-sed -i "s/au.version !==\?'$V'/au.version!=='$NEW'/" .github/workflows/ci.yml
+# ci.yml 实际文本：au.version!=='X.Y.Z'（!== 前后无空格）
+sed -i "s/au.version!=='$V'/au.version!=='$NEW'/" .github/workflows/ci.yml
+
+# ── G. 版本清单自身 docs/version-checklist.md ──
+# 顶部"当前版本"行
+sed -i "s/当前版本：\*\*npm $V/当前版本：**npm $NEW/; s/Rust gsn-core $RV/Rust gsn-core $RUST/" docs/version-checklist.md
+# 第一节表格"当前值"列：仅在 "## 一、" 与 "## 二、" 之间替换；
+# 先用占位符隔离 Rust 线 / 带v前缀，避免被裸版本正则二次匹配。
+awk -v NEW="$NEW" -v RUST="$RUST" '
+  /^## 一、/ { s = 1 }
+  /^## 二、/ { s = 0 }
+  s {
+    gsub(/0\.2\.[0-9]+/, "XRUSTX")
+    gsub(/v[0-9]+\.[0-9]+\.[0-9]+/, "XVNEWX")
+    gsub(/[0-9]+\.[0-9]+\.[0-9]+/, "XNEWX")
+    gsub(/XRUSTX/, RUST)
+    gsub(/XVNEWX/, "v" NEW)
+    gsub(/XNEWX/, NEW)
+  }
+  { print }
+' docs/version-checklist.md > docs/version-checklist.md.tmp \
+  && mv docs/version-checklist.md.tmp docs/version-checklist.md
 
 # ── 客户端下载链接 / 文件名 ──
 sed -i "s/v$V 跨平台客户端/v$NEW 跨平台客户端/" client/README.md
-sed -i "s/_$V_/_${NEW}_/g" client/README.md
+sed -i "s/_${V}_/_${NEW}_/g" client/README.md
 sed -i "s/-v$V\.tar\.gz/-v${NEW}.tar.gz/g" client/README.md
 sed -i "s|releases/tag/v$V|releases/tag/v$NEW|g" client/README.md client/platforms/*.md
 
-echo ">>> 完成。下一步:"
-echo "    node js/test/test.js"
-echo "    补 README/RELEASES/CHANGELOG/releases/v$NEW.md (见 docs/version-checklist.md 第二节)"
+echo ">>> 版本声明点已改完。下一步:"
+echo "    1) 全量回归: bash test/run-all.sh   (Windows: powershell -File test/run-all.ps1)"
+echo "    2) 补 README/RELEASES/CHANGELOG/releases/v$NEW.md 谱系 (见 docs/version-checklist.md)"
+echo "    3) 回归全绿后再走发版 SOP (见 docs/version-checklist.md 第四节)"

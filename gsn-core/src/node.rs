@@ -29,6 +29,8 @@ pub enum PeerCommand {
     BootstrapPublic { reply: oneshot::Sender<Vec<String>> },
     /// v2.5.4: 获取 AutoNAT 检测的 NAT 状态
     NatStatus { reply: oneshot::Sender<String> },
+    /// v2.5.4: 经 Circuit Relay 中继监听（listen_on /p2p-circuit，建立并持有 reservation）
+    ListenRelay { addr: String, reply: oneshot::Sender<Result<(), String>> },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -152,6 +154,18 @@ async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerComma
     // 部分子系统的 waker 无法保证唤醒，因此用一个静默 idle tick 兜底 poll。
     let mut idle = tokio::time::interval(std::time::Duration::from_secs(5));
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    // v2.5.4: relay reservation 自动续期守护。
+    // 真机实测（含禁用全部定时器、等同标准 libp2p 用法的对照实验）：relay client
+    // 内部 renewal_timeout（futures_timer）在本机始终未自动续期——reservation 120s
+    // 到期后无 renewal 事件，根因在 relay client/futures_timer 层，与 select! cancel 无关。
+    // 显式重新 listen_on 同一 /p2p-circuit 可稳定触发 renewal=true；为避免旧 listener
+    // 不自动关闭导致 circuit 地址累积，listen_via_relay 会在续期前主动 remove_listener。
+    // 故在应用层每 80s（<90s 内部续期点，远小于 120s 到期）显式续期一次。
+    let mut renew = tokio::time::interval(std::time::Duration::from_secs(80));
+    renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut active_relay: Option<String> = None;
+
     loop {
         tokio::select! {
             event = peer.next_event() => {
@@ -159,26 +173,39 @@ async fn run_swarm_actor(mut peer: P2pPeer, mut cmd_rx: mpsc::Receiver<PeerComma
             }
             maybe_cmd = cmd_rx.recv() => {
                 match maybe_cmd {
-                    Some(cmd) => handle_peer_command(&mut peer, cmd),
+                    Some(cmd) => {
+                        if let PeerCommand::ListenRelay { addr, .. } = &cmd {
+                            active_relay = Some(addr.clone());
+                        }
+                        handle_peer_command(&mut peer, cmd);
+                    }
                     None => break,
                 }
             }
             _ = idle.tick() => {
                 // 仅用于唤醒并重新 poll swarm，无额外动作
             }
+            _ = renew.tick() => {
+                if let Some(ref relay_addr) = active_relay {
+                    match peer.listen_via_relay(relay_addr) {
+                        Ok(_) => eprintln!("🔄 自动续期 relay reservation 已发起: {}", relay_addr),
+                        Err(e) => eprintln!("⚠️ 自动续期失败 [{}]: {}", relay_addr, e),
+                    }
+                }
+            }
         }
     }
 }
 
 /// v2.5.4: 简洁记录关键 swarm 事件（连接建立/关闭/dial 错误/外部地址候选）
-fn log_swarm_event<TE: std::fmt::Debug>(event: &libp2p::swarm::SwarmEvent<TE>) {
+fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent>) {
     use libp2p::swarm::SwarmEvent::*;
     match event {
         ConnectionEstablished { peer_id, endpoint, established_in, .. } => {
             eprintln!("已连接 {peer_id} ({endpoint:?}, {established_in:?})");
         }
-        ConnectionClosed { peer_id, .. } => {
-            eprintln!("连接关闭 {peer_id}");
+        ConnectionClosed { peer_id, endpoint, .. } => {
+            eprintln!("连接关闭 {peer_id} ({endpoint:?})");
         }
         OutgoingConnectionError { peer_id, error, .. } => {
             eprintln!("出站连接失败 peer={peer_id:?}: {error:?}");
@@ -188,6 +215,28 @@ fn log_swarm_event<TE: std::fmt::Debug>(event: &libp2p::swarm::SwarmEvent<TE>) {
         }
         NewExternalAddrCandidate { address } => {
             eprintln!("外部地址候选 {address}");
+        }
+        NewListenAddr { address, .. } => {
+            eprintln!("✅ 新监听地址 {address}");
+        }
+        ExpiredListenAddr { address, .. } => {
+            eprintln!("监听地址过期 {address}");
+        }
+        Behaviour(bev) => {
+            use crate::net::peer::PeerEvent::*;
+            match bev {
+                RelayClient(e) => eprintln!("🔌 RelayClient {e:?}"),
+                Identify(e) => eprintln!("🏷️ Identify {e:?}"),
+                AutoNat(e) => eprintln!("🧭 AutoNat {e:?}"),
+                Dcutr(e) => eprintln!("⛏️ DCUtR {e:?}"),
+                Kademlia(e) => {
+                    use libp2p::kad::Event::*;
+                    if let RoutingUpdated { peer, .. } = e {
+                        eprintln!("📡 DHT 路由更新 {peer}");
+                    }
+                }
+                _ => {}
+            }
         }
         _ => {}
     }
@@ -240,6 +289,15 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
         PeerCommand::NatStatus { reply } => {
             let status = peer.nat_status();
             let _ = reply.send(status);
+        }
+        PeerCommand::ListenRelay { addr, reply } => {
+            let result = peer.listen_via_relay(&addr);
+            if result.is_ok() {
+                eprintln!("✅ relay reservation 监听已发起: {}", addr);
+            } else {
+                eprintln!("⚠️ relay listen 失败 [{}]: {}", addr, result.as_ref().err().unwrap());
+            }
+            let _ = reply.send(result);
         }
     }
 }
@@ -339,6 +397,28 @@ async fn handle_network_api(
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
     }
+    // v2.5.4: POST /relay-listen — 经 Circuit Relay 中继监听（建立并持有 reservation）
+    // body: {"addr":"/ip4/15.235.144.210/tcp/4001/p2p/QmcZf59b..."}
+    else if method == "POST" && (path == "/relay-listen" || path == "/relay-listen/") {
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
+        let addr = match parsed {
+            Ok(v) => v.get("addr").and_then(|a| a.as_str()).map(|s| s.to_string()),
+            Err(_) => None,
+        };
+        let addr = match addr {
+            Some(a) => a,
+            None => return (400, serde_json::json!({"error":"missing_or_invalid_addr"}).to_string()),
+        };
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::ListenRelay { addr: addr.clone(), reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(Ok(())) => (201, serde_json::json!({"status":"relay_listen_initiated","addr":addr}).to_string()),
+            Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
     else {
         (404, serde_json::json!({"error":"not_found","path":path}).to_string())
     }
@@ -356,7 +436,7 @@ async fn run_api_server(
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
 ) -> anyhow::Result<()> {
-    use crate::api::rest::{route, NodeInfo};
+    use crate::api::rest;
     use crate::mcp::sse;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -439,7 +519,7 @@ async fn run_api_server(
 
             let peer_info = fetch_peer_info(&peer_cmd_tx).await;
             let connected = peer_info.as_ref().map(|i| i.connected).unwrap_or(0);
-            let info = NodeInfo {
+            let info = rest::NodeInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 mode: mode.clone(),
                 p2p_port,
@@ -447,7 +527,7 @@ async fn run_api_server(
                 uptime_ms: start.elapsed().as_millis(),
             };
 
-            let routed = route(&method, &raw_path, &body, &market, &info).await;
+            let routed = rest::route(&method, &raw_path, &body, &market, &info).await;
 
             // 注册 agent 落 SQLite + DHT
             if method == "POST" && (path_part == "/api/v1/agents" || path_part == "/agents") && routed.status == 201 {
@@ -489,6 +569,17 @@ async fn run_api_server(
 
 /// 启动节点（核心入口，gsn-daemon 与 gsn daemon 共用）
 pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
+    // v2.5.4: 初始化 tracing，使 libp2p 内部（relay/identify/autonat/dcutr/swarm）的
+    // warn/error/trace 不再被静默丢弃；可用 RUST_LOG 控制粒度（如 libp2p_relay=trace）。
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_writer(std::io::stderr)
+        .with_target(true)
+        .try_init();
+
     println!("=== GSN Daemon v{} ===", env!("CARGO_PKG_VERSION"));
 
     let node_mode = match args.mode.as_str() {
@@ -512,7 +603,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         store.task_count().unwrap_or(0)
     );
 
-    let mut peer = P2pPeer::new()?;
+    let mut peer = P2pPeer::new().await?;
     match peer.listen_on_port(args.port) {
         Ok(_) => println!("✅ libp2p P2P 端口: {}", args.port),
         Err(e) => eprintln!("⚠️ P2P 端口 {} 绑定失败: {}", args.port, e),

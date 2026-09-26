@@ -21,13 +21,19 @@ pub enum PeerCommand {
     DhtPut { key: String, value: Vec<u8> },
     Subscribe { topic: String },
     Publish { topic: String, data: Vec<u8> },
+    /// v2.5.3: 主动连接 bootstrap 节点
+    AddBootstrap { addr: String, reply: oneshot::Sender<Result<(), String>> },
+    /// v2.5.3: 列出已连接对等节点 peer_id
+    ListPeers { reply: oneshot::Sender<Vec<String>> },
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize)]
 pub struct PeerInfo {
     pub peer_id: String,
     pub connected: usize,
     pub routing_entries: usize,
+    pub listen_addrs: Vec<String>,
+    pub bootstrapped: Vec<String>,
 }
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
@@ -157,6 +163,8 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
                 peer_id: peer.peer_id.to_string(),
                 connected: peer.connected_peers(),
                 routing_entries: peer.routing_table_size(),
+                listen_addrs: peer.listen_addrs(),
+                bootstrapped: peer.bootstrapped(),
             };
             let _ = reply.send(info);
         }
@@ -175,6 +183,19 @@ fn handle_peer_command(peer: &mut P2pPeer, cmd: PeerCommand) {
                 eprintln!("⚠️ publish 失败 [{}]: {}", topic, e);
             }
         }
+        PeerCommand::AddBootstrap { addr, reply } => {
+            let result = peer.add_bootstrap_from_str(&addr);
+            if result.is_ok() {
+                eprintln!("✅ bootstrap 连接已发起: {}", addr);
+            } else {
+                eprintln!("⚠️ bootstrap 失败 [{}]: {}", addr, result.as_ref().err().unwrap());
+            }
+            let _ = reply.send(result);
+        }
+        PeerCommand::ListPeers { reply } => {
+            let peers = peer.connected_peer_ids();
+            let _ = reply.send(peers);
+        }
     }
 }
 
@@ -191,6 +212,65 @@ async fn fetch_peer_info(cmd_tx: &PeerCmdTx) -> Option<PeerInfo> {
     let (reply, rx) = oneshot::channel();
     cmd_tx.send(PeerCommand::GetInfo { reply }).await.ok()?;
     rx.await.ok()
+}
+
+/// v2.5.3: 网络增强 API
+///
+/// 端点：
+/// - GET  /peers       列出已连接对等节点
+/// - GET  /info        本机 peer 信息
+/// - POST /bootstrap   添加 bootstrap 节点（body: {"addr":"/ip4/.../tcp/..."}）
+async fn handle_network_api(
+    method: &str,
+    net_path: &str,
+    body: &str,
+    cmd_tx: &PeerCmdTx,
+    _start: &Instant,
+) -> (u16, String) {
+    let path = net_path.trim_end_matches('/');
+
+    // GET /peers
+    if method == "GET" && (path == "/peers" || path == "/peers/") {
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::ListPeers { reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(peers) => (200, serde_json::json!({"peers": peers, "count": peers.len()}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // GET /info
+    else if method == "GET" && (path == "/info" || path.is_empty() || path == "/") {
+        match fetch_peer_info(cmd_tx).await {
+            Some(info) => (200, serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())),
+            None => (500, serde_json::json!({"error":"peer_unavailable"}).to_string()),
+        }
+    }
+    // POST /bootstrap
+    else if method == "POST" && (path == "/bootstrap" || path == "/bootstrap/") {
+        let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
+        let addr = match parsed {
+            Ok(v) => v.get("addr").and_then(|a| a.as_str()).map(|s| s.to_string()),
+            Err(_) => None,
+        };
+        let addr = match addr {
+            Some(a) => a,
+            None => return (400, serde_json::json!({"error":"missing_or_invalid_addr"}).to_string()),
+        };
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx.send(PeerCommand::AddBootstrap { addr: addr.clone(), reply }).await.is_err() {
+            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        }
+        match rx.await {
+            Ok(Ok(())) => (201, serde_json::json!({"status":"bootstrap_initiated","addr":addr}).to_string()),
+            Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
+            Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    else {
+        (404, serde_json::json!({"error":"not_found","path":path}).to_string())
+    }
 }
 
 // ───────────────────────── HTTP API 服务器 ─────────────────────────
@@ -271,6 +351,18 @@ async fn run_api_server(
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (MCP {})", method, path_part, mcp.status);
+                return;
+            }
+
+            // ───── v2.5.3 网络增强端点 ─────
+            if path_part.starts_with("/api/v1/network/") || path_part.starts_with("/network/") {
+                let net_path = path_part.trim_start_matches("/api/v1").trim_start_matches("/network").to_string();
+                let net_resp = handle_network_api(&method, &net_path, &body, &peer_cmd_tx, &start).await;
+                let ct = if net_resp.1 == "application/json" { "application/json" } else { "text/plain" };
+                let resp = http_response(net_resp.0, if net_resp.0 == 200 { "OK" } else if net_resp.0 == 201 { "Created" } else if net_resp.0 == 400 { "Bad Request" } else { "Not Found" }, net_resp.1, ct);
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
                 return;
             }
 

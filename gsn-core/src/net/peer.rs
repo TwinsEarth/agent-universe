@@ -51,6 +51,8 @@ impl From<identify::Event> for PeerEvent {
 pub struct P2pPeer {
     pub peer_id: PeerId,
     pub swarm: Swarm<PeerBehaviour>,
+    /// v2.5.3: 已发起过 bootstrap 连接的地址
+    bootstrapped: Vec<String>,
 }
 
 impl P2pPeer {
@@ -106,7 +108,7 @@ impl P2pPeer {
 
         swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
 
-        Ok(Self { peer_id, swarm })
+        Ok(Self { peer_id, swarm, bootstrapped: Vec::new() })
     }
 
     /// 在指定端口监听
@@ -190,5 +192,40 @@ impl P2pPeer {
             .kbuckets()
             .map(|b| b.num_entries())
             .sum()
+    }
+
+    // ─────────────── v2.5.3 网络增强 ───────────────
+
+    /// 本机监听地址列表
+    pub fn listen_addrs(&self) -> Vec<String> {
+        self.swarm
+            .listeners()
+            .map(|a| a.to_string())
+            .collect()
+    }
+
+    /// 已发起 bootstrap 连接的地址列表
+    pub fn bootstrapped(&self) -> Vec<String> {
+        self.bootstrapped.clone()
+    }
+
+    /// 从字符串 multiaddr 发起 bootstrap 连接
+    pub fn add_bootstrap_from_str(&mut self, addr: &str) -> Result<(), String> {
+        let multi: Multiaddr = addr
+            .parse()
+            .map_err(|e| format!("multiaddr 解析失败: {}", e))?;
+        self.swarm
+            .dial(multi)
+            .map_err(|e| format!("dial 失败: {}", e))?;
+        self.bootstrapped.push(addr.to_string());
+        Ok(())
+    }
+
+    /// 已连接对等节点的 peer_id 列表
+    pub fn connected_peer_ids(&self) -> Vec<String> {
+        self.swarm
+            .connected_peers()
+            .map(|peer_id| peer_id.to_string())
+            .collect()
     }
 }

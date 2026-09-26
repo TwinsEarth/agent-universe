@@ -36,6 +36,7 @@ pub mod api;
 pub mod node;
 pub mod deepseek;
 pub mod llm;
+pub mod mesh;
 
 pub use identity::{Did, Keypair, Ed25519Signer, SecureKeyring};
 pub use agent::{AgentCard, Task, TaskStatus};

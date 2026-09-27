@@ -43,8 +43,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.5.8', () => {
-  assert.strictEqual(version, '2.5.8');
+test('版本号为 2.5.9', () => {
+  assert.strictEqual(version, '2.5.9');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -193,6 +193,101 @@ test('跨语言金额向量：逐账户余额命中 conformance 向量', () => {
   assert.strictEqual(report.totalSlashed, vector.expected_report.total_slashed);
   assert.strictEqual(report.balanceSum, vector.expected_report.balance_sum);
   assert.strictEqual(report.conserved, vector.expected_report.conserved);
+});
+
+// 8d. 认证式 QA：固定委员集 + 签名票（v2.5.9，与 Rust 认证式 BFT 对齐）
+test('认证式 QA：固定委员签名票通过、伪造与重放拒绝', () => {
+  const market = new AgentMarket();
+  const owner = 'did:au:qa-owner';
+  const requester = 'did:au:qa-req';
+  market.deposit(owner, 100);
+  market.deposit(requester, 50);
+  const card = AgentCard.new({ did: owner, name: 'worker' }).withSkill('writing');
+  market.registerAgent(card, MIN_STAKE);
+  market.publishTask('task-qa', 'goal', 50, requester);
+  market.submitBid('task-qa', owner, 40);
+  market.matchTask('task-qa');
+  // 执行完成，停在 COMPLETED 等待认证式验收（不走本地 verify）
+  const t = market.tasks.get('task-qa');
+  t.start();
+  t.complete();
+
+  // 固定 4 委员（n=4, f=1, quorum=3）
+  const now = Math.floor(Date.now() / 1000);
+  const kps = [];
+  const members = [];
+  for (let i = 0; i < 4; i++) {
+    const kp = Keypair.generate();
+    kps.push(kp);
+    members.push({ did: kp.did, public_key: kp.rawPublicKey().toString('hex') });
+  }
+  const makeVote = (kp, vote, nonce, round = 0) => {
+    const sv = {
+      task_id: 'task-qa', round, voter: kp.did, vote, nonce,
+      issued_at: now - 60, expires_at: now + 3600, signature: '',
+    };
+    sv.signature = kp.sign(AgentMarket._voteSigningBytes(sv));
+    return sv;
+  };
+  // 前 3 委员签 Stop
+  const votes = [
+    makeVote(kps[0], 'Stop', 'n1'),
+    makeVote(kps[1], 'Stop', 'n2'),
+    makeVote(kps[2], 'Stop', 'n3'),
+  ];
+  const r = market.verifyResultAuthenticated('task-qa', members, votes, 0, now);
+  assert.strictEqual(r.decision, 'stop');
+  assert.strictEqual(r.accepted, true);
+
+  // 伪造签名：委员3 签的票冒充委员0（round 1）→ 验签失败
+  const forged = makeVote(kps[3], 'Stop', 'nX', 1);
+  forged.voter = kps[0].did;
+  assert.throws(
+    () => market.verifyResultAuthenticated('task-qa', members, [forged], 1, now),
+    /签名无效/,
+  );
+
+  // 重放：委员3 在 round1 复用已用 nonce n1 → 拒绝
+  const replay = makeVote(kps[3], 'Stop', 'n1', 1);
+  assert.throws(
+    () => market.verifyResultAuthenticated('task-qa', members, [replay], 1, now),
+    /重放/,
+  );
+});
+
+// 8e. 独立审计：完整生命周期通过、守恒无法发现的拆账篡改被捕获（v2.5.9）
+test('独立审计：完整生命周期通过并捕获账实篡改', () => {
+  const market = new AgentMarket();
+  const owner = 'did:au:au-owner';
+  const requester = 'did:au:au-req';
+  market.deposit(owner, 100);
+  market.deposit(requester, 50);
+  const card = AgentCard.new({ did: owner, name: 'w' }).withSkill('writing');
+  market.registerAgent(card, MIN_STAKE);
+  market.publishTask('task-au', 'goal', 50, requester);
+  market.submitBid('task-au', owner, 40);
+  market.matchTask('task-au');
+  market.completeTask('task-au', true);
+  market.settle('task-au');
+
+  const good = market.independentAudit();
+  assert.ok(good.passed, `审计应通过: ${JSON.stringify(good.mismatches)}`);
+
+  // 拆账篡改：质押账户 100 → 50，另开幽灵账户 50（总额不变）
+  const stakeAcc = `__stake__:${owner}`;
+  const before = market.balance(stakeAcc);
+  market.balances.set(stakeAcc, before - 50);
+  market.balances.set('__ghost__:split', 50);
+  // 守恒检查被蒙蔽（余额总和不变）
+  const cons = market.conservationCheck(150);
+  assert.ok(cons.conserved, '拆账不改总额，守恒被蒙蔽');
+  // 独立审计捕获
+  const bad = market.independentAudit();
+  assert.ok(!bad.passed, '独立审计应发现账实不符');
+  assert.ok(
+    bad.mismatches.some((m) => m.account === '__ghost__:split'),
+    '应列出幽灵拆账账户',
+  );
 });
 
 // 9. AipIdentity DID 与签名往返

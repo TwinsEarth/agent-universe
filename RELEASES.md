@@ -40,7 +40,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.5 (Relay Pool - 中继池+多通道)
                                                         ├── v2.5.6 (Regression - 历史 Bug 回归套件)
                                                         ├── v2.5.7 (Identity - 跨实现身份一致性)
-                                                        └── v2.5.8 (Ledger - 精确整数账本) ← 当前
+                                                        ├── v2.5.8 (Ledger - 精确整数账本)
+                                                        └── v2.5.9 (Auth QA - 认证式 BFT + 独立审计 + 重放保护) ← 当前
 ```
 
 ## 大版本详情
@@ -330,6 +331,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：把全链路金额从 f64 改为精确整数——Rust 新增 `marketplace/money.rs` 的 `Money(i64)` newtype（`#[serde(transparent)]`，刻意不实现 `Add/Sub`、强制走 `checked_add/checked_sub` 防溢出）；守恒检查改为**精确相等、无容差**（旧 Rust 容差 0.001、JS 1e-9 差六个数量级，跨语言失效）。发布任务即把预算锁定到托管账户 `__escrow__:{task}`、注册即锁定质押到 `__stake__:`，付款方余额不足一律拒绝，杜绝凭空铸币（GAP §2.1–2.3）。JS `market.js` 新增 `_assertMoney`（拒绝非整数/非安全整数）、补齐 `__escrow__` 托管（旧版预算发布后"消失"、中途不守恒）、投标与罚没拒绝 `<= 0`（GAP §2.7）；Python `market_client.py` 金额注解 float→int。新增 `conformance/money-vectors.json` 权威向量，Rust 测试 `test_money_vector_matches_conformance` 与 JS 测试读取同一向量、逐账户逐聚合值一致。gsn-core **0.2.58**。验证 Rust lib 125 / v234 66 / v235 10、JS 14 项、market_demo 两场景精确守恒。详见 [releases/v2.5.8.md](releases/v2.5.8.md)。
 
+### v2.5.9 - Auth QA（认证式 BFT + 独立审计 + 重放保护）
+
+**核心内容**：把 QA 验收闸门从"调用方传 approvals、服务端合成 qa-0..n 委员与赞成票"改为**固定委员集的 Ed25519 签名投票**——新增 `SignedQaVote`（task_id/round/voter/vote/nonce/issued_at/expires_at/signature，对固定格式 signing_bytes 签名），`with_fixed_members` 绑定委员公钥集（n、f=(n-1)/3），`cast_signed_vote` 依次校验委员身份 / 任务 / 轮次 / 时间窗 / 拒绝 Silent / 验签 / nonce 去重，equivocation 整轮作废、`advance_view` 换轮恢复（GAP §3.1）。新增**可失败的独立审计一等 API** `independent_audit()`：只信任只追加流水、独立逐笔重放出期望余额再与当前余额取并集逐户比对（覆盖幽灵 / 缺失 / 篡改 / 拆账），并交叉核对充值 / 罚没聚合与总额，返回 `AuditReport`；旧 `audit_full_scan` 与守恒同算法同数据源且零调用点（GAP §2.4）。**重放保护**：每票一次性 nonce + 签发 / 过期时间窗（GAP §2.5/§4.7）。充值 / 质押 / 托管 / 支付 / 退款 / 罚没全部写入**只追加流水**，作为审计唯一信任源。REST（`/audit`、认证式 verify）、MCP（market_audit、认证参数）、CLI（`gsn audit`、`verify @file`）、JS（verifyResultAuthenticated / independentAudit / Ed25519 验签，WKWebView 无 crypto 抛错不静默）、Python（认证式 verify_result、audit()）同步。gsn-core **0.2.59**。验证 Rust lib **135** / 集成全绿（v235 认证式 10、v234 66、cross_lang 2）、JS **16** 项；关键反例：拆账 100→两户 50 时守恒被蒙蔽、独立审计判失败，伪造签名与 nonce 重放被拒。详见 [releases/v2.5.9.md](releases/v2.5.9.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -391,6 +396,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **历史 Bug 回归套件 + CI 强制全量回归（失败禁止发版）**（v2.5.6）
 - ✅ **跨实现身份一致性（统一 DID 派生 + conformance 签名逐字节命中上游）+ 客户端构建链路根治（file: 依赖）**（v2.5.7）
 - ✅ **精确整数账本 Money(i64) + 发布即托管防铸币 + 三端共享金额向量逐值一致**（v2.5.8）
+- ✅ **认证式 BFT（固定委员集 Ed25519 签名票）+ 可失败独立审计（只信任流水独立重放，能发现守恒盲区）+ nonce/时间窗重放保护 + 只追加结算流水**（v2.5.9）
 
 ### 技术栈
 

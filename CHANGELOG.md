@@ -2,6 +2,20 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.5.9] - 2026-09-27
+
+### 修复：认证式 BFT、可失败独立审计、重放保护（GAP §2.4/§2.5/§3.1/§4.7）
+
+- **认证式 BFT-lite（签名投票 + 固定委员集）**：旧版 QA 验收由调用方经 query 传 `approvals` / `committee_size`，服务端据此合成 `qa-0..n` 委员与赞成票，调用方可任意自我批准。新增 `SignedQaVote`（`task_id/round/voter/vote/nonce/issued_at/expires_at/signature`），委员用 Ed25519 对固定格式 `signing_bytes` 签名；`with_fixed_members` 绑定固定委员集（n、f=(n-1)/3），`cast_signed_vote` 顺序校验：委员在固定集 → 任务 / 轮次匹配 → 时间窗 → 拒绝 Silent → **验签** → nonce 去重 → 计票；模棱两可（equivocation）票作废，`advance_view` 换轮恢复。REST/MCP/CLI/actor 全链路改为认证式。
+- **可失败的独立审计一等 API**：旧 `audit_full_scan` 直接调用 `conservation_check`（同算法同数据源=自指），且全仓零调用点。新增 `independent_audit()`：**只信任只追加流水**，独立逐笔重放出期望余额，再与当前余额取并集逐户比对（覆盖幽灵账户 / 缺失 / 篡改 / 拆账），并独立核对充值 / 罚没聚合与总额；返回 `AuditReport {passed, replayed_records, replayed_deposits, replayed_slashed, expected_total, actual_total, aggregate_matches, mismatches}`。测试证明：把一户 100 拆成两户各 50 时 `conservation_check` 仍判守恒（被蒙蔽）、`independent_audit` 判失败并列出两户差异。
+- **重放保护（nonce + 时间戳 + 过期）**：每张签名票携带一次性 nonce（`seen_nonces` 去重，重放即拒）与签发 / 过期时间窗（`issued_at ≤ now ≤ expires_at`）；旧接口无 nonce、无主体、无状态前置，可重放刷信誉。
+- **只追加结算流水**：充值（Deposited）、质押（Staked）、托管（Escrowed）、支付（Completed）、退款（Refunded）、罚没（Slashed）全部 push 不可变记录，作为独立审计唯一信任源；此前 deposit / 质押 / 托管直接改余额不留痕，无法仅从流水完整重放。
+- **三端同步**：Rust（qa_committee.rs / settlement.rs / mod.rs / rest.rs / market_actor.rs / market_tools.rs / gsn.rs）、JS（market.js：`verifyResultAuthenticated` / `independentAudit` / Ed25519 验签，无 crypto 的 WKWebView 抛明确错误而非静默通过）、Python（market_client.py：`verify_result` 认证式 body、新增 `audit()`）。
+
+### 验证
+
+- Rust：lib **135** passed（含 3 个 independent_audit、认证 qa_committee 测试）、集成全绿（v235 认证式 verify 10、v234 66、cross_lang 2 等），0 failed / 0 ignored；JS SDK **16** 项通过（新增认证 QA 伪造 / 重放拒绝、独立审计拆账捕获）；Python `market_client.py` py_compile 通过。
+
 ## [v2.5.8] - 2026-09-27
 
 ### 修复：精确整数账本（Money），根治 f64 跨语言守恒失效（GAP §2.1–2.3）

@@ -212,13 +212,26 @@ pub async fn route(
             return Routed::bad_request("缺少结果数据")
         }
         Some(RouteTarget::TaskVerify(id)) => {
-            let approvals = q.get("approvals").and_then(|s| s.parse::<u32>().ok())
-                .or_else(|| parsed_body.as_ref().and_then(|v| v.get("approvals")).and_then(|x| x.as_u64()).map(|x| x as u32))
-                .unwrap_or(3);
-            let size = q.get("committee_size").and_then(|s| s.parse::<u32>().ok())
-                .or_else(|| parsed_body.as_ref().and_then(|v| v.get("committee_size")).and_then(|x| x.as_u64()).map(|x| x as u32))
-                .unwrap_or(4);
-            return from_mr(market.verify_result(id, approvals, size).await, 200);
+            // v2.5.9 认证式：固定委员集 (did + 公钥) + 委员私钥签名票，
+            // 不再接受 approvals / committee_size 合成投票。
+            let body = parsed_body.as_ref();
+            let round = body
+                .and_then(|v| v.get("round"))
+                .and_then(|x| x.as_u64())
+                .map(|x| x as u32)
+                .unwrap_or(0);
+            let members = match parse_committee_members(body) {
+                Ok(m) => m,
+                Err(e) => return Routed::bad_request(&e),
+            };
+            let votes = match parse_signed_votes(body) {
+                Ok(v) => v,
+                Err(e) => return Routed::bad_request(&e),
+            };
+            return from_mr(
+                market.verify_result(id, round, members, votes, unix_now()).await,
+                200,
+            );
         }
         Some(RouteTarget::TaskSettle(id)) => {
             return from_mr(market.settle_task(id).await, 200);
@@ -256,6 +269,9 @@ pub async fn route(
         Some(RouteTarget::Conservation) => {
             return from_mr(market.conservation().await, 200);
         }
+        Some(RouteTarget::Audit) => {
+            return from_mr(market.audit().await, 200);
+        }
         Some(RouteTarget::Leaderboard) => {
             let limit = q.get("limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
             return from_mr(market.leaderboard(limit).await, 200);
@@ -285,6 +301,7 @@ enum RouteTarget {
     AccountDeposit(String),
     AccountBalance(String),
     Conservation,
+    Audit,
     Leaderboard,
     Stats,
 }
@@ -328,8 +345,76 @@ fn map_api_segments(seg: &[&str]) -> Option<RouteTarget> {
         ["accounts", account, "deposit"] => Some(RouteTarget::AccountDeposit((*account).to_string())),
         ["accounts", account, "balance"] => Some(RouteTarget::AccountBalance((*account).to_string())),
         ["conservation"] => Some(RouteTarget::Conservation),
+        ["audit"] => Some(RouteTarget::Audit),
         ["leaderboard"] => Some(RouteTarget::Leaderboard),
         ["stats"] => Some(RouteTarget::Stats),
         _ => None,
     }
+}
+
+/// 当前 unix 秒
+pub(crate) fn unix_now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// 解析固定委员集：members = [{did, public_key(hex 32)}]
+pub(crate) fn parse_committee_members(
+    v: Option<&Value>,
+) -> Result<Vec<(String, [u8; 32])>, String> {
+    let arr = v
+        .and_then(|b| b.get("members"))
+        .and_then(|m| m.as_array())
+        .ok_or("缺少 members：固定委员集 [{\"did\":..,\"public_key\":hex32}]")?;
+    let mut out = Vec::new();
+    for m in arr {
+        let did = m
+            .get("did")
+            .and_then(|x| x.as_str())
+            .ok_or("委员缺少 did")?
+            .to_string();
+        let pk_hex = m
+            .get("public_key")
+            .or_else(|| m.get("pubkey"))
+            .and_then(|x| x.as_str())
+            .ok_or("委员缺少 public_key（hex）")?;
+        let pk_bytes = hex::decode(pk_hex).map_err(|e| format!("委员公钥 hex 错误: {e}"))?;
+        let pk: [u8; 32] = pk_bytes
+            .try_into()
+            .map_err(|_| "委员公钥必须为 32 字节")?;
+        out.push((did, pk));
+    }
+    Ok(out)
+}
+
+/// 解析委员签名票：signed_votes = [SignedQaVote...]，vote 可传 "Stop"/"Continue"
+pub(crate) fn parse_signed_votes(
+    v: Option<&Value>,
+) -> Result<Vec<crate::marketplace::SignedQaVote>, String> {
+    let arr = match v.and_then(|b| b.get("signed_votes")).and_then(|x| x.as_array()) {
+        Some(a) => a,
+        None => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for item in arr {
+        let mut obj = item.clone();
+        if let Some(map) = obj.as_object_mut() {
+            if let Some(vtag) = map.get("vote").and_then(|x| x.as_str()) {
+                let enum_tag = match vtag.to_lowercase().as_str() {
+                    "stop" => json!("Stop"),
+                    "continue" => json!("Continue"),
+                    "silent" => json!("Silent"),
+                    other => return Err(format!("未知投票类型 {other}")),
+                };
+                map.insert("vote".to_string(), enum_tag);
+            }
+        }
+        let sv = serde_json::from_value::<crate::marketplace::SignedQaVote>(obj)
+            .map_err(|e| format!("签名票格式错误: {e}"))?;
+        out.push(sv);
+    }
+    Ok(out)
 }

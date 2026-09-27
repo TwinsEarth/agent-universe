@@ -227,12 +227,22 @@ class MarketClient:
         )
 
     def verify_result(
-        self, task_id: str, approvals: int = 3, committee_size: int = 4
+        self,
+        task_id: str,
+        members: List[Dict[str, str]],
+        signed_votes: List[Dict[str, Any]],
+        round: int = 0,
     ) -> Dict[str, Any]:
+        """认证式 QA（v2.5.9）：固定委员集 + 委员签名票。
+
+        members: [{"did", "public_key"(hex32)}]；signed_votes: [SignedQaVote]。
+        服务端不再按 approvals 合成委员与票，杜绝调用方自我批准。
+        """
+        body = {"round": round, "members": members, "signed_votes": signed_votes}
         return self._request(
             "POST",
             f"/api/v1/tasks/{urllib.parse.quote(task_id)}/verify",
-            query={"approvals": approvals, "committee_size": committee_size},
+            body,
         )
 
     def settle_task(self, task_id: str) -> Dict[str, Any]:
@@ -272,6 +282,10 @@ class MarketClient:
     # ───────── 生态 ─────────
     def conservation(self) -> Dict[str, Any]:
         return self._request("GET", "/api/v1/conservation")
+
+    def audit(self) -> Dict[str, Any]:
+        """独立审计（v2.5.9）：从只追加流水独立重放，检测账实不符。"""
+        return self._request("GET", "/api/v1/audit")
 
     def leaderboard(self, limit: int = 10) -> Dict[str, Any]:
         return self._request(

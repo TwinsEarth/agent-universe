@@ -25,6 +25,12 @@ pub enum SettlementReason {
     Rejected,
     Slashed,
     Refunded,
+    /// 充值留痕（v2.5.9：让唯一资金入口也进入只追加流水，独立审计可从流水完整重放）
+    Deposited,
+    /// 质押锁定（did → __stake__:did）
+    Staked,
+    /// 任务托管锁定（requester → __escrow__:task）
+    Escrowed,
 }
 
 /// 结算记录
@@ -46,6 +52,37 @@ pub struct ConservationReport {
     pub total_paid: Money,
     pub total_slashed: Money,
     pub balance_sum: Money,
+}
+
+/// 单账户账实不符
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountMismatch {
+    pub account: String,
+    /// 从流水独立重放得到的应有余额
+    pub expected: Money,
+    /// 引擎当前余额
+    pub actual: Money,
+}
+
+/// 独立审计报告（v2.5.9）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditReport {
+    /// 审计是否通过
+    pub passed: bool,
+    /// 重放的流水条数
+    pub replayed_records: usize,
+    /// 从流水独立重放的累计充值
+    pub replayed_deposits: Money,
+    /// 从流水独立重放的累计罚没
+    pub replayed_slashed: Money,
+    /// 重放得到的系统应有总额（充值−罚没）
+    pub expected_total: Money,
+    /// 当前所有账户余额求和
+    pub actual_total: Money,
+    /// 重放聚合是否与引擎自维护的 total_deposits / total_slashed 一致
+    pub aggregate_matches: bool,
+    /// 逐账户账实不符明细
+    pub mismatches: Vec<AccountMismatch>,
 }
 
 fn now_ts() -> u64 {
@@ -86,6 +123,15 @@ impl SettlementEngine {
         self.balances
             .insert(account.to_string(), bal.checked_add(amount)?);
         self.total_deposits = self.total_deposits.checked_add(amount)?;
+        // v2.5.9：充值也进入只追加流水（from 系统外 "" → account）
+        self.records.push(SettlementRecord {
+            task_id: format!("deposit:{}", account),
+            from_account: String::new(),
+            to_account: account.to_string(),
+            amount,
+            reason: SettlementReason::Deposited,
+            timestamp: now_ts(),
+        });
         Ok(())
     }
 
@@ -111,6 +157,28 @@ impl SettlementEngine {
             .insert(from.to_string(), fb.checked_sub(amount)?);
         self.balances
             .insert(to.to_string(), tb.checked_add(amount)?);
+        Ok(())
+    }
+
+    /// 锁定（内部转账并留痕）：用于质押 `Staked` / 托管 `Escrowed`。
+    /// 与 `transfer` 的区别是会进入只追加流水，独立审计可从流水重放。
+    pub fn lock(
+        &mut self,
+        task_id: &str,
+        from: &str,
+        to: &str,
+        amount: Money,
+        reason: SettlementReason,
+    ) -> Result<(), String> {
+        self.transfer(from, to, amount)?;
+        self.records.push(SettlementRecord {
+            task_id: task_id.to_string(),
+            from_account: from.to_string(),
+            to_account: to.to_string(),
+            amount,
+            reason,
+            timestamp: now_ts(),
+        });
         Ok(())
     }
 
@@ -234,9 +302,118 @@ impl SettlementEngine {
         }
     }
 
-    /// 独立全量审计（与 conservation_check 同算法；v2.5.9 提升为独立审计器）
-    pub fn audit_full_scan(&self) -> ConservationReport {
-        self.conservation_check()
+    /// 独立审计（v2.5.9，GAP §2.4）
+    ///
+    /// 与 `conservation_check` 的关键区别：**不信任**引擎自维护的 `balances`
+    /// 与 `total_deposits / total_slashed` 聚合，而是只信任只追加、不可变的
+    /// `records` 流水，逐笔独立重放出每个账户的应有余额，再与当前 `balances`
+    /// 逐账户比对。这样即使增量聚合或余额被污染/算错，独立审计仍能发现。
+    pub fn independent_audit(&self) -> AuditReport {
+        let mut expected: HashMap<String, Money> = HashMap::new();
+        let mut deposits = Money::ZERO;
+        let mut slashed = Money::ZERO;
+        let mut overflow = false;
+
+        // 对重放账本做有符号增量；返回 false 表示 checked 溢出
+        let apply = |map: &mut HashMap<String, Money>, acct: &str, delta: Money| -> bool {
+            let cur = map.get(acct).copied().unwrap_or(Money::ZERO);
+            match cur.checked_add(delta) {
+                Ok(v) => {
+                    map.insert(acct.to_string(), v);
+                    true
+                }
+                Err(_) => false,
+            }
+        };
+
+        for r in &self.records {
+            match r.reason {
+                SettlementReason::Deposited => {
+                    if !apply(&mut expected, &r.to_account, r.amount) {
+                        overflow = true;
+                    }
+                    match deposits.checked_add(r.amount) {
+                        Ok(v) => deposits = v,
+                        Err(_) => overflow = true,
+                    }
+                }
+                SettlementReason::Slashed => {
+                    if !apply(&mut expected, &r.from_account, Money::new(-r.amount.as_i64())) {
+                        overflow = true;
+                    }
+                    match slashed.checked_add(r.amount) {
+                        Ok(v) => slashed = v,
+                        Err(_) => overflow = true,
+                    }
+                }
+                _ => {
+                    // Completed / Refunded / Staked / Escrowed：from → to 搬运
+                    // （Rejected 金额为 0，跳过）
+                    if r.amount.is_positive() {
+                        if !apply(&mut expected, &r.from_account, Money::new(-r.amount.as_i64())) {
+                            overflow = true;
+                        }
+                        if !apply(&mut expected, &r.to_account, r.amount) {
+                            overflow = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 逐账户比对（重放账户 ∪ 当前账户，覆盖 ghost / 缺失 / 篡改）
+        let mut accounts: HashSet<String> = HashSet::new();
+        for k in expected.keys() {
+            accounts.insert(k.clone());
+        }
+        for k in self.balances.keys() {
+            accounts.insert(k.clone());
+        }
+        let mut mismatches = Vec::new();
+        for a in accounts {
+            let exp = expected.get(&a).copied().unwrap_or(Money::ZERO);
+            let act = self.balances.get(&a).copied().unwrap_or(Money::ZERO);
+            if exp != act {
+                mismatches.push(AccountMismatch {
+                    account: a,
+                    expected: exp,
+                    actual: act,
+                });
+            }
+        }
+        mismatches.sort_by(|x, y| x.account.cmp(&y.account));
+
+        let expected_total = match deposits.checked_sub(slashed) {
+            Ok(v) => v,
+            Err(_) => {
+                overflow = true;
+                Money::ZERO
+            }
+        };
+        let mut actual_total = Money::ZERO;
+        for b in self.balances.values() {
+            match actual_total.checked_add(*b) {
+                Ok(v) => actual_total = v,
+                Err(_) => overflow = true,
+            }
+        }
+        let aggregate_matches =
+            deposits == self.total_deposits && slashed == self.total_slashed;
+        let passed = !overflow
+            && mismatches.is_empty()
+            && expected_total == actual_total
+            && aggregate_matches;
+
+        AuditReport {
+            passed,
+            replayed_records: self.records.len(),
+            replayed_deposits: deposits,
+            replayed_slashed: slashed,
+            expected_total,
+            actual_total,
+            aggregate_matches,
+            mismatches,
+        }
     }
 
     pub fn records(&self) -> &[SettlementRecord] {
@@ -298,5 +475,49 @@ mod tests {
         // 手工制造账实不符
         e.balances.insert("ghost".to_string(), Money::new(5));
         assert!(!e.conservation_check().conserved);
+    }
+
+    #[test]
+    fn independent_audit_passes_full_lifecycle() {
+        let mut e = SettlementEngine::new();
+        e.deposit("a", Money::new(200)).unwrap();
+        // 质押锁定、托管锁定（均带流水）
+        e.lock("a", "a", "__stake__:a", Money::new(100), SettlementReason::Staked)
+            .unwrap();
+        e.lock("t1", "a", "__escrow__:t1", Money::new(50), SettlementReason::Escrowed)
+            .unwrap();
+        let r = e.independent_audit();
+        assert!(r.passed, "干净全流程应通过审计: {:?}", r.mismatches);
+        assert_eq!(r.replayed_deposits, Money::new(200));
+        assert_eq!(r.actual_total, Money::new(200));
+    }
+
+    #[test]
+    fn independent_audit_catches_conservation_invisible_tampering() {
+        let mut e = SettlementEngine::new();
+        e.deposit("a", Money::new(100)).unwrap();
+        // 守恒但账实不符：把 a 的钱拆给 b，流水里却没有这次搬运
+        e.balances.insert("a".to_string(), Money::new(50));
+        e.balances.insert("b".to_string(), Money::new(50));
+        // 守恒检查被蒙蔽（总和仍为 100）
+        assert!(e.conservation_check().conserved);
+        // 独立审计必须失败，并给出两户明细
+        let r = e.independent_audit();
+        assert!(!r.passed);
+        assert_eq!(r.mismatches.len(), 2);
+        assert!(r.mismatches.iter().any(|m| {
+            m.account == "a" && m.expected == Money::new(100) && m.actual == Money::new(50)
+        }));
+        assert!(r.mismatches.iter().any(|m| {
+            m.account == "b" && m.expected == Money::ZERO && m.actual == Money::new(50)
+        }));
+    }
+
+    #[test]
+    fn independent_audit_detects_ghost_account() {
+        let mut e = SettlementEngine::new();
+        e.deposit("a", Money::new(100)).unwrap();
+        e.balances.insert("ghost".to_string(), Money::new(10));
+        assert!(!e.independent_audit().passed);
     }
 }

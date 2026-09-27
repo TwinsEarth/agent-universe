@@ -46,10 +46,11 @@ impl MarketMcpBridge {
                 .param("task_id", "string", "任务 ID", true),
             tool("market_submit_result", "提交任务执行结果")
                 .param("envelope", "object", "ResultEnvelope JSON", true),
-            tool("market_verify_result", "QA 委员会验证结果（BFT-lite）")
+            tool("market_verify_result", "认证式 QA 委员会验证结果（v2.5.9，BFT-lite）")
                 .param("task_id", "string", "任务 ID", true)
-                .param("approvals", "number", "投通过票委员数", false)
-                .param("committee_size", "number", "委员会总人数", false),
+                .param("members", "array", "固定委员集 [{\"did\":..,\"public_key\":hex32}]", true)
+                .param("signed_votes", "array", "委员私钥签发的投票数组（vote 传 Stop/Continue）", true)
+                .param("round", "number", "视图轮次（默认 0）", false),
             tool("market_settle_task", "结算已验收任务")
                 .param("task_id", "string", "任务 ID", true),
             tool("market_open_dispute", "对任务发起争议")
@@ -64,6 +65,7 @@ impl MarketMcpBridge {
             tool("market_balance", "查询账户余额")
                 .param("account", "string", "账户 DID", true),
             tool("market_conservation", "检查结算守恒不变量（无参数）"),
+            tool("market_audit", "独立审计：从只追加流水独立重放，检测守恒无法发现的账实不符（v2.5.9，无参数）"),
             tool("market_leaderboard", "查询信誉排行榜")
                 .param("limit", "number", "返回条数", false),
             tool("market_stats", "查询市场概览统计（无参数）"),
@@ -95,9 +97,27 @@ impl MarketMcpBridge {
             "market_match_task" => self.market.match_task(get_str("task_id")).await,
             "market_submit_result" => self.market.submit_result(get("envelope")).await,
             "market_verify_result" => {
-                let approvals = args.get("approvals").and_then(|v| v.as_u64()).unwrap_or(3) as u32;
-                let size = args.get("committee_size").and_then(|v| v.as_u64()).unwrap_or(4) as u32;
-                self.market.verify_result(get_str("task_id"), approvals, size).await
+                // v2.5.9 认证式：固定委员集 + 委员签名票
+                let round = args.get("round").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                let members =
+                    match crate::api::rest::parse_committee_members(args.get("members")) {
+                        Ok(m) => m,
+                        Err(e) => return ToolResult::error(e),
+                    };
+                let votes = match crate::api::rest::parse_signed_votes(args.get("signed_votes"))
+                {
+                    Ok(v) => v,
+                    Err(e) => return ToolResult::error(e),
+                };
+                self.market
+                    .verify_result(
+                        get_str("task_id"),
+                        round,
+                        members,
+                        votes,
+                        crate::api::rest::unix_now(),
+                    )
+                    .await
             }
             "market_settle_task" => self.market.settle_task(get_str("task_id")).await,
             "market_open_dispute" => self.market.open_dispute(get("dispute")).await,
@@ -109,6 +129,7 @@ impl MarketMcpBridge {
             "market_deposit" => self.market.deposit(get_str("account"), get_money("amount")).await,
             "market_balance" => self.market.balance(get_str("account")).await,
             "market_conservation" => self.market.conservation().await,
+            "market_audit" => self.market.audit().await,
             "market_leaderboard" => {
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
                 self.market.leaderboard(limit).await

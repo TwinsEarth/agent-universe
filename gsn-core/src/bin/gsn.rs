@@ -26,7 +26,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v2.5.8");
+            println!("agent-universe v2.5.9");
             0
         }
         "help" | "--help" | "-h" => {
@@ -183,11 +183,12 @@ fn print_market_help() {
     println!("  bid <bid.json>                      提交投标");
     println!("  match <task_id>                     匹配智能体");
     println!("  result <envelope.json>              提交结果");
-    println!("  verify <task_id> [approvals size]   QA 验证");
+    println!("  verify <task_id> @verify.json      认证式 QA 验证（v2.5.9）");
     println!("  settle <task_id>                    结算任务");
     println!("  dispute <dispute.json>              发起争议");
     println!("  arbitrate <dispute_id> <guilty> [slash]  仲裁");
     println!("  conservation                        守恒检查");
+    println!("  audit                               独立审计（v2.5.9）");
     println!("  leaderboard [limit]                 信誉排行榜");
     println!("  stats                               市场统计");
 }
@@ -260,12 +261,16 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             } else { None }
         }
         "verify" if p.len() >= 1 => {
-            let approvals = p.get(1).map(|s| s.as_str()).unwrap_or("3");
-            let size = p.get(2).map(|s| s.as_str()).unwrap_or("4");
+            // v2.5.9 认证式：载荷文件含 members（固定委员集）与 signed_votes（签名票）
+            if p.len() < 2 {
+                eprintln!("verify 需要认证载荷：verify <task_id> @verify.json");
+                std::process::exit(1);
+            }
+            let body = read_json_arg(&p[1]);
             Some((
                 "POST".into(),
-                format!("/api/v1/tasks/{}/verify?approvals={}&committee_size={}", p[0], approvals, size),
-                String::new(),
+                format!("/api/v1/tasks/{}/verify", p[0]),
+                body,
             ))
         }
         "settle" if p.len() >= 1 => Some((
@@ -284,6 +289,7 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             ))
         }
         "conservation" => Some(("GET".into(), "/api/v1/conservation".into(), String::new())),
+        "audit" => Some(("GET".into(), "/api/v1/audit".into(), String::new())),
         "leaderboard" => {
             let limit = p.first().map(|s| s.as_str()).unwrap_or("10");
             Some(("GET".into(), format!("/api/v1/leaderboard?limit={}", limit), String::new()))

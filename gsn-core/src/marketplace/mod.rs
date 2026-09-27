@@ -27,9 +27,10 @@ pub use agent_card::{
 pub use task::{
     TaskSpec, TaskState, ResultEnvelope, ErrorType, VerificationPolicy,
 };
-pub use qa_committee::{QaCommittee, QaMember, QaVote, QaDecision};
+pub use qa_committee::{QaCommittee, QaMember, QaVote, QaDecision, SignedQaVote};
 pub use settlement::{
-    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport,
+    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport, AuditReport,
+    AccountMismatch,
 };
 pub use reputation::{
     ReputationManager, MarketReputation, StakeRecord, StakeStatus,
@@ -147,10 +148,15 @@ impl AgentMarket {
             ));
         }
 
-        // 质押金从自有余额转入锁定账户（可被罚没）
+        // 质押金从自有余额转入锁定账户（可被罚没），并进入只追加流水
         let stake_acct = stake_account(&card.agent_id);
-        self.settlement
-            .transfer(&card.agent_id, &stake_acct, card.stake)?;
+        self.settlement.lock(
+            &card.agent_id,
+            &card.agent_id,
+            &stake_acct,
+            card.stake,
+            SettlementReason::Staked,
+        )?;
 
         // 注册质押记录
         self.reputation_mgr
@@ -189,7 +195,13 @@ impl AgentMarket {
         }
         let escrow = escrow_account(&task.task_id);
         self.settlement
-            .transfer(&task.requester, &escrow, task.budget)
+            .lock(
+                &task.task_id,
+                &task.requester,
+                &escrow,
+                task.budget,
+                SettlementReason::Escrowed,
+            )
             .map_err(|e| vec![e])?;
 
         task.winner_price = None;
@@ -363,6 +375,43 @@ impl AgentMarket {
             }
         }
 
+        Ok(decision)
+    }
+
+    /// 认证式 QA 验证（v2.5.9，GAP §3.1）
+    ///
+    /// `members` 为固定委员集 `(did, 公钥)`，`signed_votes` 为委员用私钥签发的
+    /// 真实投票。调用方可以指定委员集，但**无法伪造票**，从而根治「服务端按
+    /// approvals 合成委员与票、可自我批准」。
+    pub fn verify_result_authenticated(
+        &mut self,
+        task_id: &str,
+        round: u32,
+        members: Vec<(String, [u8; 32])>,
+        signed_votes: Vec<SignedQaVote>,
+        now: u64,
+    ) -> Result<QaDecision, String> {
+        let mut committee = QaCommittee::with_fixed_members(task_id, round, members)?;
+        for sv in signed_votes {
+            committee.cast_signed_vote(sv, now)?;
+        }
+        let decision = committee.tally();
+
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+        match decision {
+            QaDecision::Stop => {
+                task.state = TaskState::Accepted;
+            }
+            QaDecision::Continue => {
+                task.state = TaskState::Rework;
+            }
+            QaDecision::NoQuorum => {
+                task.state = TaskState::NoQuorum;
+            }
+        }
         Ok(decision)
     }
 
@@ -543,6 +592,11 @@ impl AgentMarket {
     /// 守恒检查
     pub fn conservation_check(&self) -> ConservationReport {
         self.settlement.conservation_check()
+    }
+
+    /// 独立审计（从只追加流水独立重放，v2.5.9）
+    pub fn independent_audit(&self) -> AuditReport {
+        self.settlement.independent_audit()
     }
 
     /// 信誉排行榜

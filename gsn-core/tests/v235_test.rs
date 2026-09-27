@@ -45,6 +45,15 @@ fn assert_ok(status: u16) {
     assert!((200..300).contains(&status), "期望 2xx，实际 {status}");
 }
 
+/// 字节转小写 hex
+fn to_hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
 // ───────────────────────── REST 完整市场闭环 ─────────────────────────
 
 #[test]
@@ -154,9 +163,39 @@ fn test_rest_full_market_lifecycle() {
             "/api/v1/tasks/task-1/results", &envelope.to_string()).await;
         assert_eq!(s, 201, "提交结果应 201，body={body}");
 
-        // 10. QA 验证（3/4 通过，f=1，quorum=3 → Stop）
-        let (s, body) = rest(&market, "POST",
-            "/api/v1/tasks/task-1/verify?approvals=3&committee_size=4", "").await;
+        // 10. QA 验证（认证式，v2.5.9）：4 委员固定集，前 3 委员私钥签 Stop
+        //     f=1、quorum=3 → Stop。服务端不再按 approvals 合成票。
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut members_json: Vec<Value> = Vec::new();
+        let mut votes_json: Vec<Value> = Vec::new();
+        for i in 1u8..=4 {
+            let mut seed = [0u8; 32];
+            seed[0] = i + 20;
+            let kp = gsn_core::Keypair::from_seed(&seed);
+            let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+            let did = format!("did:nau:qa-{}", i);
+            members_json.push(json!({"did": did, "public_key": to_hex(&pk)}));
+            if i <= 3 {
+                let sv = gsn_core::marketplace::SignedQaVote::sign(
+                    "task-1", 0, &did, gsn_core::marketplace::QaVote::Stop,
+                    &format!("nonce-{}", i), now - 60, now + 3600, &kp,
+                );
+                votes_json.push(serde_json::to_value(&sv).unwrap());
+            }
+        }
+        let verify_body = json!({
+            "round": 0,
+            "members": members_json,
+            "signed_votes": votes_json
+        });
+        let (s, body) = rest(
+            &market, "POST", "/api/v1/tasks/task-1/verify",
+            &verify_body.to_string(),
+        )
+        .await;
         assert_ok(s);
         assert_eq!(body["accepted"], true, "验证应通过: {body}");
 

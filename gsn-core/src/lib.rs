@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v2.5.8
+//! Agent Universe gsn-core v2.5.9
 //!
 //! 群体智能核心库 - 智能体宇宙
 //! 
@@ -82,7 +82,8 @@ pub use marketplace::{
     MarketAgentCard, SkillManifest, Pricing, PricingModel, Currency, Sla, SchemaField, AgentCategory,
     TaskSpec, TaskState, ResultEnvelope, ErrorType, VerificationPolicy as MarketVerificationPolicy,
     QaCommittee, QaMember, QaVote, QaDecision,
-    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport,
+    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport, AuditReport,
+    AccountMismatch,
     ReputationManager, MarketReputation, StakeRecord, StakeStatus,
     EvidenceGrade,
 };

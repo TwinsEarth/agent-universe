@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.5.8，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.5.9，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -309,6 +309,7 @@ npm install @twinsearth/agent-universe
 | v2.5.6 | **Regression** | **历史 Bug 回归套件：test/ 14 条 + Rust 网络回归，CI 强制全量回归，修新 bug 先加用例** |
 | v2.5.7 | **Identity** | **跨实现身份一致性：统一 DID 派生口径 + conformance 签名向量逐字节命中上游 + 客户端构建链路根治（file: 依赖）** |
 | v2.5.8 | **Ledger** | **精确整数账本 Money(i64)：守恒精确相等无容差 + 发布即托管 __escrow__ 防铸币 + 三端共享金额向量逐值一致** |
+| v2.5.9 | **Auth QA** | **认证式 BFT（固定委员集 Ed25519 签名票，替代调用方合成）+ 可失败独立审计（只信任流水独立重放）+ nonce/时间窗重放保护 + 只追加结算流水** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

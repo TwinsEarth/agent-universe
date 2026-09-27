@@ -117,8 +117,18 @@ pub enum MarketCommand {
     MatchTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
     /// 提交结果
     SubmitResult { envelope: Value, reply: oneshot::Sender<MarketResponse> },
-    /// 验证结果（approvals: 投 Stop 通过票的委员数，committee_size: 总委员数）
-    VerifyResult { task_id: String, approvals: u32, committee_size: u32, reply: oneshot::Sender<MarketResponse> },
+    /// 验证结果（认证式，v2.5.9）
+    ///
+    /// members: 固定委员集 (did, 公钥)；signed_votes: 委员私钥签发的真实投票。
+    /// 服务端不再按 approvals 合成委员与票。
+    VerifyResult {
+        task_id: String,
+        round: u32,
+        members: Vec<(String, [u8; 32])>,
+        signed_votes: Vec<SignedQaVote>,
+        now: u64,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 结算任务
     SettleTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
     /// 开启争议
@@ -131,6 +141,8 @@ pub enum MarketCommand {
     Balance { account: String, reply: oneshot::Sender<MarketResponse> },
     /// 守恒检查
     Conservation { reply: oneshot::Sender<MarketResponse> },
+    /// 独立审计（从流水独立重放，v2.5.9）
+    Audit { reply: oneshot::Sender<MarketResponse> },
     /// 信誉排行榜
     Leaderboard { limit: usize, reply: oneshot::Sender<MarketResponse> },
     /// 市场概览统计
@@ -226,8 +238,24 @@ impl MarketActorHandle {
     pub async fn submit_result(&self, envelope: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::SubmitResult { envelope, reply }).await
     }
-    pub async fn verify_result(&self, task_id: String, approvals: u32, committee_size: u32) -> MarketResponse {
-        self.call(|reply| MarketCommand::VerifyResult { task_id, approvals, committee_size, reply }).await
+    /// 认证式验证：固定委员集 + 委员签名票（v2.5.9）
+    pub async fn verify_result(
+        &self,
+        task_id: String,
+        round: u32,
+        members: Vec<(String, [u8; 32])>,
+        signed_votes: Vec<SignedQaVote>,
+        now: u64,
+    ) -> MarketResponse {
+        self.call(move |reply| MarketCommand::VerifyResult {
+            task_id,
+            round,
+            members,
+            signed_votes,
+            now,
+            reply,
+        })
+        .await
     }
     pub async fn settle_task(&self, task_id: String) -> MarketResponse {
         self.call(|reply| MarketCommand::SettleTask { task_id, reply }).await
@@ -246,6 +274,10 @@ impl MarketActorHandle {
     }
     pub async fn conservation(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::Conservation { reply }).await
+    }
+    /// 独立审计（v2.5.9）
+    pub async fn audit(&self) -> MarketResponse {
+        self.call(|reply| MarketCommand::Audit { reply }).await
     }
     pub async fn leaderboard(&self, limit: usize) -> MarketResponse {
         self.call(|reply| MarketCommand::Leaderboard { limit, reply }).await
@@ -357,29 +389,24 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 Err(e) => { let _ = reply.send(MarketResponse::err(format!("结果格式错误: {e}"))); }
             }
         }
-        MarketCommand::VerifyResult { task_id, approvals, committee_size, reply } => {
-            // 构造 BFT-lite 委员会：n = committee_size, f = (n-1)/3（向下取整）
-            let n = if committee_size > 0 { committee_size } else { 4 };
-            let f = (n - 1) / 3;
-            match QaCommittee::new(n, f) {
-                Ok(mut committee) => {
-                    for i in 0..n {
-                        let did = format!("qa-{}", i);
-                        committee.add_member(did.clone());
-                        let vote = if i < approvals { QaVote::Stop } else { QaVote::Continue };
-                        let _ = committee.cast_vote(&did, vote);
-                    }
-                    match market.verify_result(&task_id, &committee) {
-                        Ok(decision) => {
-                            let accepted = matches!(decision, QaDecision::Stop);
-                            let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                                "task_id": task_id,
-                                "accepted": accepted,
-                                "decision": format!("{:?}", decision),
-                            })));
-                        }
-                        Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-                    }
+        MarketCommand::VerifyResult {
+            task_id, round, members, signed_votes, now, reply,
+        } => {
+            // v2.5.9：只接受固定委员集成员的有效签名票，不再合成 qa-N 委员与票
+            match market.verify_result_authenticated(
+                &task_id, round, members, signed_votes, now,
+            ) {
+                Ok(decision) => {
+                    let tag = match decision {
+                        QaDecision::Stop => "stop",
+                        QaDecision::Continue => "continue",
+                        QaDecision::NoQuorum => "no_quorum",
+                    };
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "task_id": task_id,
+                        "decision": tag,
+                        "accepted": decision == QaDecision::Stop,
+                    })));
                 }
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
@@ -447,6 +474,14 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 "total_slashed": report.total_slashed,
                 "balance_sum": report.balance_sum,
             })));
+        }
+        MarketCommand::Audit { reply } => {
+            let report = market.independent_audit();
+            let _ = reply.send(
+                MarketResponse::ok(serde_json::to_value(&report).unwrap_or_else(|e| {
+                    serde_json::json!({"passed": false, "error": format!("审计序列化失败: {e}")})
+                })),
+            );
         }
         MarketCommand::Leaderboard { limit, reply } => {
             let board: Vec<Value> = market

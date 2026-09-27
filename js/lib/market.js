@@ -38,7 +38,15 @@ class AgentMarket {
     this.bids = new Map();        // taskId → Bid[]
     this.balances = new Map();    // 账户 → 余额
     this.totalSlashed = 0;
+    this.totalDeposits = 0;
     this.paidTasks = new Set();   // 已结算任务（防重复支付）
+    this.records = [];            // 只追加结算流水（独立审计的唯一信任源）
+    this._seenNonces = new Set(); // 已用投票 nonce（防重放）
+  }
+
+  /** 追加一条结算流水（与 Rust SettlementRecord 对齐） */
+  _record(from, to, amount, reason) {
+    this.records.push({ from, to, amount, reason });
   }
 
   /** 金额必须是安全整数（与 Rust Money(i64) 对齐，杜绝浮点导致的跨语言守恒失效） */
@@ -55,6 +63,8 @@ class AgentMarket {
     if (amount < 0) throw new Error('金额不能为负');
     const cur = this.balances.get(account) || 0;
     this.balances.set(account, cur + amount);
+    this.totalDeposits += amount;
+    this._record('', account, amount, 'Deposited');
   }
 
   balance(account) {
@@ -88,6 +98,7 @@ class AgentMarket {
     const stakeAcc = this._stakeAccount(owner);
     this.balances.set(owner, this.balance(owner) - stake);
     this.balances.set(stakeAcc, this.balance(stakeAcc) + stake);
+    this._record(owner, stakeAcc, stake, 'Staked');
 
     this.agents.set(card.did, {
       card,
@@ -110,6 +121,7 @@ class AgentMarket {
     this.balances.set(requester, this.balance(requester) - budget);
     const escrowAcc = this._escrowAccount(taskId);
     this.balances.set(escrowAcc, this.balance(escrowAcc) + budget);
+    this._record(requester, escrowAcc, budget, 'Escrowed');
 
     const task = new Task(taskId, goal);
     task.transition(TaskStatus.OPEN);
@@ -191,11 +203,13 @@ class AgentMarket {
     const assignee = task.assignee;
     this.balances.set(escrowAcc, this.balance(escrowAcc) - pay);
     this.balances.set(assignee, this.balance(assignee) + pay);
+    this._record(escrowAcc, assignee, pay, 'Completed');
     // 未用完的预算退还需求方
     const refund = task.budget - pay;
     if (refund > 0) {
       this.balances.set(escrowAcc, this.balance(escrowAcc) - refund);
       this.balances.set(task.requester, this.balance(task.requester) + refund);
+      this._record(escrowAcc, task.requester, refund, 'Refunded');
     }
 
     task.settle();
@@ -215,6 +229,7 @@ class AgentMarket {
     const stakeAcc = this._stakeAccount(agentId);
     this.balances.set(stakeAcc, this.balance(stakeAcc) - actual);
     this.totalSlashed += actual;
+    this._record(stakeAcc, '', actual, 'Slashed');
     entry.status = entry.stake < MIN_STAKE ? 'suspended' : entry.status;
     return { slashed: actual, reason, remainingStake: entry.stake };
   }
@@ -259,6 +274,164 @@ class AgentMarket {
       totalSlashed: this.totalSlashed,
       expected,
     };
+  }
+
+  /**
+   * 认证式 QA 验证（v2.5.9，与 Rust verify_result_authenticated 对齐）
+   * members: [{did, public_key(hex32)}] 固定委员集
+   * signedVotes: [SignedQaVote]，vote 为 Stop/Continue
+   */
+  verifyResultAuthenticated(
+    taskId,
+    members,
+    signedVotes,
+    round = 0,
+    now = Math.floor(Date.now() / 1000),
+  ) {
+    if (!Array.isArray(members) || members.length === 0) {
+      throw new Error('members 必须为非空固定委员集');
+    }
+    const n = members.length;
+    const f = Math.floor((n - 1) / 3);
+    const pubkeys = new Map();
+    for (const m of members) {
+      const pk = m.public_key || m.publicKey;
+      if (!m.did || !pk) throw new Error('委员需含 did 与 public_key');
+      if (!/^[0-9a-fA-F]{64}$/.test(pk)) throw new Error('委员公钥须为 32 字节 hex');
+      pubkeys.set(m.did, pk.toLowerCase());
+    }
+
+    // 逐票校验；voterVotes 记录每个委员最终立场（equivocated 票作废）
+    const voterVotes = new Map();
+    for (const sv of signedVotes || []) {
+      const pk = pubkeys.get(sv.voter);
+      if (!pk) throw new Error(`投票者 ${sv.voter} 不在固定委员集`);
+      if (sv.task_id !== taskId) throw new Error('投票任务不匹配');
+      if (Number(sv.round) !== round) throw new Error('投票轮次不匹配');
+      const issued = Number(sv.issued_at);
+      const expires = Number(sv.expires_at);
+      if (!(expires > issued) || now < issued || now > expires) {
+        throw new Error(`投票 ${sv.nonce} 不在有效时间窗`);
+      }
+      const voteTag = String(sv.vote).toLowerCase();
+      if (voteTag === 'silent') throw new Error('Silent 票不计入');
+      // 先验签，避免无效票污染 nonce
+      if (!AgentMarket._verifyEd25519(pk, AgentMarket._voteSigningBytes(sv), sv.signature)) {
+        throw new Error(`投票 ${sv.nonce} 签名无效`);
+      }
+      if (!sv.nonce) throw new Error('nonce 不能为空');
+      if (this._seenNonces.has(sv.nonce)) throw new Error(`投票 ${sv.nonce} 重放`);
+      this._seenNonces.add(sv.nonce);
+      const prev = voterVotes.get(sv.voter);
+      if (prev && prev !== voteTag) voterVotes.set(sv.voter, 'equivocated');
+      else if (!prev) voterVotes.set(sv.voter, voteTag);
+    }
+
+    let stops = 0;
+    let continues = 0;
+    for (const v of voterVotes.values()) {
+      if (v === 'stop') stops += 1;
+      else if (v === 'continue') continues += 1;
+    }
+    const quorum = 2 * f + 1;
+    let decision;
+    if (stops >= quorum) decision = 'stop';
+    else if (continues >= quorum) decision = 'continue';
+    else decision = 'no_quorum';
+    const accepted = decision === 'stop';
+    const task = this.tasks.get(taskId);
+    if (task && decision === 'stop') task.verify(true);
+    return { decision, accepted, stops, continues, quorum, n, f };
+  }
+
+  /**
+   * 独立审计（v2.5.9，与 Rust independent_audit 对齐）
+   * 只信任 records，逐笔重放出期望余额，再与当前 balances 逐户比对；
+   * 能发现守恒检查无法察觉的账实不符（如拆账、幽灵账户）。
+   */
+  independentAudit() {
+    const expected = new Map();
+    const add = (acct, delta) => {
+      const cur = expected.get(acct) || 0;
+      const v = cur + delta;
+      if (!Number.isSafeInteger(v)) throw new Error('重放溢出');
+      expected.set(acct, v);
+    };
+    let replayedDeposits = 0;
+    let replayedSlashed = 0;
+    for (const r of this.records) {
+      switch (r.reason) {
+        case 'Deposited':
+          add(r.to, r.amount);
+          replayedDeposits += r.amount;
+          break;
+        case 'Slashed':
+          add(r.from, -r.amount);
+          replayedSlashed += r.amount;
+          break;
+        default:
+          if (r.amount > 0) {
+            add(r.from, -r.amount);
+            add(r.to, r.amount);
+          }
+      }
+    }
+
+    const accounts = new Set([...expected.keys(), ...this.balances.keys()]);
+    const mismatches = [];
+    for (const a of accounts) {
+      const exp = expected.get(a) || 0;
+      const act = this.balances.get(a) || 0;
+      if (exp !== act) mismatches.push({ account: a, expected: exp, actual: act });
+    }
+    let balanceSum = 0;
+    for (const v of this.balances.values()) balanceSum += v;
+    const aggregateMatches =
+      replayedDeposits === this.totalDeposits &&
+      replayedSlashed === this.totalSlashed;
+    const expectedTotal = replayedDeposits - replayedSlashed;
+    return {
+      passed:
+        mismatches.length === 0 &&
+        aggregateMatches &&
+        expectedTotal === balanceSum,
+      replayedRecords: this.records.length,
+      replayedDeposits,
+      replayedSlashed,
+      expectedTotal,
+      actualTotal: balanceSum,
+      aggregateMatches,
+      mismatches,
+    };
+  }
+
+  /** 投票待签名规范字节（与 Rust SignedQaVote::signing_bytes 逐字一致） */
+  static _voteSigningBytes(sv) {
+    const tag = String(sv.vote).toUpperCase();
+    return (
+      `AU-QA-VOTE\ntask_id=${sv.task_id}\nround=${sv.round}\nvoter=${sv.voter}` +
+      `\nvote=${tag}\nnonce=${sv.nonce}\nissued_at=${sv.issued_at}` +
+      `\nexpires_at=${sv.expires_at}`
+    );
+  }
+
+  /** Ed25519 验签；无 crypto 的环境（WKWebView）抛明确错误而非静默通过 */
+  static _verifyEd25519(pubkeyHex, message, signatureHex) {
+    let crypto;
+    try {
+      crypto = require('crypto');
+    } catch (e) {
+      throw new Error('当前环境无 Ed25519 验签能力；签名验证须在 Node/Rust 侧进行');
+    }
+    const SPKI = '302a300506032b6570032100';
+    const der = Buffer.from(SPKI + pubkeyHex, 'hex');
+    const key = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
+    return crypto.verify(
+      null,
+      Buffer.from(message, 'utf8'),
+      key,
+      Buffer.from(signatureHex, 'hex'),
+    );
   }
 }
 

@@ -41,6 +41,8 @@
 | B12 | `client/package.json` | dependencies `"@twinsearth/agent-universe": "file:.."` | file:.. | **v2.5.7 改**（原 registry `^2.3.4`）：构建直接打包仓库根源码，根治"tag 触发构建时本版本 npm 包尚未发布"的时序竞争；不含版本号 |
 | B13 | `client/.npmrc` | `install-links=true` | — | **v2.5.7 新增**：让 `file:..` 按 files 白名单打包成 node_modules 内真实拷贝（默认 false 建 symlink，Vite 解析到 node_modules 外源码、CJS 不被转换致 build 失败） |
 | B14 | `client/src/main.js` | `import AU from '.../lib/market.js'; const { AgentMarket, MIN_STAKE } = AU;` | — | **v2.5.7 改**（原命名导入）：default 导入整个 module.exports 再解构，规避 rollup 对 re-export CJS 命名导出的静态识别失败；Vite build 已验证通过 |
+| B15 | `client/package.json` | devDependencies `"@tauri-apps/cli": "2.12.0"` | 2.12.0 | **v2.5.7 固定**（原浮动 `"^2"`）：锁定确切 CLI 版本，保证 `gen/android` 模板可复现、不随最新版漂移；不含 SDK 版本号，bump SDK 时**不期待** diff，仅升级 CLI 时手改 |
+| B16 | `client/src-tauri/.gitignore` | `/gen` | — | **v2.5.7 新增**：移动平台生成物（`gen/android`、`gen/schemas`）不入库，由 `tauri android init` 按锁定 CLI 全新生成；根治"已提交生成代码与 CLI 版本漂移导致 buildSrc 混搭"。原误提交的 44 个 gen 文件已 `git rm --cached` 移除 |
 
 ### C. Tauri 桌面壳 `desktop/`
 
@@ -89,6 +91,7 @@
 | F1 | `.github/workflows/ci.yml` | `au.version!=='X.Y.Z'` 校验 | 2.5.7 | CI 强制版本一致 |
 | F2 | `.github/workflows/client-build.yml` | 注释里的示例 tag `（如 vX.Y.Z）` | v2.5.7 | 注释，不影响构建 |
 | F3 | `.github/workflows/publish.yml` | 不写死版本，用 `GITHUB_REF_NAME`；含 npm-publish job | — | 打 tag 自动发 Release+npm；**必须配 `NPM_TOKEN` secret，缺失则 npm-publish job 红灯失败（v2.5.7 起不再静默跳过）** |
+| F4 | `.github/workflows/client-build.yml` | android job 先 `rm -rf src-tauri/gen/android` 再 `tauri android init`（去掉 `|| true`）；desktop job 加条件 `github.event_name=='push'`；APK 上传 `tag_name` 取 `inputs.release_tag`（为空则取 `github.ref_name`） | — | **v2.5.7 修复 Android 构建失败**：增量 init 致 buildSrc 新旧混搭（新版 BuildTask 必填 `projectDir`，旧版 RustPlugin 未赋值），全新生成保证配套。事后可用 workflow_dispatch 填 release_tag（如 v2.5.7）单独补跑 Android 并补传 APK，不重跑桌面 |
 
 ---
 

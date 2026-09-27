@@ -15,6 +15,8 @@
 
 ## 初始化
 
+`src-tauri/gen/` 为生成物、**不入库**（见 `src-tauri/.gitignore`）。必须用仓库锁定版本的 `@tauri-apps/cli` 全新生成；不要复用其它 CLI 版本留下的 `gen/android`——buildSrc 新旧混搭会使 Gradle 报 `property 'projectDir' has no configured value`。
+
 ```bash
 cd client
 npm install

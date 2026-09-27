@@ -1,0 +1,5 @@
+# Tauri 生成的移动平台工程（Android / iOS）
+# 由 `npm run tauri -- android init` / `ios init` 按当前 CLI 版本生成，不入库，
+# 避免已提交的生成代码与 @tauri-apps/cli 版本漂移（曾导致 buildSrc 新旧混搭、
+# Gradle 报 "property 'projectDir' has no configured value"）。
+/gen

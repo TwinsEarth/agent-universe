@@ -7,6 +7,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "目标 Release tag（手动触发时指定，如 v2.5.7）；tag 推送时自动取该 tag"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -17,6 +22,8 @@ env:
 jobs:
   desktop:
     name: Desktop - ${{ matrix.platform }}
+    # tag 推送（正常发布）才构建桌面；手动 dispatch 仅用于补验/补传 Android
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -131,9 +138,15 @@ jobs:
         working-directory: client
         run: npm run build
 
-      - name: Initialize Android project
+      - name: Initialize Android project (clean regen)
         working-directory: client
-        run: npx tauri android init || true
+        # gen/android 已存在时，增量 init 会用当前 CLI 模板覆盖部分 buildSrc 文件，
+        # 造成新版 BuildTask（含必填 projectDir 输入）与旧版 RustPlugin（不赋值）混搭、
+        # Gradle 校验报 "property 'projectDir' has no configured value"。
+        # 先删除再全新生成，保证 buildSrc 与当前 CLI 完全配套。
+        run: |
+          rm -rf src-tauri/gen/android
+          npx tauri android init
 
       - name: Build APK
         working-directory: client
@@ -144,5 +157,6 @@ jobs:
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
           files: |
             client/src-tauri/gen/android/app/build/outputs/apk/**/*.apk

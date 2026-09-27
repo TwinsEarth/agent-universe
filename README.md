@@ -121,7 +121,7 @@
 | `GovernorToken.sol` | 治理代币 |
 | `AgentCardAnchor.sol` | AgentCard 链上锚定 |
 | `PoCVSettlement.sol` | PoCV 结算 |
-| `ReputationBridge.sol` | 跨链信誉桥接 |
+| `ReputationRegistry.sol` | 链下信誉的链上锚定 |
 
 ## 快速开始
 

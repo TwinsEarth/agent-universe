@@ -432,7 +432,7 @@ fn test_contracts_exist() {
         "contracts/src/GovernorToken.sol",
         "contracts/src/AgentCardAnchor.sol",
         "contracts/src/PoCVSettlement.sol",
-        "contracts/src/ReputationBridge.sol",
+        "contracts/src/ReputationRegistry.sol",
     ];
     for c in &contracts {
         let path = base.join("../").join(c);

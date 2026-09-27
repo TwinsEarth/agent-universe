@@ -96,11 +96,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -166,7 +161,7 @@ jobs:
         id: tok
         run: |
           if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
-            echo "::error::NPM_TOKEN secret not set; npm cannot be published for this release tag. Add an npm Automation token at repo Settings -> Secrets and variables -> Actions -> NPM_TOKEN, then re-run this job."
+            echo "::error::NPM_TOKEN secret not set; npm cannot be published for this release tag. Add an npm Automation token at repo Settings -> Secrets and variable -> Actions -> NPM_TOKEN, then re-run this job."
             exit 1
           fi
           echo "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}" > .npmrc

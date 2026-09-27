@@ -148,9 +148,13 @@
 # 1. 一键改所有"版本声明点"（输入 npm 版本号，自动算 Rust 线；含本清单顶部与表格当前值）
 bash scripts/bump-version.sh 2.5.6
 
-# 2. 一键全量回归（JS 单测 + 历史 bug 回归 test/regression.js + Rust 全量）
-bash test/run-all.sh            # Windows: powershell -ExecutionPolicy Bypass -File test/run-all.ps1
-#    必须全绿；任何一条失败都禁止进入下一步、禁止发版（历史 bug 回归见 test/README.md）
+# 2. 发布前门禁（防呆，必须在「最后一次改动」后、git commit 前）：
+bash scripts/preflight.sh        # = check-version + clippy --all-targets -D warnings + Rust 全量
+#    有 JS 改动时再跑：bash test/run-all.sh（JS 单测 + 历史 bug 回归；Windows 用 test/run-all.ps1）
+#    必须全绿；任何一条失败都禁止进入下一步、禁止发版（历史 bug 回归见 test/README.md）。
+#    铁律：跑完门禁后若又做了任何改动（git mv / 重命名 / 重写 / 改测试 / 改合约），
+#    必须从头重跑 preflight。v2.6.2 曾因合约重命名后未重跑 test_contracts_exist、
+#    erasure 重写后未重跑 clippy，导致 CI 连续三次红灯。
 
 # 3. 手动补谱系点（第二节 G1–G5）：README / RELEASES / CHANGELOG / releases/新文件
 

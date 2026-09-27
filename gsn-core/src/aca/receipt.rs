@@ -41,7 +41,8 @@ pub struct Receipt {
     pub result_hash: [u8; 32],
     pub status: ReceiptStatus,
     pub metering: ResourceMetering,
-    /// TEE 证明（如有）
+    /// TEE 远程证明 quote（如有）——仅随收据携带，**本库不验证其真实性**，
+    /// 校验需对接对应厂商（Intel/AMD/ARM）的 attestation 服务。
     pub tee_quote: Option<String>,
     /// zk 证明（如有）
     pub zk_proof: Option<String>,

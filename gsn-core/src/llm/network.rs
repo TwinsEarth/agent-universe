@@ -86,6 +86,12 @@ pub struct OverseasRegistry {
     health: HashMap<&'static str, EndpointHealth>,
 }
 
+impl Default for DomesticRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DomesticRegistry {
     pub fn new() -> Self {
         let mut endpoints = HashMap::new();
@@ -167,6 +173,12 @@ impl DomesticRegistry {
 
     pub fn all_families(&self) -> Vec<&&'static str> {
         self.endpoints.keys().collect()
+    }
+}
+
+impl Default for OverseasRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

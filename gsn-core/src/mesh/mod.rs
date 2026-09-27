@@ -12,6 +12,8 @@
 pub mod heartbeat;
 pub mod discovery;
 pub mod session;
+// mesh/mesh.rs 与模块目录同名（常见组织方式），允许 module_inception。
+#[allow(clippy::module_inception)]
 pub mod mesh;
 
 pub use heartbeat::{HeartbeatConfig, HeartbeatTracker, PeerLiveness};

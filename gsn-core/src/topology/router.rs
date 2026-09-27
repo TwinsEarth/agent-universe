@@ -20,6 +20,12 @@ pub enum RouteBackend {
     SameNode,
 }
 
+impl Default for TopologyRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TopologyRouter {
     pub fn new() -> Self {
         Self {

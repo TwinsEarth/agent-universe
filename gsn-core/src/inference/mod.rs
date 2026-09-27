@@ -57,6 +57,12 @@ pub struct ComputeScheduler {
     assignments: HashMap<String, String>, // task_id -> node_id
 }
 
+impl Default for ComputeScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComputeScheduler {
     pub fn new() -> Self {
         Self {

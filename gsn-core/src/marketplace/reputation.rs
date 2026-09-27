@@ -149,7 +149,7 @@ impl ReputationManager {
         );
         self.reputations
             .entry(agent_id.to_string())
-            .or_insert_with(MarketReputation::new);
+            .or_default();
         Ok(())
     }
 

@@ -68,6 +68,7 @@ impl TraceLedger {
     }
 
     pub fn len(&self) -> usize { self.chain.len() }
+    pub fn is_empty(&self) -> bool { self.chain.is_empty() }
     pub fn verified_count(&self) -> usize {
         self.chain.iter().filter(|(_, g)| *g == EvidenceGrade::Verified).count()
     }

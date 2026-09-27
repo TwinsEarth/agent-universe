@@ -119,7 +119,7 @@ mod tests {
         let mut msgs = vec![Recipe::system_prompt("sys", "rule")];
         // 塞很多长消息，确保超预算
         for i in 0..100 {
-            msgs.push(Recipe::user(&format!(
+            msgs.push(Recipe::user(format!(
                 "This is a long message number {i} with substantial content to exceed the token budget threshold quickly enough for truncation to kick in."
             )));
         }

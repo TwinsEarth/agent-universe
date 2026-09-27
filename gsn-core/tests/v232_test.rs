@@ -40,9 +40,9 @@ fn test_mcp_response_error() {
 
 #[test]
 fn test_mcp_method_from_str() {
-    assert_eq!(McpMethod::from_str("initialize"), McpMethod::Initialize);
-    assert_eq!(McpMethod::from_str("tools/call"), McpMethod::ToolsCall);
-    assert_eq!(McpMethod::from_str("unknown"), McpMethod::Custom);
+    assert_eq!("initialize".parse::<McpMethod>().unwrap(), McpMethod::Initialize);
+    assert_eq!("tools/call".parse::<McpMethod>().unwrap(), McpMethod::ToolsCall);
+    assert_eq!("unknown".parse::<McpMethod>().unwrap(), McpMethod::Custom);
 }
 
 // ========== MCP 工具测试 ==========

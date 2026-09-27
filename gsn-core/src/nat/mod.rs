@@ -1,7 +1,12 @@
-//! NAT 穿透
+//! NAT 穿透（数据模型 / 教学占位）
 //!
-//! STUN、TURN、UDP 打洞
-//! ICE 框架实现 P2P 直连
+//! **本模块的 `NatTraversalManager` 不执行真实 STUN/TURN/打洞**：
+//! `gather_candidates` 返回空、`detect_nat_type` 返回固定值、`connect` 直接假设成功。
+//! 它只描述 ICE 候选地址与 NAT 类型的数据结构，不产生网络流量。
+//!
+//! 真实 NAT 穿透由 libp2p 运行时承担：
+//! - [`crate::net::peer::P2pPeer`]：AutoNAT 探测 + DCUtR 直连 + Circuit Relay 中继
+//! - [`crate::node`]：三端实测的打洞 / 中继 / 多通道切换（v2.5.3–v2.5.5）
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -59,6 +64,12 @@ pub struct NatTraversalManager {
     nat_type: Option<NatType>,
 }
 
+impl Default for NatTraversalManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NatTraversalManager {
     pub fn new() -> Self {
         Self {
@@ -83,21 +94,19 @@ impl NatTraversalManager {
 
     /// 收集本地候选地址
     pub fn gather_candidates(&mut self) -> Vec<IceCandidate> {
-        // 实际实现：查询本机网卡、STUN 服务器获取 reflexive 地址
+        // 占位：不查询网卡/STUN；真实候选收集见 net::peer（libp2p identify/AutoNAT）
         self.local_candidates.clone()
     }
 
     /// 检测 NAT 类型
     pub fn detect_nat_type(&mut self) -> NatType {
-        // 实际实现：向多个 STUN 服务器发送请求，比较返回的映射地址
-        // 简化：返回默认值
+        // 占位：不探测，固定返回；真实 NAT 类型由 libp2p AutoNAT 判定
         NatType::PortRestrictedCone
     }
 
     /// 建立连接
     pub fn connect(&mut self, peer_id: String, _remote_candidates: Vec<IceCandidate>) -> ConnectionState {
-        // 实际实现：ICE 协商，尝试打洞
-        // 简化：假设连接成功
+        // 占位：不进行 ICE 协商，直接置为 Connected；真实打洞/中继见 net::peer
         let state = ConnectionState::Connected;
         self.connections.insert(peer_id, state);
         state

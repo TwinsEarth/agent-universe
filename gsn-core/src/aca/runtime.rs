@@ -77,7 +77,7 @@ pub enum ProcessOutcome {
     /// 任务被拒绝
     TaskRejected { task_id: String, reason: String },
     /// 任务已执行，产出收据
-    TaskCompleted { task_id: String, receipt: Receipt },
+    TaskCompleted { task_id: String, receipt: Box<Receipt> },
     /// 消息/请求被拒绝（未进入流程）
     Rejected { reason: String },
 }
@@ -100,7 +100,9 @@ pub struct AcaProcessor {
     pending: HashMap<String, TaskEnvelope>,
     /// 任务执行器
     executor: Option<TaskExecutor>,
-    /// 是否支持 TEE
+    /// **能力声明标志（非真实 TEE）**：仅表示节点“声称”支持 TEE，
+    /// 不实例化 SGX/TDX/SEV-SNP/TrustZone enclave，也不做远程证明（attestation）。
+    /// 当前 crate 无 TEE 后端，TEE 隐私要求不受硬件级强制，需调用方自行核验执行环境。
     supports_tee: bool,
     /// 是否支持 ZK
     supports_zk: bool,
@@ -139,6 +141,11 @@ impl AcaProcessor {
         self
     }
 
+    /// 声明“支持 TEE”（仅置标志位）。
+    ///
+    /// **不启动任何可信执行环境，也不生成/校验远程证明**：只让节点在协商时
+    /// 宣称具备 TEE 能力。真实 TEE 需对接外部 attestation 服务，属后续版本范围。
+    /// 请勿据此认为任务在 enclave 中执行。
     pub fn with_tee(mut self) -> Self {
         self.supports_tee = true;
         self
@@ -362,7 +369,7 @@ impl AcaProcessor {
             self.pending.remove(task_id);
             ProcessOutcome::TaskCompleted {
                 task_id: task_id.to_string(),
-                receipt,
+                receipt: Box::new(receipt),
             }
         } else {
             // 失败：可用性扣分，收据标记 Failed 并签名留证
@@ -424,7 +431,7 @@ impl AcaProcessor {
 
         ProcessOutcome::TaskCompleted {
             task_id: receipt.task_id.clone(),
-            receipt,
+            receipt: Box::new(receipt),
         }
     }
 

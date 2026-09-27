@@ -12,6 +12,12 @@ pub struct TopologyGraph {
     edges: HashMap<String, HashSet<String>>,
 }
 
+impl Default for TopologyGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TopologyGraph {
     pub fn new() -> Self {
         Self {
@@ -36,8 +42,8 @@ impl TopologyGraph {
         self.nodes.insert(from.clone());
         self.nodes.insert(to.clone());
         
-        self.edges.entry(from.clone()).or_insert_with(HashSet::new).insert(to.clone());
-        self.edges.entry(to).or_insert_with(HashSet::new).insert(from);
+        self.edges.entry(from.clone()).or_default().insert(to.clone());
+        self.edges.entry(to).or_default().insert(from);
     }
 
     pub fn remove_edge(&mut self, from: &str, to: &str) {

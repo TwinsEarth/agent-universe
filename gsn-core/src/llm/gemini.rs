@@ -134,7 +134,7 @@ mod tests {
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("system_instruction"));
-        assert!(json.contains("gemini-1.5-pro") == false); // model in URL, not body
+        assert!(!json.contains("gemini-1.5-pro")); // model in URL, not body
     }
 
     #[test]

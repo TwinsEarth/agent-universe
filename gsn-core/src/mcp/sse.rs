@@ -108,7 +108,7 @@ pub fn handle_get() -> McpHttp {
     });
     let stream = format!(
         "event: ready\ndata: {}\n\nretry: 3000\n",
-        init_data.to_string()
+        init_data
     );
     McpHttp {
         status: 200,

@@ -166,7 +166,7 @@ impl AgentMarket {
         for skill in &card.skills {
             self.skill_index
                 .entry(skill.to_lowercase())
-                .or_insert_with(Vec::new)
+                .or_default()
                 .push(card.agent_id.clone());
         }
 
@@ -263,7 +263,7 @@ impl AgentMarket {
 
         self.bids
             .entry(bid.task_id.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(bid);
         Ok(())
     }

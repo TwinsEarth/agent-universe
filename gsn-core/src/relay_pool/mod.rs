@@ -53,15 +53,6 @@ impl RelayClass {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
-            "dedicated" => RelayClass::Dedicated,
-            "self_hosted" | "selfhosted" | "own" => RelayClass::SelfHosted,
-            "third_party" | "thirdparty" | "community" => RelayClass::ThirdParty,
-            _ => RelayClass::General,
-        }
-    }
-
     /// 选择优先级（数值越小优先级越高）：专用 > 自有 > 第三方 > 通用
     pub fn priority(&self) -> u8 {
         match self {
@@ -70,6 +61,19 @@ impl RelayClass {
             RelayClass::ThirdParty => 2,
             RelayClass::General => 3,
         }
+    }
+}
+
+impl std::str::FromStr for RelayClass {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
+            "dedicated" => RelayClass::Dedicated,
+            "self_hosted" | "selfhosted" | "own" => RelayClass::SelfHosted,
+            "third_party" | "thirdparty" | "community" => RelayClass::ThirdParty,
+            _ => RelayClass::General,
+        })
     }
 }
 
@@ -137,11 +141,11 @@ pub fn select_replacement(
         if !r.healthy || in_use.contains(&r.relay_id) {
             continue;
         }
-        let cls = RelayClass::from_str(&r.class);
+        let cls: RelayClass = r.class.parse().unwrap();
         let better = match &best {
             None => true,
             Some(b) => {
-                let bcls = RelayClass::from_str(&b.class);
+                let bcls: RelayClass = b.class.parse().unwrap();
                 cls.priority() < bcls.priority()
                     || (cls.priority() == bcls.priority() && r.fail_count < b.fail_count)
             }
@@ -158,8 +162,8 @@ pub fn select_replacement(
 pub fn select_parallel(relays: &[StoredRelay], n: usize) -> Vec<StoredRelay> {
     let mut healthy: Vec<StoredRelay> = relays.iter().filter(|r| r.healthy).cloned().collect();
     healthy.sort_by(|a, b| {
-        let ca = RelayClass::from_str(&a.class).priority();
-        let cb = RelayClass::from_str(&b.class).priority();
+        let ca = a.class.parse::<RelayClass>().unwrap().priority();
+        let cb = b.class.parse::<RelayClass>().unwrap().priority();
         ca.cmp(&cb).then(a.fail_count.cmp(&b.fail_count))
     });
     healthy.truncate(n);

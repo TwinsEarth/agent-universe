@@ -46,8 +46,8 @@ impl ProofOfContribution {
         hasher.update(agent_did.as_bytes());
         hasher.update(task_id.as_bytes());
         hasher.update(contribution_type.as_bytes());
-        hasher.update(&value.to_le_bytes());
-        hasher.update(&now.to_le_bytes());
+        hasher.update(value.to_le_bytes());
+        hasher.update(now.to_le_bytes());
         let hash = hasher.finalize().into();
 
         self.records.push(ContributionRecord {

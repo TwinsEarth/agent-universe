@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v2.6.1
+//! Agent Universe gsn-core v2.6.2
 //!
 //! 群体智能核心库 - 智能体宇宙
 //! 
@@ -41,7 +41,7 @@ pub mod relay_pool;
 
 pub use identity::{Did, Keypair, Ed25519Signer, SecureKeyring};
 pub use agent::{AgentCard, Task, TaskStatus};
-pub use net::{GsnNode, KademliaClient, GossipSub, RootSeedConfig, SeedMode};
+pub use net::{InMemoryNode, InMemoryKademlia, InMemoryGossip, RootSeedConfig, SeedMode};
 pub use chain::{PoCVVerifier, ProofOfComputation};
 pub use storage::LocalStorage;
 pub use verifier::VerifierClient;

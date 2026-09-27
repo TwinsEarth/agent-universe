@@ -14,6 +14,12 @@ pub struct ProofOfComputation {
 
 pub struct PoCVVerifier;
 
+impl Default for PoCVVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PoCVVerifier {
     pub fn new() -> Self {
         Self

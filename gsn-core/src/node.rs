@@ -339,18 +339,17 @@ fn process_swarm_event(
                 need_ensure = true;
             }
         }
-        OutgoingConnectionError { peer_id, .. } => {
-            if let Some(pid) = peer_id {
-                if connecting.remove(pid) {
-                    let id = pid.to_string();
-                    active.remove(&id);
-                    peer.remove_relay(&id);
-                    let _ = store.mark_relay_failed(&id, &now_iso());
-                    eprintln!("❌ relay {} 连接失败，准备自动切换", id);
-                    need_ensure = true;
-                }
+        OutgoingConnectionError { peer_id: Some(pid), .. } => {
+            if connecting.remove(pid) {
+                let id = pid.to_string();
+                active.remove(&id);
+                peer.remove_relay(&id);
+                let _ = store.mark_relay_failed(&id, &now_iso());
+                eprintln!("❌ relay {} 连接失败，准备自动切换", id);
+                need_ensure = true;
             }
         }
+        OutgoingConnectionError { peer_id: None, .. } => {}
         Behaviour(bev) => {
             use crate::net::peer::PeerEvent::*;
             match bev {
@@ -377,20 +376,19 @@ fn process_swarm_event(
                         eprintln!("✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)", id, renewal, dur, data);
                     }
                 }
-                Identify(ie) => {
-                    if let libp2p::identify::Event::Received { peer_id, info, .. } = ie {
-                        let supports_hop = info.protocols.iter().any(|p| {
-                            let s = p.to_string();
-                            s.contains("circuit/relay") && s.ends_with("/hop")
-                        });
-                        if let Some(tx) = pending.remove(peer_id) {
-                            let _ = tx.send(Ok(supports_hop));
-                        }
-                        if supports_hop {
-                            auto_adopt_hop_relay(peer_id, info, store);
-                        }
+                Identify(libp2p::identify::Event::Received { peer_id, info, .. }) => {
+                    let supports_hop = info.protocols.iter().any(|p| {
+                        let s = p.to_string();
+                        s.contains("circuit/relay") && s.ends_with("/hop")
+                    });
+                    if let Some(tx) = pending.remove(peer_id) {
+                        let _ = tx.send(Ok(supports_hop));
+                    }
+                    if supports_hop {
+                        auto_adopt_hop_relay(peer_id, info, store);
                     }
                 }
+                Identify(_) => {}
                 _ => {}
             }
         }
@@ -661,7 +659,7 @@ fn handle_peer_command(
                             let cls = if class.is_empty() {
                                 RelayClass::General
                             } else {
-                                RelayClass::from_str(&class)
+                                class.parse().unwrap()
                             };
                             let relay = StoredRelay {
                                 relay_id: id,
@@ -930,6 +928,8 @@ async fn handle_network_api(
 
 // ───────────────────────── HTTP API 服务器 ─────────────────────────
 
+// 顶层 HTTP 服务器的依赖注入参数（8 个），聚合为 struct 反而割裂可读性，允许多参数。
+#[allow(clippy::too_many_arguments)]
 async fn run_api_server(
     listen: String,
     api_port: u16,
@@ -987,7 +987,7 @@ async fn run_api_server(
             let mut parts = request_line.split_whitespace();
             let method = parts.next().unwrap_or("GET").to_string();
             let raw_path = parts.next().unwrap_or("/").to_string();
-            let (path_part, _) = raw_path.split_once('?').map(|(p, q)| (p, q)).unwrap_or((&raw_path, ""));
+            let (path_part, _) = raw_path.split_once('?').unwrap_or((&raw_path, ""));
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = request[body_start..].to_string();
 

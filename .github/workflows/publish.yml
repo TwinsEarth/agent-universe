@@ -14,7 +14,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  gate:
+    name: Pre-publish Gate (tests + version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Version consistency
+        run: bash scripts/check-version.sh
+
+      - name: Rust tests
+        run: cd gsn-core && cargo test
+
+      - name: Clippy
+        run: cd gsn-core && cargo clippy --all-targets -- -D warnings
+
   build-and-upload:
+    needs: gate
     name: Build & Upload Packages
     runs-on: ${{ matrix.os }}
     permissions:
@@ -87,6 +106,7 @@ jobs:
           done
 
   build-python:
+    needs: gate
     name: Build Python Wheel
     runs-on: ubuntu-latest
     permissions:

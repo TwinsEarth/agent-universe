@@ -426,6 +426,22 @@ impl PersistentStore {
     }
 }
 
+/// 行映射：relay
+fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
+    Ok(StoredRelay {
+        relay_id: row.get(0)?,
+        multiaddr: row.get(1)?,
+        class: row.get(2)?,
+        status: row.get(3)?,
+        healthy: row.get::<_, i64>(4)? != 0,
+        fail_count: row.get(5)?,
+        limit_sec: row.get(6)?,
+        data_bytes: row.get(7)?,
+        last_check: row.get(8)?,
+        created_at: row.get(9)?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,20 +543,4 @@ mod tests {
         assert_eq!(recs[0].amount, Money::new(10));
         assert_eq!(s.ledger_count().unwrap(), 2, "物理行数含损坏行");
     }
-}
-
-/// 行映射：relay
-fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
-    Ok(StoredRelay {
-        relay_id: row.get(0)?,
-        multiaddr: row.get(1)?,
-        class: row.get(2)?,
-        status: row.get(3)?,
-        healthy: row.get::<_, i64>(4)? != 0,
-        fail_count: row.get(5)?,
-        limit_sec: row.get(6)?,
-        data_bytes: row.get(7)?,
-        last_check: row.get(8)?,
-        created_at: row.get(9)?,
-    })
 }

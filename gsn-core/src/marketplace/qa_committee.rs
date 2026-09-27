@@ -62,6 +62,7 @@ impl SignedQaVote {
     }
 
     /// 由委员密钥对签发一张投票
+    #[allow(clippy::too_many_arguments)]
     pub fn sign(
         task_id: &str,
         round: u32,
@@ -368,8 +369,7 @@ mod tests {
     fn three_signed_stop_votes_accept() {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
-        for i in 0..3 {
-            let (did, kp) = &kps[i];
+        for (i, (did, kp)) in kps.iter().take(3).enumerate() {
             let sv = SignedQaVote::sign(
                 "task-1", 0, did, QaVote::Stop,
                 &format!("nonce-{}", i), now - 10, now + 60, kp,
@@ -459,8 +459,7 @@ mod tests {
         // view change 后进入新一轮，可重新投票达成 Stop
         c.advance_view();
         assert_eq!(c.round(), 1);
-        for i in 0..3 {
-            let (did, kp) = &kps[i];
+        for (i, (did, kp)) in kps.iter().take(3).enumerate() {
             let sv = SignedQaVote::sign(
                 "task-1", 1, did, QaVote::Stop,
                 &format!("nn-{}", i), now - 10, now + 60, kp,

@@ -146,7 +146,7 @@ impl LayeredTopology {
             // 把当前层的代表按 fanout 个一组分到下一层
             let mut bucket: u64 = 0;
             let mut count = 0;
-            for (_, rep) in &self.reps[&level] {
+            for rep in self.reps[&level].values() {
                 next_groups.entry(bucket).or_default().push(rep.clone());
                 count += 1;
                 if count >= self.fanout {

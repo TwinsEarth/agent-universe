@@ -70,10 +70,10 @@ impl ContributionProof {
 
         let mut hasher = Sha256::new();
         hasher.update(agent_did.as_bytes());
-        hasher.update(&[contribution_type as u8]);
+        hasher.update([contribution_type as u8]);
         hasher.update(task_id.as_bytes());
-        hasher.update(&value.to_le_bytes());
-        hasher.update(&now.to_le_bytes());
+        hasher.update(value.to_le_bytes());
+        hasher.update(now.to_le_bytes());
         let proof_hash = hasher.finalize().into();
 
         Self {
@@ -98,10 +98,10 @@ impl ContributionProof {
     pub fn verify_hash(&self) -> bool {
         let mut hasher = Sha256::new();
         hasher.update(self.agent_did.as_bytes());
-        hasher.update(&[self.contribution_type as u8]);
+        hasher.update([self.contribution_type as u8]);
         hasher.update(self.task_id.as_bytes());
-        hasher.update(&self.value.to_le_bytes());
-        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(self.value.to_le_bytes());
+        hasher.update(self.timestamp.to_le_bytes());
         hasher.finalize().as_slice() == self.proof_hash
     }
 }

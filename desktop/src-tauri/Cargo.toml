@@ -1,7 +1,7 @@
 [package]
 name = "au-client"
-version = "2.6.1"
-description = "Agent Universe v2.6.1 桌面客户端"
+version = "2.6.2"
+description = "Agent Universe v2.6.2 桌面客户端"
 edition = "2021"
 
 [lib]

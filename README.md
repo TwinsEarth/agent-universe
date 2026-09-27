@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.1，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.2，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -312,6 +312,7 @@ npm install @twinsearth/agent-universe
 | v2.5.9 | **Auth QA** | **认证式 BFT（固定委员集 Ed25519 签名票，替代调用方合成）+ 可失败独立审计（只信任流水独立重放）+ nonce/时间窗重放保护 + 只追加结算流水** |
 | v2.6.0 | **State Machine** | **状态机恢复边（no_quorum→open、rework→running，消除 NoQuorum 吸收态）+ 证据分级作为结算强制闸门（is_trustworthy 此前零调用点）+ policy=None 提交即验收** |
 | v2.6.1 | **Ledger Persistence** | **账本落盘 + 重启从只追加流水重放恢复（ledger_entries，根治只写不读/重启丢账）+ MCP 单一来源参数校验（缺必填/类型错误返回 -32602，杜绝静默降级）** |
+| v2.6.2 | **Version Source** | **VERSION 唯一来源 + check-version 全仓一致性断言（CI 强制，漂移即红）+ 合约重写可部署（Hardhat 18 逐缺陷测试）+ 真实 Reed-Solomon 纠删码 + 网络替身 InMemory* 诚实化** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

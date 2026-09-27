@@ -53,7 +53,7 @@ fn test_task_state_machine() {
 
 #[test]
 fn test_dht_sharding() {
-    let dht = KademliaClient::new(16);
+    let dht = InMemoryKademlia::new(16);
     assert_eq!(dht.shard_count, 16);
     
     let shard1 = dht.shard_of("test-key-1");
@@ -65,7 +65,7 @@ fn test_dht_sharding() {
 
 #[test]
 fn test_dht_put_get() {
-    let mut dht = KademliaClient::new(4);
+    let mut dht = InMemoryKademlia::new(4);
     dht.put("key1".to_string(), b"value1".to_vec());
     assert_eq!(dht.get("key1"), Some(&b"value1".to_vec()));
     assert_eq!(dht.len(), 1);
@@ -73,7 +73,7 @@ fn test_dht_put_get() {
 
 #[test]
 fn test_gossip_sub() {
-    let mut gossip = GossipSub::new();
+    let mut gossip = InMemoryGossip::new();
     gossip.subscribe("agents".to_string());
     gossip.publish("agents", b"hello".to_vec());
     assert_eq!(gossip.get_messages("agents").len(), 1);
@@ -81,7 +81,7 @@ fn test_gossip_sub() {
 
 #[test]
 fn test_node_publish_and_discover() {
-    let mut node = GsnNode::new("peer123".to_string(), "/ip4/0.0.0.0/tcp/4001".to_string());
+    let mut node = InMemoryNode::new("peer123".to_string(), "/ip4/0.0.0.0/tcp/4001".to_string());
     
     let card = AgentCard::new("did:aip:agent1".to_string(), "Text Generator".to_string())
         .with_capability("text-generation".to_string());

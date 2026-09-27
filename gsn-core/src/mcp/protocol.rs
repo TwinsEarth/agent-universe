@@ -54,8 +54,13 @@ impl McpMethod {
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        match s {
+}
+
+impl std::str::FromStr for McpMethod {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
             "initialize" => McpMethod::Initialize,
             "ping" => McpMethod::Ping,
             "tools/list" => McpMethod::ToolsList,
@@ -65,7 +70,7 @@ impl McpMethod {
             "prompts/list" => McpMethod::PromptsList,
             "prompts/get" => McpMethod::PromptsGet,
             _ => McpMethod::Custom,
-        }
+        })
     }
 }
 
@@ -145,7 +150,8 @@ impl McpRequest {
     }
 
     pub fn method_enum(&self) -> McpMethod {
-        McpMethod::from_str(&self.method)
+        // FromStr::Err = Infallible（未知方法映射为 Custom），unwrap 不会失败。
+        self.method.parse().unwrap()
     }
 }
 

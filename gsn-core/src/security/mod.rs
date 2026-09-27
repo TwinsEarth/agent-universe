@@ -32,6 +32,12 @@ pub struct SecurityEngine {
     neighbor_pool: Vec<String>,
 }
 
+impl Default for SecurityEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SecurityEngine {
     pub fn new() -> Self {
         Self {

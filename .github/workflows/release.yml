@@ -12,7 +12,26 @@ permissions:
   contents: write
 
 jobs:
+  gate:
+    name: Pre-release Gate (tests + version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Version consistency
+        run: bash scripts/check-version.sh
+
+      - name: Rust tests
+        run: cd gsn-core && cargo test
+
+      - name: Clippy
+        run: cd gsn-core && cargo clippy --all-targets -- -D warnings
+
   build:
+    needs: gate
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -83,6 +102,7 @@ jobs:
           gh release upload ${{ github.ref_name }} "${files[@]}" --clobber
 
   python-sdk:
+    needs: gate
     name: Python SDK Package
     runs-on: ubuntu-latest
     steps:

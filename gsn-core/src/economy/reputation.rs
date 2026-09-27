@@ -105,7 +105,7 @@ impl ReputationSystem {
 
     pub fn top_reputation(&self, limit: usize) -> Vec<&ReputationRecord> {
         let mut records: Vec<_> = self.records.values().collect();
-        records.sort_by(|a, b| b.score.cmp(&a.score));
+        records.sort_by_key(|r| std::cmp::Reverse(r.score));
         records.truncate(limit);
         records
     }

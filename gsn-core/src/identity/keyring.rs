@@ -21,6 +21,12 @@ pub struct MemoryKeyring {
     data: Mutex<HashMap<String, Vec<u8>>>,
 }
 
+impl Default for MemoryKeyring {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MemoryKeyring {
     pub fn new() -> Self {
         Self {

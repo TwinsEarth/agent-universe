@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,10 +41,10 @@ jobs:
         run: cd gsn-core && cargo test --verbose
 
       - name: Clippy
-        run: cd gsn-core && cargo clippy -- -D warnings 2>&1 || echo "clippy warnings tolerated"
+        run: cd gsn-core && cargo clippy --all-targets -- -D warnings
 
       - name: Run gsn-daemon --help
-        run: cd gsn-core && cargo run --bin gsn-daemon -- --help || echo "⚠️ gsn-daemon --help failed (tolerated)"
+        run: cd gsn-core && cargo run --bin gsn-daemon -- --help
 
   python-test:
     name: Python SDK
@@ -61,11 +60,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest
-          pip install aip-sdk-py/ || echo "pip install -e failed, running tests directly"
+          pip install pytest cryptography
+          pip install aip-sdk-py/
 
       - name: Run tests
-        run: cd aip-sdk-py && PYTHONPATH=. pytest tests/ -v
+        run: |
+          cd aip-sdk-py
+          PYTHONPATH=. pytest tests/ -v | tee /tmp/py.out
+          if grep -q " SKIPPED" /tmp/py.out; then
+            echo "::error::存在被静默跳过的 Python 测试（核心跨语言签名测试必须真正执行）"
+            exit 1
+          fi
 
   js-test:
     name: JS SDK
@@ -82,10 +87,18 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='2.6.1') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='2.6.2') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js
+
+  version-consistency:
+    name: Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert all version declarations match VERSION
+        run: bash scripts/check-version.sh
 
   contracts-check:
     name: Solidity Contracts
@@ -93,16 +106,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check contracts
-        run: |
-          if [ -d contracts/src ] && ls contracts/src/*.sol 1>/dev/null 2>&1; then
-            echo "=== Contract files ==="
-            find contracts/ -name "*.sol" -exec echo {} \; -exec wc -l {} \;
-            for f in contracts/src/*.sol; do
-              echo "Checking $f"
-              grep -q "pragma solidity" "$f" && echo "  ✅ has pragma"
-              grep -q "contract " "$f" && echo "  ✅ has contract"
-            done
-          else
-            echo "⚠️ No Solidity contracts found yet"
-          fi
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Hardhat
+        working-directory: contracts
+        run: npm install
+
+      - name: Compile & run per-defect tests (GAP §9.4)
+        working-directory: contracts
+        run: npx hardhat test

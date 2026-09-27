@@ -60,6 +60,12 @@ pub struct CrowdsourcingMarket {
     task_queue: Vec<String>,
 }
 
+impl Default for CrowdsourcingMarket {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CrowdsourcingMarket {
     pub fn new() -> Self {
         Self {

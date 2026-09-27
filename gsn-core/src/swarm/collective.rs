@@ -70,6 +70,12 @@ pub struct Swarm {
     task_count: u64,
 }
 
+impl Default for Swarm {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Swarm {
     pub fn new() -> Self {
         Self {

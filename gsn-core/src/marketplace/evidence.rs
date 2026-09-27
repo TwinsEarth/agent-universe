@@ -9,12 +9,14 @@ use serde::{Deserialize, Serialize};
 
 /// 证据等级
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum EvidenceGrade {
     /// 可复跑测试验证
     Verified,
     /// 原型阶段运行结果
     CpuProto,
     /// 未验证 / [RESULT NEEDED]
+    #[default]
     Unverified,
 }
 
@@ -39,8 +41,3 @@ impl std::fmt::Display for EvidenceGrade {
     }
 }
 
-impl Default for EvidenceGrade {
-    fn default() -> Self {
-        EvidenceGrade::Unverified
-    }
-}

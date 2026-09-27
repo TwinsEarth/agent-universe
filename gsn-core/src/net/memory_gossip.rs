@@ -1,13 +1,25 @@
-//! GossipSub 消息广播（跨平台轻量版）
+//! 进程内 GossipSub 替身（in-memory，测试/演示用）
+//!
+//! **这不是真实 GossipSub**：`subscribe` / `publish` 只操作本地集合，
+//! 消息不会扩散到任何 peer。
+//!
+//! 真实主题广播见 [`crate::net::peer::P2pPeer`]（libp2p GossipSub）与 [`crate::node`]。
 
 use std::collections::{HashMap, HashSet};
 
-pub struct GossipSub {
+/// 进程内 pubsub 替身：仅本地保存主题消息，不联网。
+pub struct InMemoryGossip {
     topics: HashSet<String>,
     messages: HashMap<String, Vec<Vec<u8>>>,
 }
 
-impl GossipSub {
+impl Default for InMemoryGossip {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InMemoryGossip {
     pub fn new() -> Self {
         Self {
             topics: HashSet::new(),
@@ -25,7 +37,7 @@ impl GossipSub {
 
     pub fn publish(&mut self, topic: &str, message: Vec<u8>) {
         self.messages.entry(topic.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(message);
     }
 

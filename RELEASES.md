@@ -43,7 +43,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.8 (Ledger - 精确整数账本)
                                                         ├── v2.5.9 (Auth QA - 认证式 BFT + 独立审计 + 重放保护)
                                                         ├── v2.6.0 (State Machine - 状态机恢复边 + 证据结算闸门)
-                                                        └── v2.6.1 (Ledger Persistence - 账本落盘重放 + MCP 参数校验) ← 当前
+                                                        ├── v2.6.1 (Ledger Persistence - 账本落盘重放 + MCP 参数校验)
+                                                        └── v2.6.2 (Version Source - 版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化) ← 当前
 ```
 
 ## 大版本详情
@@ -345,6 +346,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：让只追加结算流水真正落盘并在重启后完整重放恢复（GAP §6.1）。新增 `replay_records`（只信任流水、有符号增量逐笔重放、checked 防溢出）与 `SettlementEngine::restore`（重建余额 / 充值 / 罚没 / 已结算任务）；`PersistentStore` 新建 `ledger_entries` 表（JSON 列 + SQLite 事务，无半行）与 `append/load/count`（损坏行容错跳过）；actor 新增 `spawn_with_store`（启动恢复账本、写后增量 append + 快照 upsert），daemon 改用之，根治"只写不读、重启丢账"。**MCP 参数校验**（GAP §8.1）：新增 `validate_arguments`（缺必填 / null 占必填 / 类型错误指名参数），tools/call 在执行器前用工具自身 inputSchema 校验、失败返回 **-32602**，schema 与 tools/list 同源，杜绝 `unwrap_or(0.0)/unwrap_or("")` 静默降级。`independent_audit` 重构复用 `replay_records`。gsn-core **0.2.61**。验证 Rust v261 **5**、lib **138**（含 storage 持久化 3 用例：drop/reopen 往返、同 id 覆盖、损坏行容错），全量 0 failed；关键反例：账本恢复逐账户连续、MCP 错误参数被 -32602 拒。详见 [releases/v2.6.1.md](releases/v2.6.1.md)。
 
+### v2.6.2 - Version Source（版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化）
+
+**核心内容**：把版本号收敛为根 `VERSION` 唯一权威 + `scripts/check-version.sh` 全仓一致性断言（ci / publish / release 的 gate 强制，漂移即红），并修复表格 awk 把 markdown 转义竖线 `\|` 误当字段分隔致“当前值”不刷新（GAP §9.3）。重写此前 4 个中 3 个不可部署的 Solidity 合约（GovernorToken 自委托计票 / AgentCardAnchor 不可改锚定 / PoCVSettlement 改 pull 领取与验证者多数 / ReputationRegistry 中位数与法定人数），接入 Hardhat 真实编译、18 个逐缺陷测试，ci 新增 contracts-check（GAP §9.4）。进程内网络替身从 libp2p 命名剥离：`GsnNode / KademliaClient / GossipSub` → `InMemoryNode / InMemoryKademlia / InMemoryGossip`（GAP §5）。纠删码去假修：引入 reed-solomon-erasure v6.0.0 真实 RS，数据片丢失可靠校验片重建、超额丢失报错；NAT / TEE 标志位诚实标注（不做真实打洞、不实例化 enclave / 不做远程证明）。gsn-core **0.2.62**。验证 Rust 全量约 **325**（lib 138）0 failed / 0 ignored、JS **19**、历史回归 **14**、Hardhat **18**，clippy 清零。详见 [releases/v2.6.2.md](releases/v2.6.2.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -409,6 +414,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **认证式 BFT（固定委员集 Ed25519 签名票）+ 可失败独立审计（只信任流水独立重放，能发现守恒盲区）+ nonce/时间窗重放保护 + 只追加结算流水**（v2.5.9）
 - ✅ **状态机集中转移表 + NoQuorum/Rework 恢复边（消除吸收态）+ 证据分级强制结算闸门 + policy=None 提交即验收**（v2.6.0）
 - ✅ **账本落盘 + 重启从流水重放恢复 + MCP 单一来源参数校验（-32602，杜绝静默降级）**（v2.6.1）
+- ✅ **VERSION 唯一来源 + 全仓版本一致性断言（CI 强制）+ 合约真实可部署（Hardhat 18 测试）+ 真实 Reed-Solomon 纠删码 + 网络替身诚实化**（v2.6.2）
 
 ### 技术栈
 

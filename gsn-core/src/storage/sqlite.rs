@@ -6,6 +6,12 @@ pub struct LocalStorage {
     data: HashMap<String, Vec<u8>>,
 }
 
+impl Default for LocalStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LocalStorage {
     pub fn new() -> Self {
         Self {
@@ -27,5 +33,9 @@ impl LocalStorage {
 
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 }

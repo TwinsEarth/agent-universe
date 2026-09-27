@@ -15,6 +15,9 @@ echo ">>> npm 版本: $NEW   Rust gsn-core 版本: $RUST"
 
 cd "$(dirname "$0")/.."
 
+# VERSION 是唯一权威来源（GAP §9.3）：bump 第一步即更新，其余声明点必须与之对齐。
+printf '%s\n' "$NEW" > VERSION
+
 # sed 默认是 BRE，+ 必须转义为 \+ 才是量词；\. 转义点。
 V="[0-9]\+\\.[0-9]\+\\.[0-9]\+"   # 匹配任意 X.Y.Z
 RV="0\\.2\\.[0-9]\+"              # 匹配任意 gsn-core 0.2.NN
@@ -85,24 +88,33 @@ sed -i "s/au.version!=='$V'/au.version!=='$NEW'/" .github/workflows/ci.yml
 sed -i "s/当前版本：\*\*npm $V/当前版本：**npm $NEW/; s/Rust gsn-core $RV/Rust gsn-core $RUST/" docs/version-checklist.md
 # 第一节表格"当前值"列：仅在 "## 一、" 与 "## 二、" 之间替换；
 # 先用占位符隔离 Rust 线 / 带v前缀，避免被裸版本正则二次匹配。
+# 手动 split 版本：表格“说明”列里有 markdown 转义竖线“\|”和逻辑或“||”，
+# 若直接用 FS="|" 会被错误切字段（v2.6.2 发现 A5 当前值因此未刷新）。
+# 先把“\|”保护成占位符再按“|”切分，处理后还原，保证第 5 字段（当前值）定位正确。
 awk -v NEW="$NEW" -v RUST="$RUST" '
-  BEGIN { FS = "|"; OFS = "|" }
+  BEGIN { }
   /^## 一、/ { s = 1 }
   /^## 二、/ { s = 0 }
   s && /^\|/ {
-    gsub(/\|\|/, "XOR2X")          # 保护字段内容里的 "||"（如 opts.version || '...'），避免被当字段分隔
-    if (NF >= 6) {
-      # 只更新“当前值”列（第 5 字段）；“说明”列里的历史版本引用保持原样，不被 bump
-      c = $5
+    line = $0
+    gsub(/\\\|/, "XPIPEX", line)     # 保护转义竖线 \|
+    n = split(line, arr, "|")
+    if (n >= 6) {
+      # 只更新“当前值”列（第 5 字段）；“说明”列里的历史版本引用保持原样
+      c = arr[5]
       gsub(/0\.2\.[0-9]+/, "XRUSTX", c)
       gsub(/v[0-9]+\.[0-9]+\.[0-9]+/, "XVNEWX", c)
       gsub(/[0-9]+\.[0-9]+\.[0-9]+/, "XNEWX", c)
       gsub(/XRUSTX/, RUST, c)
       gsub(/XVNEWX/, "v" NEW, c)
       gsub(/XNEWX/, NEW, c)
-      $5 = c
+      arr[5] = c
     }
-    gsub(/XOR2X/, "||")            # 还原
+    out = arr[1]
+    for (i = 2; i <= n; i++) out = out "|" arr[i]
+    gsub(/XPIPEX/, "\\|", out)
+    print out
+    next
   }
   { print }
 ' docs/version-checklist.md > docs/version-checklist.md.tmp \
@@ -116,6 +128,9 @@ sed -i "s|releases/tag/v$V|releases/tag/v$NEW|g" client/README.md client/platfor
 
 # v2.5.7 补：desktop/README.md 头部版本与内嵌 SDK 版本（此前遗漏，停留在 v2.3.4）
 sed -i "s/v$V 轻桌面客户端/v$NEW 轻桌面客户端/; s|agent-universe@$V|agent-universe@$NEW|g" desktop/README.md
+
+# bump 后自动断言全仓版本一致：任何 sed 规则失效 / 新增版本点遗漏立即暴露，不再静默（GAP §9.3）。
+bash scripts/check-version.sh
 
 echo ">>> 版本声明点已改完。下一步:"
 echo "    1) 全量回归: bash test/run-all.sh   (Windows: powershell -File test/run-all.ps1)"

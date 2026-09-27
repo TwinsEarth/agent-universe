@@ -11,6 +11,7 @@
 //! 资金只有两个改变总规模的入口/出口：
 //! - deposit：充值（唯一资金入口）
 //! - slash：罚没（资金退出系统）
+//!
 //! transfer / 托管 / 结算都只是账户间搬运，不改变总余额。
 
 use crate::marketplace::money::Money;

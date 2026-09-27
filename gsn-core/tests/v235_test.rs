@@ -4,6 +4,7 @@
 //! - REST: `api::rest::route`
 //! - MCP 桥接: `mcp::market_tools::MarketMcpBridge`
 //! - MCP HTTP: `mcp::sse::handle_post`
+//!
 //! 验证完整市场闭环真实执行（非占位）。
 
 use gsn_core::api::market_actor::MarketActorHandle;

@@ -26,7 +26,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v2.6.1");
+            println!("agent-universe v2.6.2");
             0
         }
         "help" | "--help" | "-h" => {
@@ -215,52 +215,46 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             format!("/api/v1/accounts/{}/deposit", p[0]),
             json!({"amount": p[1].parse::<f64>().unwrap_or(0.0)}).to_string(),
         )),
-        "balance" if p.len() >= 1 => Some((
+        "balance" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/accounts/{}/balance", p[0]), String::new(),
         )),
-        "register" if p.len() >= 1 => Some((
+        "register" if !p.is_empty() => Some((
             "POST".into(), "/api/v1/agents".into(), read_json_arg(&p[0]),
         )),
-        "get" if p.len() >= 1 => Some((
+        "get" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/agents/{}", p[0]), String::new(),
         )),
-        "discover" if p.len() >= 1 => Some((
+        "discover" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/agents?skill={}", p[0]), String::new(),
         )),
-        "search" if p.len() >= 1 => Some((
+        "search" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/agents?q={}", p[0]), String::new(),
         )),
-        "publish" if p.len() >= 1 => Some((
+        "publish" if !p.is_empty() => Some((
             "POST".into(), "/api/v1/tasks".into(), read_json_arg(&p[0]),
         )),
-        "task" if p.len() >= 1 => Some((
+        "task" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/tasks/{}", p[0]), String::new(),
         )),
-        "bid" if p.len() >= 1 => {
+        "bid" if !p.is_empty() => {
             // bid JSON 需含 task_id；若只给 agent/task/price 则组装
             let body = read_json_arg(&p[0]);
             let task_id = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("task_id").and_then(|x| x.as_str()).map(String::from));
-            if let Some(tid) = task_id {
-                Some(("POST".into(), format!("/api/v1/tasks/{}/bids", tid), body))
-            } else {
-                None
-            }
+            task_id.map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/bids", tid), body))
         }
-        "match" if p.len() >= 1 => Some((
+        "match" if !p.is_empty() => Some((
             "POST".into(), format!("/api/v1/tasks/{}/match", p[0]), String::new(),
         )),
-        "result" if p.len() >= 1 => {
+        "result" if !p.is_empty() => {
             let body = read_json_arg(&p[0]);
             let task_id = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("task_id").and_then(|x| x.as_str()).map(String::from));
-            if let Some(tid) = task_id {
-                Some(("POST".into(), format!("/api/v1/tasks/{}/results", tid), body))
-            } else { None }
+            task_id.map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/results", tid), body))
         }
-        "verify" if p.len() >= 1 => {
+        "verify" if !p.is_empty() => {
             // v2.5.9 认证式：载荷文件含 members（固定委员集）与 signed_votes（签名票）
             if p.len() < 2 {
                 eprintln!("verify 需要认证载荷：verify <task_id> @verify.json");
@@ -273,10 +267,10 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
                 body,
             ))
         }
-        "settle" if p.len() >= 1 => Some((
+        "settle" if !p.is_empty() => Some((
             "POST".into(), format!("/api/v1/tasks/{}/settle", p[0]), String::new(),
         )),
-        "dispute" if p.len() >= 1 => Some((
+        "dispute" if !p.is_empty() => Some((
             "POST".into(), "/api/v1/disputes".into(), read_json_arg(&p[0]),
         )),
         "arbitrate" if p.len() >= 2 => {

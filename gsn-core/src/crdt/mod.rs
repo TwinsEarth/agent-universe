@@ -8,6 +8,12 @@ pub struct VersionVector {
     versions: HashMap<String, u64>,
 }
 
+impl Default for VersionVector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VersionVector {
     pub fn new() -> Self {
         Self {

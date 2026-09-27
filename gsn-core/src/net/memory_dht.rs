@@ -1,13 +1,19 @@
-//! Kademlia DHT 客户端（跨平台轻量版）
+//! 进程内 Kademlia 替身（in-memory，测试/演示用）
+//!
+//! **这不是真实 Kademlia DHT**：`put` / `get` / `remove` 只操作本地 `HashMap`，
+//! 不与任何 peer 通信；`shard_of` 仅用 SHA-256 做本地一致性哈希定位。
+//!
+//! 真实分布式哈希表见 [`crate::net::peer::P2pPeer`]（libp2p Kademlia）与 [`crate::node`]。
 
 use std::collections::HashMap;
 
-pub struct KademliaClient {
+/// 进程内 DHT 替身：仅本地键值存储，不联网。
+pub struct InMemoryKademlia {
     store: HashMap<String, Vec<u8>>,
     pub shard_count: u32,
 }
 
-impl KademliaClient {
+impl InMemoryKademlia {
     pub fn new(shard_count: u32) -> Self {
         Self {
             store: HashMap::new(),
@@ -38,5 +44,9 @@ impl KademliaClient {
 
     pub fn len(&self) -> usize {
         self.store.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.store.is_empty()
     }
 }

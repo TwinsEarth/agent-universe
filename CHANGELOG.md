@@ -2,6 +2,20 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.2] - 2026-09-28
+
+### 修复：版本唯一来源、合约可部署、纠删码真修与网络替身诚实化（GAP §9.3/§9.4/§5）
+
+- **版本唯一来源 + 一致性断言**：版本号此前手工登记、已漂移。新建根 `VERSION`（唯一权威）与 `scripts/check-version.sh`（断言根 / js / client / desktop package.json、aip-sdk-py、Tauri 壳、gsn-core 全部一致，npm X.Y.Z ↔ gsn-core 0.2.(Y*10+Z)）；ci / publish / release 均在 gate 跑，漂移即红；修复表格 awk 把 markdown 转义竖线 `\|` 误当字段分隔导致“当前值”列不刷新。
+- **Solidity 合约重写可部署**：此前 4 个中 3 个不可部署。重写 GovernorToken / AgentCardAnchor / PoCVSettlement / ReputationRegistry，接入 Hardhat，编译通过、18 个逐缺陷测试全过；ci 新增 contracts-check。
+- **网络替身诚实命名**：`GsnNode / KademliaClient / GossipSub`（纯 HashMap 进程内替身）重命名为 `InMemoryNode / InMemoryKademlia / InMemoryGossip`，同步 lib / ffi / 测试。
+- **真实 Reed-Solomon 纠删码**：旧“校验片 = 数据片副本 + SHA256”是假实现。引入 reed-solomon-erasure v6.0.0，数据片丢失可靠校验片真实重建，超额丢失明确报错。
+- **NAT / TEE 诚实标注**：nat 模块不做真实打洞、`with_tee` 只置标志位不实例化 enclave / 不做远程证明，均加文档指向真实实现。
+
+### 验证
+
+- Rust 全量约 **325** passed / 0 failed / **0 ignored**（lib 138）；JS SDK **19**、历史回归 **14**、Hardhat **18** passed；clippy `-D warnings` 清零；check-version 通过。
+
 ## [v2.6.1] - 2026-09-27
 
 ### 修复：账本落盘与重放恢复、MCP 参数校验（GAP §6.1/§8.1）

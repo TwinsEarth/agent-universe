@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 use std::sync::RwLock;
-use crate::net::GsnNode;
+use crate::net::InMemoryNode;
 
 pub struct GsnClient {
-    node: Arc<RwLock<GsnNode>>,
+    node: Arc<RwLock<InMemoryNode>>,
 }
 
 impl GsnClient {
     pub fn new(peer_id: String, listen_addr: String) -> Self {
         Self {
-            node: Arc::new(RwLock::new(GsnNode::new(peer_id, listen_addr))),
+            node: Arc::new(RwLock::new(InMemoryNode::new(peer_id, listen_addr))),
         }
     }
 

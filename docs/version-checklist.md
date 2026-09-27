@@ -75,7 +75,7 @@
 |---|---|---|---|---|
 | F1 | `.github/workflows/ci.yml` | `au.version!=='X.Y.Z'` 校验 | 2.5.6 | CI 强制版本一致 |
 | F2 | `.github/workflows/client-build.yml` | 注释里的示例 tag `（如 vX.Y.Z）` | v2.5.6 | 注释，不影响构建 |
-| F3 | `.github/workflows/publish.yml` | 不写死版本，用 `GITHUB_REF_NAME`；含 npm-publish job | — | 打 tag 自动发 Release+npm；需配 `NPM_TOKEN` secret |
+| F3 | `.github/workflows/publish.yml` | 不写死版本，用 `GITHUB_REF_NAME`；含 npm-publish job | — | 打 tag 自动发 Release+npm；**必须配 `NPM_TOKEN` secret，缺失则 npm-publish job 红灯失败（v2.5.6 起不再静默跳过）** |
 
 ---
 
@@ -120,8 +120,10 @@
 ## 四、发版 SOP（标准流程）
 
 ```bash
-# 0. 前置：GitHub repo Settings -> Secrets 配好 NPM_TOKEN（npmjs granular token）。
-#    配一次即可；不配则 publish.yml 的 npm-publish job 会 warning 跳过，不阻塞 Release。
+# 0. 前置：GitHub repo Settings -> Secrets and variables -> Actions 配好 NPM_TOKEN
+#    （npmjs.com 的 Automation / Granular token，仅需 publish 权限）。配一次即可。
+#    v2.5.6 起：缺失 NPM_TOKEN 时 npm-publish job 直接 ::error:: + exit 1（红灯暴露，不再静默跳过）；
+#    Release 产物由 build/release job 独立完成，不受 npm job 影响。
 
 # 1. 一键改所有"版本声明点"（输入 npm 版本号，自动算 Rust 线；含本清单顶部与表格当前值）
 bash scripts/bump-version.sh 2.5.6

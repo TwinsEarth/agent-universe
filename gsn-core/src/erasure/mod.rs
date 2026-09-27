@@ -46,8 +46,7 @@ impl ErasureCoder {
     /// 编码：data_shards 个等长数据片（不足补 0）+ parity_shards 个真实 RS 校验片。
     pub fn encode(&self, data: &[u8]) -> Vec<DecodedShard> {
         let total = self.data_shards + self.parity_shards;
-        let shard_size =
-            ((data.len() + self.data_shards - 1) / self.data_shards).max(1);
+        let shard_size = data.len().div_ceil(self.data_shards).max(1);
 
         // 所有分片预分配等长缓冲（RS 在定长缓冲上运算）
         let mut shards: Vec<Vec<u8>> =
@@ -92,8 +91,8 @@ impl ErasureCoder {
             .map_err(|e| format!("reed-solomon reconstruct: {e}"))?;
 
         let mut result = Vec::with_capacity(original_size);
-        for i in 0..self.data_shards {
-            result.extend_from_slice(present[i].as_ref().expect("重建后应全部可用"));
+        for shard in present.iter().take(self.data_shards) {
+            result.extend_from_slice(shard.as_ref().expect("重建后应全部可用"));
         }
         result.truncate(original_size);
         Ok(result)
@@ -113,9 +112,6 @@ impl ErasureCoder {
         if ordered.iter().any(|s| s.is_empty()) {
             return false;
         }
-        match self.rs.verify(&ordered) {
-            Ok(ok) => ok,
-            Err(_) => false,
-        }
+        self.rs.verify(&ordered).unwrap_or(false)
     }
 }

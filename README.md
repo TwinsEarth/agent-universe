@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.2，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.3，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -313,6 +313,7 @@ npm install @twinsearth/agent-universe
 | v2.6.0 | **State Machine** | **状态机恢复边（no_quorum→open、rework→running，消除 NoQuorum 吸收态）+ 证据分级作为结算强制闸门（is_trustworthy 此前零调用点）+ policy=None 提交即验收** |
 | v2.6.1 | **Ledger Persistence** | **账本落盘 + 重启从只追加流水重放恢复（ledger_entries，根治只写不读/重启丢账）+ MCP 单一来源参数校验（缺必填/类型错误返回 -32602，杜绝静默降级）** |
 | v2.6.2 | **Version Source** | **VERSION 唯一来源 + check-version 全仓一致性断言（CI 强制，漂移即红）+ 合约重写可部署（Hardhat 18 逐缺陷测试）+ 真实 Reed-Solomon 纠删码 + 网络替身 InMemory* 诚实化** |
+| v2.6.3 | **Settlement Closeout** | **重复注册拒绝 + 投标报价与预算强校验（0/负/超预算/已关闭拒绝）+ Rejected / DuplicateWork 终局可达（返工重提相同结果自动拒绝，付0、退预算、罚没10%质押）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

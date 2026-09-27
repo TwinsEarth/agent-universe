@@ -2,6 +2,18 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.3] - 2026-09-28
+
+### 修复：经济结算收尾——重复注册拒绝、出价脱钩校验、Rejected / DuplicateWork 可达（GAP §2.6/§2.7/§2.8）
+
+- **重复注册拒绝（GAP §2.6）**：`register_agent` 新增 `contains_key` 检查，同一 agent_id 再次注册即报错，不再重复锁定质押 / 重复索引 / 静默覆盖，与 JS 侧和 REG-020 对齐。
+- **投标报价强校验（GAP §2.7）**：`submit_bid` 校验报价必须为正、不超预算、任务处于 Open；0 / 负 / 超预算 / 已关闭一律拒绝；`match_task` 成本打分简化为 `rep_score / price`，删除 price<=0 特殊分支。
+- **终局拒绝与重复劳动可达（GAP §2.8）**：`TaskState` 新增 `Rejected` 终态与转移边；`SettlementReason` 新增 `DuplicateWork`；新增结果内容哈希（SHA256）检测——返工后提交完全相同结果自动转 Rejected 并标记 DuplicateWork；新增 `reject_task`；拒绝结算付 0、退全额预算、罚没 10% 质押、记信誉失败；NoQuorum 流程重开清除哈希豁免合法重试。
+
+### 验证
+
+- Rust 全量 0 failed / 0 ignored；v234 套件 **74** passed（新增 test_bid_price_validation / test_end_to_end_rejected_flow / test_end_to_end_duplicate_work_flow）；clippy `-D warnings` 清零；check-version 通过（2.6.3 / 0.2.63）。
+
 ## [v2.6.2] - 2026-09-28
 
 ### 修复：版本唯一来源、合约可部署、纠删码真修与网络替身诚实化（GAP §9.3/§9.4/§5）

@@ -44,7 +44,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.9 (Auth QA - 认证式 BFT + 独立审计 + 重放保护)
                                                         ├── v2.6.0 (State Machine - 状态机恢复边 + 证据结算闸门)
                                                         ├── v2.6.1 (Ledger Persistence - 账本落盘重放 + MCP 参数校验)
-                                                        └── v2.6.2 (Version Source - 版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化) ← 当前
+                                                        ├── v2.6.2 (Version Source - 版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化)
+                                                        └── v2.6.3 (Settlement Closeout - 重复注册拒绝 + 出价脱钩校验 + Rejected/DuplicateWork 终局可达) ← 当前
 ```
 
 ## 大版本详情
@@ -350,6 +351,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：把版本号收敛为根 `VERSION` 唯一权威 + `scripts/check-version.sh` 全仓一致性断言（ci / publish / release 的 gate 强制，漂移即红），并修复表格 awk 把 markdown 转义竖线 `\|` 误当字段分隔致“当前值”不刷新（GAP §9.3）。重写此前 4 个中 3 个不可部署的 Solidity 合约（GovernorToken 自委托计票 / AgentCardAnchor 不可改锚定 / PoCVSettlement 改 pull 领取与验证者多数 / ReputationRegistry 中位数与法定人数），接入 Hardhat 真实编译、18 个逐缺陷测试，ci 新增 contracts-check（GAP §9.4）。进程内网络替身从 libp2p 命名剥离：`GsnNode / KademliaClient / GossipSub` → `InMemoryNode / InMemoryKademlia / InMemoryGossip`（GAP §5）。纠删码去假修：引入 reed-solomon-erasure v6.0.0 真实 RS，数据片丢失可靠校验片重建、超额丢失报错；NAT / TEE 标志位诚实标注（不做真实打洞、不实例化 enclave / 不做远程证明）。gsn-core **0.2.62**。验证 Rust 全量约 **325**（lib 138）0 failed / 0 ignored、JS **19**、历史回归 **14**、Hardhat **18**，clippy 清零。详见 [releases/v2.6.2.md](releases/v2.6.2.md)。
 
+### v2.6.3 - Settlement Closeout（经济结算收尾：重复注册拒绝 + 出价脱钩校验 + Rejected/DuplicateWork 终局可达）
+
+**核心内容**：补齐经济结算链路三处 GAP 缺陷。**重复注册**（GAP §2.6）：`register_agent` 新增 `contains_key` 检查，同一 agent_id 再注册即报错，不再重复锁定质押 / 重复技能索引 / 静默覆盖，与 JS `market.js` 和 REG-020 对齐。**出价脱钩**（GAP §2.7）：`submit_bid` 校验报价必须为正、不超任务预算、任务处于 Open，0 / 负 / 超预算 / 已关闭一律拒绝；`match_task` 成本打分简化为 `rep_score / price`，删除 price<=0 不惩罚分支。**结算原因不可达**（GAP §2.8）：`TaskState` 新增 `Rejected` 终态与 `Verifying/Running/Rework→Rejected`、`Rejected→Settled` 边；`SettlementReason` 新增 `DuplicateWork`；新增结果内容 SHA256 哈希记录，返工后提交完全相同结果自动转 Rejected 并标记 DuplicateWork；新增 `reject_task`（可信成功结果不可拒）；拒绝结算付执行者 0、托管预算全额退回、罚没 10% 质押、记信誉失败；NoQuorum 流程重开清除哈希以豁免合法重试。gsn-core **0.2.63**。验证 v234 套件 **74**（新增价格校验 / Rejected 端到端 / DuplicateWork 端到端 3 用例），全量 0 failed / 0 ignored，clippy 清零。详见 [releases/v2.6.3.md](releases/v2.6.3.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -415,6 +420,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **状态机集中转移表 + NoQuorum/Rework 恢复边（消除吸收态）+ 证据分级强制结算闸门 + policy=None 提交即验收**（v2.6.0）
 - ✅ **账本落盘 + 重启从流水重放恢复 + MCP 单一来源参数校验（-32602，杜绝静默降级）**（v2.6.1）
 - ✅ **VERSION 唯一来源 + 全仓版本一致性断言（CI 强制）+ 合约真实可部署（Hardhat 18 测试）+ 真实 Reed-Solomon 纠删码 + 网络替身诚实化**（v2.6.2）
+- ✅ **经济结算收尾：重复注册拒绝 + 投标报价与预算强校验 + Rejected / DuplicateWork 终局可达（返工重提相同结果自动拒绝、付0退预算罚没10%）**（v2.6.3）
 
 ### 技术栈
 

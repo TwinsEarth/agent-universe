@@ -36,7 +36,9 @@ pub use reputation::{
     ReputationManager, MarketReputation, StakeRecord, StakeStatus,
 };
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+use sha2::{Digest, Sha256};
 
 /// 质押锁定账户（注册时从自有余额转入）
 pub fn stake_account(did: &str) -> String {
@@ -46,6 +48,14 @@ pub fn stake_account(did: &str) -> String {
 /// 任务托管账户（发布任务时从需求方余额锁定）
 pub fn escrow_account(task_id: &str) -> String {
     format!("__escrow__:{}", task_id)
+}
+
+/// 对字节求 SHA256，返回小写十六进制（重复劳动检测用）
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let digest = hasher.finalize();
+    digest.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 /// 投标
@@ -82,6 +92,10 @@ pub struct AgentMarket {
     bids: HashMap<String, Vec<Bid>>,
     /// 结果：task_id -> envelope
     results: HashMap<String, ResultEnvelope>,
+    /// 已提交结果的内容哈希：task_id -> sha256(report)（重复劳动检测）
+    result_hashes: HashMap<String, String>,
+    /// 重复劳动标记：返工后提交与上次完全相同的结果
+    duplicate_work: HashSet<String>,
     /// 争议
     disputes: Vec<DisputeCase>,
     /// 结算引擎
@@ -101,6 +115,8 @@ impl AgentMarket {
             tasks: HashMap::new(),
             bids: HashMap::new(),
             results: HashMap::new(),
+            result_hashes: HashMap::new(),
+            duplicate_work: HashSet::new(),
             disputes: Vec::new(),
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
@@ -116,6 +132,8 @@ impl AgentMarket {
             tasks: HashMap::new(),
             bids: HashMap::new(),
             results: HashMap::new(),
+            result_hashes: HashMap::new(),
+            duplicate_work: HashSet::new(),
             disputes: Vec::new(),
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
@@ -129,6 +147,13 @@ impl AgentMarket {
     pub fn register_agent(&mut self, card: MarketAgentCard) -> Result<String, String> {
         if card.agent_id.trim().is_empty() {
             return Err("agent_id 不能为空".to_string());
+        }
+        // 幂等：禁止重复注册（避免重复锁定质押、技能索引重复追加、记录被静默覆盖）
+        if self.agents.contains_key(&card.agent_id) {
+            return Err(format!(
+                "Agent {} 已注册，禁止重复注册（如需更新资料请走专门的更新接口）",
+                card.agent_id
+            ));
         }
         if card.name.trim().is_empty() {
             return Err("name 不能为空".to_string());
@@ -249,8 +274,24 @@ impl AgentMarket {
         if !self.agents.contains_key(&bid.agent_id) {
             return Err(format!("Agent {} 未注册", bid.agent_id));
         }
-        if !self.tasks.contains_key(&bid.task_id) {
-            return Err(format!("任务 {} 不存在", bid.task_id));
+        let task = self
+            .tasks
+            .get(&bid.task_id)
+            .ok_or_else(|| format!("任务 {} 不存在", bid.task_id))?;
+
+        // 价格校验（GAP §2.7）：投标价必须为正且不超过预算
+        if !bid.proposed_price.is_positive() {
+            return Err("投标价必须为正（0 或负数投标被拒绝）".to_string());
+        }
+        if bid.proposed_price > task.budget {
+            return Err(format!(
+                "投标价 {} 超过任务预算 {}",
+                bid.proposed_price, task.budget
+            ));
+        }
+        // 状态前置：仅 OPEN 任务接受投标
+        if task.state != TaskState::Open {
+            return Err(format!("任务状态为 {}，已截止投标", task.state.label()));
         }
 
         // 检查资格
@@ -295,13 +336,9 @@ impl AgentMarket {
                 .map(|r| r.overall())
                 .unwrap_or(0.5);
 
-            // 性价比 = 信誉 / 价格（价格为整数金额，转 f64 参与打分）
+            // 性价比 = 信誉 / 价格（submit_bid 已保证价格为正）
             let price_f = bid.proposed_price.as_i64() as f64;
-            let cost_score = if price_f > 0.0 {
-                rep_score / price_f
-            } else {
-                rep_score
-            };
+            let cost_score = rep_score / price_f;
             // 延迟惩罚
             let latency_penalty = 1.0 / (1.0 + bid.estimated_latency_ms as f64 / 1000.0);
             let score = cost_score * latency_penalty;
@@ -342,15 +379,35 @@ impl AgentMarket {
             ));
         }
 
+        // 重复劳动检测：对结果报告内容求 SHA256，与上次提交比对
+        let content_hash = sha256_hex(envelope.report.as_bytes());
+        let is_duplicate = self
+            .result_hashes
+            .get(&envelope.task_id)
+            .map(|prev| prev == &content_hash)
+            .unwrap_or(false);
+
         if let Some(task) = self.tasks.get_mut(&envelope.task_id) {
-            // policy=None：无需 QA，提交结果直接验收；否则进入验收阶段
-            let target = if matches!(task.verification_policy, VerificationPolicy::None)
-            {
-                TaskState::Accepted
+            if is_duplicate {
+                // 返工后提交与上次完全相同的结果 = 重复劳动，终局拒绝
+                task.state = task.state.transition(TaskState::Rejected)?;
             } else {
-                TaskState::Verifying
-            };
-            task.state = task.state.transition(target)?;
+                // policy=None：无需 QA，提交结果直接验收；否则进入验收阶段
+                let target = if matches!(task.verification_policy, VerificationPolicy::None)
+                {
+                    TaskState::Accepted
+                } else {
+                    TaskState::Verifying
+                };
+                task.state = task.state.transition(target)?;
+            }
+        }
+
+        if is_duplicate {
+            self.duplicate_work.insert(envelope.task_id.clone());
+        } else {
+            self.result_hashes
+                .insert(envelope.task_id.clone(), content_hash);
         }
 
         self.results.insert(envelope.task_id.clone(), envelope);
@@ -436,34 +493,104 @@ impl AgentMarket {
     /// QA 本轮未达成共识（NoQuorum）时任务不再卡死；调用本方法把任务
     /// 重新置为 Open，可重新匹配或组织下一轮验收，消除 NoQuorum 吸收态。
     pub fn reopen_after_no_quorum(&mut self, task_id: &str) -> Result<(), String> {
-        let task = self
-            .tasks
-            .get_mut(task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
-        if task.state != TaskState::NoQuorum {
-            return Err(format!(
-                "任务状态为 {}，非 NO_QUORUM，不能重新开放",
-                task.state.label()
-            ));
+        {
+            let task = self
+                .tasks
+                .get_mut(task_id)
+                .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            if task.state != TaskState::NoQuorum {
+                return Err(format!(
+                    "任务状态为 {}，非 NO_QUORUM，不能重新开放",
+                    task.state.label()
+                ));
+            }
+            task.state = task.state.transition(TaskState::Open)?;
         }
-        task.state = task.state.transition(TaskState::Open)?;
+        // 流程重置（区别于返工）：清除上次结果哈希，允许重新提交相同结果，
+        // 不被误判为重复劳动（重复劳动仅针对 QA 要求改进后的返工重提）
+        self.result_hashes.remove(task_id);
         Ok(())
     }
 
     // ===== F6: 结算 =====
 
     /// 结算已验收任务
+    /// 终局拒绝任务（GAP §2.8）：验收确认结果不通过，转 Rejected。
+    ///
+    /// 仅在 Verifying / Rework 状态可拒绝；若结果信封可信且成功则不允许拒绝
+    /// （防止无依据拒付）。拒绝后调用 settle_task：付执行者 0、退预算、罚没。
+    pub fn reject_task(&mut self, task_id: &str) -> Result<(), String> {
+        let state = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.state)
+            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+        if !matches!(state, TaskState::Verifying | TaskState::Rework) {
+            return Err(format!(
+                "任务状态为 {}，不能终局拒绝（仅验证中/返工可拒绝）",
+                state.label()
+            ));
+        }
+        if let Some(env) = self.results.get(task_id) {
+            if env.evidence_grade.is_trustworthy() && env.is_success() {
+                return Err("结果可信且成功，不能拒绝".to_string());
+            }
+        }
+        let task = self.tasks.get_mut(task_id).unwrap();
+        task.state = task.state.transition(TaskState::Rejected)?;
+        Ok(())
+    }
+
     pub fn settle_task(&mut self, task_id: &str) -> Result<Money, String> {
         let task = self
             .tasks
             .get(task_id)
             .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
 
-        if task.state != TaskState::Accepted {
+        let is_rejected = task.state == TaskState::Rejected;
+        if task.state != TaskState::Accepted && !is_rejected {
             return Err(format!(
                 "任务状态为 {}，不能结算",
                 task.state.label()
             ));
+        }
+
+        let agent_id = task
+            .owner
+            .clone()
+            .ok_or_else(|| "任务无执行 Agent".to_string())?;
+        let requester = task.requester.clone();
+        let budget = task.budget;
+        let escrow = escrow_account(task_id);
+
+        // ===== 拒绝 / 重复劳动分支（GAP §2.8）：付 0、退预算、罚没 =====
+        if is_rejected {
+            let reason = if self.duplicate_work.contains(task_id) {
+                SettlementReason::DuplicateWork
+            } else {
+                SettlementReason::Rejected
+            };
+            // 付执行者 0（留痕并标记已付，防重复结算）
+            let paid =
+                self.settlement
+                    .settle(task_id, &escrow, &agent_id, Money::ZERO, reason)?;
+            // 托管预算全额退回需求方
+            self.settlement
+                .refund(task_id, &escrow, &requester, budget)?;
+            // 罚没执行者 10% 质押（资金退出系统，守恒仍成立）
+            let stake_acct = stake_account(&agent_id);
+            let slash_amt = Money::new(self.settlement.balance(&stake_acct).as_i64() / 10);
+            if slash_amt.is_positive() {
+                self.settlement.slash(&stake_acct, slash_amt)?;
+            }
+            // 信誉记一次失败
+            if let Some(rep) = self.reputation_mgr.reputation_mut(&agent_id) {
+                rep.record_call(false, 1.0);
+            }
+            if let Some(task) = self.tasks.get_mut(task_id) {
+                task.state = task.state.transition(TaskState::Settled)?;
+            }
+            return Ok(paid);
         }
 
         // 证据分级强制闸门（v2.6.0，GAP「证据谓词零调用点」）：
@@ -481,16 +608,9 @@ impl AgentMarket {
             }
         }
 
-        let agent_id = task
-            .owner
-            .clone()
-            .ok_or_else(|| "任务无执行 Agent".to_string())?;
-        let requester = task.requester.clone();
-        let budget = task.budget;
         // 中标价：默认全额；实际支付 = min(中标价, 预算)
         let price = task.winner_price.unwrap_or(budget);
         let pay = price.min(budget);
-        let escrow = escrow_account(task_id);
 
         // 从托管账户支付执行者（发布即托管，资金已锁定；无需也绝不铸币）
         let paid = self.settlement.settle(

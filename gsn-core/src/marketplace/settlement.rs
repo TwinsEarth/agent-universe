@@ -24,6 +24,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub enum SettlementReason {
     Completed,
     Rejected,
+    /// 重复劳动（返工后提交与上次完全相同的结果），付 0
+    DuplicateWork,
     Slashed,
     Refunded,
     /// 充值留痕（v2.5.9：让唯一资金入口也进入只追加流水，独立审计可从流水完整重放）
@@ -279,7 +281,7 @@ impl SettlementEngine {
         }
 
         match reason {
-            SettlementReason::Rejected => {
+            SettlementReason::Rejected | SettlementReason::DuplicateWork => {
                 self.records.push(SettlementRecord {
                     task_id: task_id.to_string(),
                     from_account: payer.to_string(),

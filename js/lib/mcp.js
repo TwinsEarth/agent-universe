@@ -60,7 +60,7 @@ class McpHttpClient {
       method: 'initialize',
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        clientInfo: { name: 'agent-universe-js', version: '2.6.2' },
+        clientInfo: { name: 'agent-universe-js', version: '2.6.3' },
         capabilities: {},
       },
     });

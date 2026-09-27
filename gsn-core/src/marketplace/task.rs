@@ -34,6 +34,8 @@ pub enum TaskState {
     Slashed,
     /// 无共识，等待视图变更
     NoQuorum,
+    /// 验收终局不通过（拒绝付款，可罚没）；仍需结算以释放托管、退预算
+    Rejected,
 }
 
 impl TaskState {
@@ -51,6 +53,7 @@ impl TaskState {
             TaskState::Arbitration => "ARBITRATION",
             TaskState::Slashed => "SLASHED",
             TaskState::NoQuorum => "NO_QUORUM",
+            TaskState::Rejected => "REJECTED",
         }
     }
 
@@ -95,6 +98,12 @@ impl TaskState {
                 | (Rework, Running)
                 // 恢复边：无共识 → 重新开放
                 | (NoQuorum, Open)
+                // 验收终局拒绝（QA 明确拒绝 / 返工后重复劳动）
+                | (Verifying, Rejected)
+                | (Running, Rejected)
+                | (Rework, Rejected)
+                // 拒绝后仍走结算（付 0、退预算、罚没）到终态
+                | (Rejected, Settled)
                 // 争议 / 仲裁
                 | (Accepted, Disputed)
                 | (Running, Disputed)

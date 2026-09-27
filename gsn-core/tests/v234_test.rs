@@ -816,6 +816,125 @@ fn test_end_to_end_rework_flow() {
     assert_eq!(task.state, TaskState::Rework);
 }
 
+// ===== v2.6.3：投标价校验 / Rejected / DuplicateWork =====
+
+#[test]
+fn test_bid_price_validation() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "a1", 100);
+    market.deposit("u1", Money::new(50)).unwrap();
+    market.publish_task(make_task("t1", 50, "u1")).unwrap();
+
+    // 0 价拒绝
+    assert!(market.submit_bid(make_bid("a1", "t1", 0)).is_err());
+    // 负价拒绝
+    assert!(market.submit_bid(make_bid("a1", "t1", -5)).is_err());
+    // 超预算拒绝
+    assert!(market.submit_bid(make_bid("a1", "t1", 60)).is_err());
+    // 合法价接受
+    assert!(market.submit_bid(make_bid("a1", "t1", 10)).is_ok());
+}
+
+fn failing_envelope(report: &str) -> ResultEnvelope {
+    ResultEnvelope {
+        task_id: "t1".to_string(),
+        agent_id: "a1".to_string(),
+        report: report.to_string(),
+        confidence: 0.3,
+        error_type: ErrorType::LowConfidence,
+        trace_ref: "trace://t1/1".to_string(),
+        evidence_grade: EvidenceGrade::CpuProto,
+        latency_ms: 1000,
+    }
+}
+
+#[test]
+fn test_end_to_end_rejected_flow() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "a1", 100);
+    market.deposit("u1", Money::new(50)).unwrap();
+    market.publish_task(make_task("t1", 50, "u1")).unwrap();
+    market.submit_bid(make_bid("a1", "t1", 10)).unwrap();
+    market.match_task("t1").unwrap();
+
+    // 提交失败结果（低置信度）→ Verifying
+    market.submit_result(failing_envelope("{}")).unwrap();
+
+    // 终局拒绝
+    market.reject_task("t1").unwrap();
+    assert_eq!(market.get_task("t1").unwrap().state, TaskState::Rejected);
+
+    // 结算：付执行者 0
+    let paid = market.settle_task("t1").unwrap();
+    assert_eq!(paid, Money::ZERO);
+
+    // 终态 + 逐账户核对
+    assert_eq!(market.get_task("t1").unwrap().state, TaskState::Settled);
+    assert_eq!(market.balance("u1"), Money::new(50));
+    assert_eq!(market.balance("a1"), Money::ZERO);
+    assert_eq!(market.balance("__escrow__:t1"), Money::ZERO);
+    // 罚没 10% 质押：100 → 90
+    assert_eq!(market.balance("__stake__:a1"), Money::new(90));
+
+    // 守恒：总充值 150，罚没 10，余额和 140
+    let report = market.conservation_check();
+    assert!(report.conserved, "拒绝流程守恒失败: {:?}", report);
+    assert_eq!(report.total_slashed, Money::new(10));
+    assert_eq!(report.balance_sum, Money::new(140));
+
+    // Rejected 原因确实进入流水（GAP §2.8：变体可达）
+    assert!(market
+        .settlement_records()
+        .iter()
+        .any(|r| r.reason == SettlementReason::Rejected));
+}
+
+#[test]
+fn test_end_to_end_duplicate_work_flow() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "a1", 100);
+    market.deposit("u1", Money::new(50)).unwrap();
+    market.publish_task(make_task("t1", 50, "u1")).unwrap();
+    market.submit_bid(make_bid("a1", "t1", 10)).unwrap();
+    market.match_task("t1").unwrap();
+
+    // 第一次提交结果 → Verifying
+    market.submit_result(failing_envelope("SAME")).unwrap();
+
+    // QA 投票 Continue（3 Continue + 1 Stop）→ Rework
+    let mut committee = QaCommittee::new(4, 1).unwrap();
+    for i in 0..4 {
+        committee.add_member(format!("m{}", i));
+    }
+    committee.cast_vote("m0", QaVote::Continue).unwrap();
+    committee.cast_vote("m1", QaVote::Continue).unwrap();
+    committee.cast_vote("m2", QaVote::Continue).unwrap();
+    committee.cast_vote("m3", QaVote::Stop).unwrap();
+    let decision = market.verify_result("t1", &committee).unwrap();
+    assert_eq!(decision, QaDecision::Continue);
+
+    // 返工 → 回到执行中
+    market.resume_after_rework("t1").unwrap();
+
+    // 返工后提交与上次完全相同的结果 = 重复劳动，自动转 Rejected
+    market.submit_result(failing_envelope("SAME")).unwrap();
+    assert_eq!(market.get_task("t1").unwrap().state, TaskState::Rejected);
+
+    // 结算：DuplicateWork，付 0
+    let paid = market.settle_task("t1").unwrap();
+    assert_eq!(paid, Money::ZERO);
+    assert!(market
+        .settlement_records()
+        .iter()
+        .any(|r| r.reason == SettlementReason::DuplicateWork));
+
+    // 预算全退、罚没 10% 质押、守恒
+    assert_eq!(market.balance("u1"), Money::new(50));
+    assert_eq!(market.balance("__stake__:a1"), Money::new(90));
+    let report = market.conservation_check();
+    assert!(report.conserved, "重复劳动流程守恒失败: {:?}", report);
+}
+
 // ===== TaskSpec validate 测试 =====
 
 #[test]

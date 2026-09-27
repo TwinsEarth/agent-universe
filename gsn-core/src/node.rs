@@ -1216,8 +1216,8 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         });
     }
 
-    let market = MarketActorHandle::spawn();
-    println!("✅ Agent Market actor 已启动");
+    let market = MarketActorHandle::spawn_with_store(store.clone());
+    println!("✅ Agent Market actor 已启动（账本持久化，重启可恢复）");
     println!("✅ gsn-daemon 启动完成");
 
     run_api_server(

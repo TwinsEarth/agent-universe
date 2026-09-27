@@ -92,6 +92,61 @@ fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
+/// 从只追加流水重放得到的账本（v2.6.1：审计与持久化恢复共用）
+#[derive(Debug)]
+pub struct ReplayedLedger {
+    pub balances: HashMap<String, Money>,
+    pub deposits: Money,
+    pub slashed: Money,
+}
+
+/// 只信任流水，逐笔有符号增量重放出账户余额与充值 / 罚没聚合。
+/// checked 溢出返回 Err（独立于任何引擎自维护状态）。
+pub fn replay_records(records: &[SettlementRecord]) -> Result<ReplayedLedger, String> {
+    let mut balances: HashMap<String, Money> = HashMap::new();
+    let mut deposits = Money::ZERO;
+    let mut slashed = Money::ZERO;
+
+    let mut apply = |acct: &str, delta: Money| -> Result<(), String> {
+        let cur = balances.get(acct).copied().unwrap_or(Money::ZERO);
+        let v = cur
+            .checked_add(delta)
+            .map_err(|_| "重放时账户金额溢出".to_string())?;
+        balances.insert(acct.to_string(), v);
+        Ok(())
+    };
+
+    for r in records {
+        match r.reason {
+            SettlementReason::Deposited => {
+                apply(&r.to_account, r.amount)?;
+                deposits = deposits
+                    .checked_add(r.amount)
+                    .map_err(|_| "重放时充值聚合溢出".to_string())?;
+            }
+            SettlementReason::Slashed => {
+                apply(&r.from_account, Money::new(-r.amount.as_i64()))?;
+                slashed = slashed
+                    .checked_add(r.amount)
+                    .map_err(|_| "重放时罚没聚合溢出".to_string())?;
+            }
+            _ => {
+                // Completed / Refunded / Staked / Escrowed：from → to 搬运
+                if r.amount.is_positive() {
+                    apply(&r.from_account, Money::new(-r.amount.as_i64()))?;
+                    apply(&r.to_account, r.amount)?;
+                }
+            }
+        }
+    }
+
+    Ok(ReplayedLedger {
+        balances,
+        deposits,
+        slashed,
+    })
+}
+
 /// 结算引擎
 pub struct SettlementEngine {
     balances: HashMap<String, Money>,
@@ -112,6 +167,33 @@ impl SettlementEngine {
             total_paid: Money::ZERO,
             total_slashed: Money::ZERO,
         }
+    }
+
+    /// 从持久化的只追加流水恢复引擎（v2.6.1，GAP §6.1）。
+    ///
+    /// 余额与充值 / 罚没聚合由 `replay_records` 独立重放，已结算任务集合与
+    /// `total_paid` 从 Completed 流水重建。恢复出的引擎再跑 `independent_audit`
+    /// 必须通过——保证账本落盘后重启不铸币、不丢账。
+    pub fn restore(records: Vec<SettlementRecord>) -> Result<Self, String> {
+        let replayed = replay_records(&records)?;
+        let mut paid_tasks = HashSet::new();
+        let mut total_paid = Money::ZERO;
+        for r in &records {
+            if r.reason == SettlementReason::Completed && r.amount.is_positive() {
+                paid_tasks.insert(r.task_id.clone());
+                total_paid = total_paid
+                    .checked_add(r.amount)
+                    .map_err(|_| "恢复时已付总额溢出".to_string())?;
+            }
+        }
+        Ok(Self {
+            balances: replayed.balances,
+            records,
+            paid_tasks,
+            total_deposits: replayed.deposits,
+            total_paid,
+            total_slashed: replayed.slashed,
+        })
     }
 
     /// 充值：系统**唯一**的资金入口
@@ -309,57 +391,15 @@ impl SettlementEngine {
     /// `records` 流水，逐笔独立重放出每个账户的应有余额，再与当前 `balances`
     /// 逐账户比对。这样即使增量聚合或余额被污染/算错，独立审计仍能发现。
     pub fn independent_audit(&self) -> AuditReport {
-        let mut expected: HashMap<String, Money> = HashMap::new();
-        let mut deposits = Money::ZERO;
-        let mut slashed = Money::ZERO;
         let mut overflow = false;
-
-        // 对重放账本做有符号增量；返回 false 表示 checked 溢出
-        let apply = |map: &mut HashMap<String, Money>, acct: &str, delta: Money| -> bool {
-            let cur = map.get(acct).copied().unwrap_or(Money::ZERO);
-            match cur.checked_add(delta) {
-                Ok(v) => {
-                    map.insert(acct.to_string(), v);
-                    true
-                }
-                Err(_) => false,
+        // 只信任流水独立重放（v2.6.1：与持久化恢复共用 replay_records）
+        let (expected, deposits, slashed) = match replay_records(&self.records) {
+            Ok(l) => (l.balances, l.deposits, l.slashed),
+            Err(_) => {
+                overflow = true;
+                (HashMap::new(), Money::ZERO, Money::ZERO)
             }
         };
-
-        for r in &self.records {
-            match r.reason {
-                SettlementReason::Deposited => {
-                    if !apply(&mut expected, &r.to_account, r.amount) {
-                        overflow = true;
-                    }
-                    match deposits.checked_add(r.amount) {
-                        Ok(v) => deposits = v,
-                        Err(_) => overflow = true,
-                    }
-                }
-                SettlementReason::Slashed => {
-                    if !apply(&mut expected, &r.from_account, Money::new(-r.amount.as_i64())) {
-                        overflow = true;
-                    }
-                    match slashed.checked_add(r.amount) {
-                        Ok(v) => slashed = v,
-                        Err(_) => overflow = true,
-                    }
-                }
-                _ => {
-                    // Completed / Refunded / Staked / Escrowed：from → to 搬运
-                    // （Rejected 金额为 0，跳过）
-                    if r.amount.is_positive() {
-                        if !apply(&mut expected, &r.from_account, Money::new(-r.amount.as_i64())) {
-                            overflow = true;
-                        }
-                        if !apply(&mut expected, &r.to_account, r.amount) {
-                            overflow = true;
-                        }
-                    }
-                }
-            }
-        }
 
         // 逐账户比对（重放账户 ∪ 当前账户，覆盖 ghost / 缺失 / 篡改）
         let mut accounts: HashSet<String> = HashSet::new();

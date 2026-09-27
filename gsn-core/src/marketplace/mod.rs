@@ -676,6 +676,49 @@ impl AgentMarket {
             .filter(|t| t.state == TaskState::Settled)
             .count()
     }
+
+    // ───── v2.6.1 持久化支持（GAP §6.1）─────
+
+    /// 当前只追加结算流水（持久化增量来源）
+    pub fn settlement_records(&self) -> &[SettlementRecord] {
+        self.settlement.records()
+    }
+
+    /// 从持久化流水恢复账本（替换结算引擎）；恢复后应再跑独立审计确认
+    pub fn restore_ledger(&mut self, records: Vec<SettlementRecord>) -> Result<(), String> {
+        self.settlement = SettlementEngine::restore(records)?;
+        Ok(())
+    }
+
+    /// 快照全部 Agent 为持久化记录
+    pub fn snapshot_agents_for_store(&self) -> Vec<crate::storage::StoredAgent> {
+        self.agents
+            .values()
+            .map(|c| crate::storage::StoredAgent {
+                agent_id: c.agent_id.clone(),
+                name: c.name.clone(),
+                skills: c.skills.join(","),
+                stake: c.stake.as_i64(),
+                reputation: c.reputation_score,
+                created_at: c.created_at.to_string(),
+            })
+            .collect()
+    }
+
+    /// 快照全部 Task 为持久化记录
+    pub fn snapshot_tasks_for_store(&self) -> Vec<crate::storage::StoredTask> {
+        self.tasks
+            .values()
+            .map(|t| crate::storage::StoredTask {
+                task_id: t.task_id.clone(),
+                goal: t.goal.clone(),
+                state: t.state.label().to_string(),
+                owner: t.owner.clone(),
+                budget: t.budget.as_i64(),
+                created_at: t.created_at.to_string(),
+            })
+            .collect()
+    }
 }
 
 impl Default for AgentMarket {

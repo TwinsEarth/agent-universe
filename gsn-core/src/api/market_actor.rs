@@ -4,8 +4,10 @@
 //! 与 swarm actor 同样的 actor 模式，避免共享 Mutex 在异步事件循环中死锁。
 
 use crate::marketplace::*;
+use crate::storage::PersistentStore;
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// 当前 Unix 毫秒
@@ -197,6 +199,58 @@ impl MarketActorHandle {
             let mut market = AgentMarket::with_min_stake(min_stake);
             while let Some(cmd) = rx.recv().await {
                 dispatch(&mut market, cmd);
+            }
+        });
+        Self { tx }
+    }
+
+    /// 启动带持久化的市场 Actor（v2.6.1，GAP §6.1）。
+    ///
+    /// 启动时从只追加流水完整恢复账本（余额 / 充值 / 罚没 / 已结算任务），
+    /// 每条写命令处理后增量 append 新流水并 upsert agents / tasks，
+    /// 使重启后守恒检查与独立审计连续、不铸币、不丢账。
+    pub fn spawn_with_store(store: Arc<PersistentStore>) -> Self {
+        let (tx, mut rx) = mpsc::channel::<MarketCommand>(256);
+        tokio::spawn(async move {
+            let mut market = AgentMarket::new();
+
+            // ── 启动恢复：账本（权威，资金安全）──
+            match store.load_ledger_records() {
+                Ok(records) => {
+                    let n = records.len();
+                    match market.restore_ledger(records) {
+                        Ok(()) => println!("✅ 账本已从磁盘恢复：{n} 条流水"),
+                        Err(e) => eprintln!("⚠️ 账本恢复失败: {e}"),
+                    }
+                }
+                Err(e) => eprintln!("⚠️ 账本读取失败: {e}"),
+            }
+            // load agents / tasks：真实调用点（重启后可见 / 计数）
+            let n_agents = store.load_agents().map(|v| v.len()).unwrap_or(0);
+            let n_tasks = store.load_tasks().map(|v| v.len()).unwrap_or(0);
+            println!("   磁盘载回：{n_agents} agents / {n_tasks} tasks");
+
+            // 已持久化流水水位（启动已有记录不重复 append）
+            let mut ledger_water = store.ledger_count().unwrap_or(0) as usize;
+
+            while let Some(cmd) = rx.recv().await {
+                dispatch(&mut market, cmd);
+
+                // ── 写后增量持久化 ──
+                let records = market.settlement_records();
+                if records.len() > ledger_water {
+                    for r in &records[ledger_water..] {
+                        let _ = store.append_ledger_record(r);
+                    }
+                    ledger_water = records.len();
+                }
+                // agents / tasks 快照 upsert（幂等，覆盖最新状态）
+                for a in market.snapshot_agents_for_store() {
+                    let _ = store.upsert_agent(&a);
+                }
+                for t in market.snapshot_tasks_for_store() {
+                    let _ = store.upsert_task(&t);
+                }
             }
         });
         Self { tx }

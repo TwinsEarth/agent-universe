@@ -42,7 +42,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.7 (Identity - 跨实现身份一致性)
                                                         ├── v2.5.8 (Ledger - 精确整数账本)
                                                         ├── v2.5.9 (Auth QA - 认证式 BFT + 独立审计 + 重放保护)
-                                                        └── v2.6.0 (State Machine - 状态机恢复边 + 证据结算闸门) ← 当前
+                                                        ├── v2.6.0 (State Machine - 状态机恢复边 + 证据结算闸门)
+                                                        └── v2.6.1 (Ledger Persistence - 账本落盘重放 + MCP 参数校验) ← 当前
 ```
 
 ## 大版本详情
@@ -336,6 +337,14 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：把 QA 验收闸门从"调用方传 approvals、服务端合成 qa-0..n 委员与赞成票"改为**固定委员集的 Ed25519 签名投票**——新增 `SignedQaVote`（task_id/round/voter/vote/nonce/issued_at/expires_at/signature，对固定格式 signing_bytes 签名），`with_fixed_members` 绑定委员公钥集（n、f=(n-1)/3），`cast_signed_vote` 依次校验委员身份 / 任务 / 轮次 / 时间窗 / 拒绝 Silent / 验签 / nonce 去重，equivocation 整轮作废、`advance_view` 换轮恢复（GAP §3.1）。新增**可失败的独立审计一等 API** `independent_audit()`：只信任只追加流水、独立逐笔重放出期望余额再与当前余额取并集逐户比对（覆盖幽灵 / 缺失 / 篡改 / 拆账），并交叉核对充值 / 罚没聚合与总额，返回 `AuditReport`；旧 `audit_full_scan` 与守恒同算法同数据源且零调用点（GAP §2.4）。**重放保护**：每票一次性 nonce + 签发 / 过期时间窗（GAP §2.5/§4.7）。充值 / 质押 / 托管 / 支付 / 退款 / 罚没全部写入**只追加流水**，作为审计唯一信任源。REST（`/audit`、认证式 verify）、MCP（market_audit、认证参数）、CLI（`gsn audit`、`verify @file`）、JS（verifyResultAuthenticated / independentAudit / Ed25519 验签，WKWebView 无 crypto 抛错不静默）、Python（认证式 verify_result、audit()）同步。gsn-core **0.2.59**。验证 Rust lib **135** / 集成全绿（v235 认证式 10、v234 66、cross_lang 2）、JS **16** 项；关键反例：拆账 100→两户 50 时守恒被蒙蔽、独立审计判失败，伪造签名与 nonce 重放被拒。详见 [releases/v2.5.9.md](releases/v2.5.9.md)。
 
+### v2.6.0 - State Machine（状态机恢复边 + 证据结算闸门）
+
+**核心内容**：为任务生命周期建立集中的合法状态转移表，补上两条此前缺失的恢复边——**NoQuorum→Open**（无共识后重新开放）、**Rework→Running**（返工后恢复执行），消除 NoQuorum 吸收态（GAP §3.4）。`TaskState` 新增 `can_transition_to`（集中合法边表）与 `transition`（非法转移报错）；`AgentMarket` 新增 `resume_after_rework` / `reopen_after_no_quorum`（显式校验前置态），全生命周期状态赋值统一走 transition。把 `EvidenceGrade::is_trustworthy()` 从"有谓词、零调用点"升级为结算付款前的**强制闸门**：policy 非 None 时结果信封必须存在且证据可信（Verified/CpuProto），否则拒付、状态保持 Accepted（旧 `settle_task` 信封缺失时 `unwrap_or(true)` 放行）。**policy=None 提交即验收**：提交结果直接转 Accepted、豁免证据门禁。REST 新增 `/tasks/{id}/resume`、`/reopen`；JS（models.js / market.js）、Python（market_client.py）三端同步。gsn-core **0.2.60**。验证 Rust v234 **71**（新增 5 用例）、JS **19** 项；关键反例：NoQuorum/Rework 恢复全链路、Unverified 拒付、policy=None 豁免、非法跨级转移被拒。详见 [releases/v2.6.0.md](releases/v2.6.0.md)。
+
+### v2.6.1 - Ledger Persistence（账本落盘重放 + MCP 参数校验）
+
+**核心内容**：让只追加结算流水真正落盘并在重启后完整重放恢复（GAP §6.1）。新增 `replay_records`（只信任流水、有符号增量逐笔重放、checked 防溢出）与 `SettlementEngine::restore`（重建余额 / 充值 / 罚没 / 已结算任务）；`PersistentStore` 新建 `ledger_entries` 表（JSON 列 + SQLite 事务，无半行）与 `append/load/count`（损坏行容错跳过）；actor 新增 `spawn_with_store`（启动恢复账本、写后增量 append + 快照 upsert），daemon 改用之，根治"只写不读、重启丢账"。**MCP 参数校验**（GAP §8.1）：新增 `validate_arguments`（缺必填 / null 占必填 / 类型错误指名参数），tools/call 在执行器前用工具自身 inputSchema 校验、失败返回 **-32602**，schema 与 tools/list 同源，杜绝 `unwrap_or(0.0)/unwrap_or("")` 静默降级。`independent_audit` 重构复用 `replay_records`。gsn-core **0.2.61**。验证 Rust v261 **5**、lib **138**（含 storage 持久化 3 用例：drop/reopen 往返、同 id 覆盖、损坏行容错），全量 0 failed；关键反例：账本恢复逐账户连续、MCP 错误参数被 -32602 拒。详见 [releases/v2.6.1.md](releases/v2.6.1.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -398,6 +407,8 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **跨实现身份一致性（统一 DID 派生 + conformance 签名逐字节命中上游）+ 客户端构建链路根治（file: 依赖）**（v2.5.7）
 - ✅ **精确整数账本 Money(i64) + 发布即托管防铸币 + 三端共享金额向量逐值一致**（v2.5.8）
 - ✅ **认证式 BFT（固定委员集 Ed25519 签名票）+ 可失败独立审计（只信任流水独立重放，能发现守恒盲区）+ nonce/时间窗重放保护 + 只追加结算流水**（v2.5.9）
+- ✅ **状态机集中转移表 + NoQuorum/Rework 恢复边（消除吸收态）+ 证据分级强制结算闸门 + policy=None 提交即验收**（v2.6.0）
+- ✅ **账本落盘 + 重启从流水重放恢复 + MCP 单一来源参数校验（-32602，杜绝静默降级）**（v2.6.1）
 
 ### 技术栈
 

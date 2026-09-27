@@ -129,3 +129,47 @@ impl ToolResult {
         }
     }
 }
+
+/// 按工具 inputSchema 校验 arguments（v2.6.1，GAP §8.1）。
+///
+/// schema 是 tools/list 与 tools/call 共用的**单一来源**：缺必填、显式 null
+/// 占据必填、或已提供参数类型不符时返回 Err 并指名参数，由调用方转成
+/// JSON-RPC `-32602`（InvalidParams），杜绝静默降级。
+pub fn validate_arguments(schema: &ToolSchema, args: &serde_json::Value) -> Result<(), String> {
+    let map = match args {
+        serde_json::Value::Object(m) => m,
+        _ => return Err("工具参数必须是一个 JSON 对象".to_string()),
+    };
+
+    // 必填校验（缺失或显式 null 都判缺失）
+    for name in &schema.required {
+        let present = matches!(map.get(name), Some(v) if !v.is_null());
+        if !present {
+            return Err(format!("缺少必填参数 '{name}'"));
+        }
+    }
+
+    // 类型校验（只校验 schema 声明且实际提供、非 null 的参数）
+    for (name, prop) in &schema.properties {
+        if let Some(value) = map.get(name) {
+            if value.is_null() {
+                continue;
+            }
+            let ty = prop.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let ok = match ty {
+                "string" => value.is_string(),
+                "integer" => value.is_i64(),
+                "number" => value.is_number(),
+                "boolean" => value.is_boolean(),
+                "object" => value.is_object(),
+                "array" => value.is_array(),
+                _ => true, // 未声明 / 复合类型不做强校验
+            };
+            if !ok {
+                return Err(format!("参数 '{name}' 应为 {ty} 类型"));
+            }
+        }
+    }
+
+    Ok(())
+}

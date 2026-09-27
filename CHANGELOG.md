@@ -2,6 +2,18 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.1] - 2026-09-27
+
+### 修复：账本落盘与重放恢复、MCP 参数校验（GAP §6.1/§8.1）
+
+- **只追加流水落盘 + 重放恢复**：旧 `PersistentStore` 无余额 / 流水表，`load_agents/load_tasks/upsert_task` 零调用，daemon 打开库只打印计数、actor 总以空市场启动，重启即丢账。新增 `replay_records`（只信任流水、有符号增量逐笔重放、checked 防溢出）与 `SettlementEngine::restore`（重建余额 / 充值 / 罚没 / 已结算任务）；新建 `ledger_entries` 表（JSON 列 + SQLite 事务，无半行）与 `append/load/count`，损坏行容错跳过；actor 新增 `spawn_with_store`（启动恢复账本、写后增量 append + 快照 upsert），daemon 改用之。
+- **MCP 单一来源参数校验**：旧 schema 是两份手工列表且从不校验，错误参数被 `unwrap_or(0.0)/unwrap_or("")` 静默吞掉。新增 `validate_arguments`（缺必填 / null 占必填 / 类型错误指名参数），tools/call 在执行器前用工具自身 inputSchema 校验，失败返回 **-32602**；schema 与 tools/list 同源。
+- `independent_audit` 重构为复用 `replay_records`，统一审计与重放口径。
+
+### 验证
+
+- Rust v261 **5** passed、lib **138** passed（含 storage 持久化 3 用例：drop/reopen 往返、同 id 覆盖、损坏行容错），全量 `cargo test --jobs 2` 0 failed / 0 ignored；`cargo check --tests` 通过。
+
 ## [v2.6.0] - 2026-09-27
 
 ### 新增：状态机恢复边、证据分级结算闸门（GAP §3.4 及证据谓词零调用）

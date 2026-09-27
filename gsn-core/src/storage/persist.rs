@@ -6,6 +6,8 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 
+use crate::marketplace::SettlementRecord;
+
 /// SQLite 持久化存储
 pub struct PersistentStore {
     conn: Mutex<Connection>,
@@ -96,6 +98,12 @@ impl PersistentStore {
                 data_bytes INTEGER NOT NULL DEFAULT 0,
                 last_check TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
+            );
+
+            -- v2.6.1: 只追加结算流水（账本落盘，重启可重放恢复，GAP §6.1）
+            CREATE TABLE IF NOT EXISTS ledger_entries (
+                seq     INTEGER PRIMARY KEY AUTOINCREMENT,
+                payload TEXT NOT NULL
             );
             ",
         )?;
@@ -377,6 +385,147 @@ impl PersistentStore {
         let count: u64 =
             conn.query_row("SELECT COUNT(*) FROM relays WHERE healthy = 1", [], |row| row.get(0))?;
         Ok(count)
+    }
+
+    // ─────────────── v2.6.1 账本落盘（GAP §6.1）───────────────
+
+    /// 追加一条结算流水（只追加，不可变；SQLite 事务保证不会出现半行）
+    pub fn append_ledger_record(&self, rec: &SettlementRecord) -> anyhow::Result<()> {
+        let payload = serde_json::to_string(rec)?;
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO ledger_entries (payload) VALUES (?1)",
+            params![payload],
+        )?;
+        Ok(())
+    }
+
+    /// 按序读回全部结算流水（用于重放恢复）。
+    /// 损坏 / 无法解析的行被容错跳过，不使整个账本不可读。
+    pub fn load_ledger_records(&self) -> anyhow::Result<Vec<SettlementRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt =
+            conn.prepare("SELECT payload FROM ledger_entries ORDER BY seq ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let payload = r?;
+            if let Ok(rec) = serde_json::from_str::<SettlementRecord>(&payload) {
+                out.push(rec);
+            }
+        }
+        Ok(out)
+    }
+
+    /// 已持久化流水条数（持久化水位）
+    pub fn ledger_count(&self) -> anyhow::Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let count: u64 =
+            conn.query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))?;
+        Ok(count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::marketplace::{Money, SettlementReason};
+
+    fn tmp_db(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("gsn_persist_v261_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("gsn.db")
+    }
+
+    fn sample_agent(id: &str, name: &str) -> StoredAgent {
+        StoredAgent {
+            agent_id: id.into(),
+            name: name.into(),
+            skills: "a,b".into(),
+            stake: 100,
+            reputation: 0.5,
+            created_at: "10".into(),
+        }
+    }
+
+    fn sample_task(id: &str, state: &str) -> StoredTask {
+        StoredTask {
+            task_id: id.into(),
+            goal: "goal".into(),
+            state: state.into(),
+            owner: Some("owner".into()),
+            budget: 200,
+            created_at: "10".into(),
+        }
+    }
+
+    #[test]
+    fn agent_task_roundtrip_after_reopen() {
+        let path = tmp_db("rt");
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            s.upsert_agent(&sample_agent("a1", "A")).unwrap();
+            s.upsert_task(&sample_task("t1", "Open")).unwrap();
+        } // drop
+        let s = PersistentStore::open(&path).unwrap();
+        let agents = s.load_agents().unwrap();
+        let tasks = s.load_tasks().unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_id, "a1");
+        assert_eq!(agents[0].name, "A");
+        assert_eq!(agents[0].skills, "a,b");
+        assert_eq!(agents[0].stake, 100);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].task_id, "t1");
+        assert_eq!(tasks[0].state, "Open");
+        assert_eq!(tasks[0].owner.as_deref(), Some("owner"));
+        assert_eq!(tasks[0].budget, 200);
+    }
+
+    #[test]
+    fn same_id_last_write_wins() {
+        let path = tmp_db("ow");
+        let s = PersistentStore::open(&path).unwrap();
+        s.upsert_agent(&sample_agent("a1", "A")).unwrap();
+        let mut later = sample_agent("a1", "B");
+        later.stake = 250;
+        s.upsert_agent(&later).unwrap();
+        let agents = s.load_agents().unwrap();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "B");
+        assert_eq!(agents[0].stake, 250);
+    }
+
+    #[test]
+    fn ledger_append_load_and_skip_corrupt() {
+        let path = tmp_db("led");
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            let rec = SettlementRecord {
+                task_id: "deposit:a1".into(),
+                from_account: String::new(),
+                to_account: "a1".into(),
+                amount: Money::new(10),
+                reason: SettlementReason::Deposited,
+                timestamp: 5,
+            };
+            s.append_ledger_record(&rec).unwrap();
+            assert_eq!(s.ledger_count().unwrap(), 1);
+            // 直接插一条损坏 payload（崩溃 / 脏行模拟）
+            let conn = s.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO ledger_entries (payload) VALUES ('{not json')",
+                [],
+            )
+            .unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        let recs = s.load_ledger_records().unwrap();
+        assert_eq!(recs.len(), 1, "损坏行应被容错跳过");
+        assert_eq!(recs[0].amount, Money::new(10));
+        assert_eq!(s.ledger_count().unwrap(), 2, "物理行数含损坏行");
     }
 }
 

@@ -176,6 +176,14 @@ impl McpServer {
             }
         };
 
+        // v2.6.1（GAP §8.1）：按工具 inputSchema 校验参数，缺必填 / 类型错误
+        // 在进入执行器前返回 -32602，schema 不再是从不校验的装饰。
+        if let Some(td) = self.tools.get(name) {
+            if let Err(msg) = validate_arguments(&td.input_schema, &arguments) {
+                return McpResponse::error(id, McpError::InvalidParams(msg));
+            }
+        }
+
         let tool_result = handler(&arguments);
         McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or_else(|e| {
             json!({ "content": [{ "type": "text", "text": format!("结果序列化失败: {e}") }], "isError": true })

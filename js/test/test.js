@@ -183,7 +183,7 @@ test('AipIdentity.fromSeed 复算 Rust/Python 基准', () => {
   const sig = id.signObject(obj);
   assert.strictEqual(
     sig,
-    'e14d3f9e8204ea185ea4ba32a8117f4262095ab9dac1352e1a7964ce36d3355c288dd6804ffa7daeb5f6eba9f30428f52702a75fd3efbb6a62555a7f24665da0e'
+    'e14d3f9e8204ea185ea4ba32a8117f262095ab9dac1352e1a7964ce36d3355c288dd6804ffa7daeb5f6eba9f30428f52702a75fd3efbb6a62555a7f24665da0e'
   );
 });
 

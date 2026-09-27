@@ -152,7 +152,7 @@ impl P2pPeer {
 
                 // Identify
                 let identify = identify::Behaviour::new(IdentifyConfig::new(
-                    "/gsn/0.2.56".to_string(),
+                    "/gsn/0.2.57".to_string(),
                     key.public(),
                 ));
 

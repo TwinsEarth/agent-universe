@@ -174,10 +174,12 @@ impl AcaProcessor {
     ///
     /// 校验公钥的 DID 指纹与传入 DID 一致，不一致则拒绝注册。
     pub fn register_peer(&mut self, did: &str, pubkey: &[u8]) -> Result<(), String> {
-        let derived = Did::from_public_key(pubkey).to_string();
-        if derived != did {
+        // v2.5.7：接受上游 did:aip 与本项目 did:nau，只要求公钥指纹（与方法无关）匹配。
+        let parsed = Did::parse(did)?;
+        let fingerprint = Did::fingerprint(pubkey);
+        if parsed.identifier() != fingerprint {
             return Err(format!(
-                "公钥与 DID 不匹配：DID={did}, 公钥指纹对应={derived}"
+                "公钥与 DID 不匹配：DID={did}, 公钥指纹对应={fingerprint}"
             ));
         }
         self.peers.insert(did.to_string(), pubkey.to_vec());

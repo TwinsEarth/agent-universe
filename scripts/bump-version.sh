@@ -36,10 +36,11 @@ for c in client desktop; do
   sed -i "s/\"version\": \"$V\"/\"version\": \"$NEW\"/g" $c/src-tauri/tauri.conf.json
   sed -i "s/Agent Universe v$V/Agent Universe v$NEW/g" $c/src-tauri/tauri.conf.json
   sed -i "s/\"$V\"\.to_string()/\"$NEW\".to_string()/" $c/src-tauri/src/lib.rs
+  # v2.5.7 补：前端 index.html 的 <title> 与版本徽标（此前遗漏，长期停留在 v2.3.6）
+  sed -i "s/v$V/v$NEW/g" $c/index.html
 done
-# client/desktop lib.rs 头注释（v2.5.6 起补：此前漏改头注释）
-sed -i "s|// Agent Universe Tauri Client v$V|// Agent Universe Tauri Client v$NEW|" client/src-tauri/src/lib.rs
-sed -i "s|// Agent Universe Tauri Desktop v$V|// Agent Universe Tauri Desktop v$NEW|" desktop/src-tauri/src/lib.rs
+# client/desktop lib.rs 头注释（v2.5.7 修正：实际格式为 "// Agent Universe vX.Y.Z — Tauri 2 ..."）
+sed -i "s|// Agent Universe v$V|// Agent Universe v$NEW|" client/src-tauri/src/lib.rs desktop/src-tauri/src/lib.rs
 sed -i "s/v$V — 桌面客户端前端/v$NEW — 桌面客户端前端/" desktop/src/main.js
 
 # ── D. gsn-core (Rust 线) ──
@@ -66,6 +67,11 @@ bump_lock desktop/src-tauri/Cargo.lock au-client "$NEW"
 
 # ── E. Python SDK ──
 sed -i "s/^version = \"$V\"/version = \"$NEW\"/" aip-sdk-py/pyproject.toml
+# v2.5.7 补：SDK 内部三处版本常量（此前遗漏，长期停留在 2.3.6）
+sed -i "s/^__version__ = \"$V\"/__version__ = \"$NEW\"/" aip-sdk-py/aip/__init__.py
+sed -i "s|Agent Universe AIP SDK v$V|Agent Universe AIP SDK v$NEW|" aip-sdk-py/aip/__init__.py
+sed -i "s/^_SDK_VERSION = \"$V\"/_SDK_VERSION = \"$NEW\"/" aip-sdk-py/aip/mcp_client.py
+sed -i "s/version: str = \"$V\"/version: str = \"$NEW\"/" aip-sdk-py/aip/aca.py
 
 # ── F. CI ──
 # ci.yml 实际文本：au.version!=='X.Y.Z'（!== 前后无空格）
@@ -96,6 +102,9 @@ sed -i "s/v$V 跨平台客户端/v$NEW 跨平台客户端/" client/README.md
 sed -i "s/_${V}_/_${NEW}_/g" client/README.md
 sed -i "s/-v$V\.tar\.gz/-v${NEW}.tar.gz/g" client/README.md
 sed -i "s|releases/tag/v$V|releases/tag/v$NEW|g" client/README.md client/platforms/*.md
+
+# v2.5.7 补：desktop/README.md 头部版本与内嵌 SDK 版本（此前遗漏，停留在 v2.3.4）
+sed -i "s/v$V 轻桌面客户端/v$NEW 轻桌面客户端/; s|agent-universe@$V|agent-universe@$NEW|g" desktop/README.md
 
 echo ">>> 版本声明点已改完。下一步:"
 echo "    1) 全量回归: bash test/run-all.sh   (Windows: powershell -File test/run-all.ps1)"

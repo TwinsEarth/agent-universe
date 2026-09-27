@@ -4,7 +4,9 @@ use gsn_core::*;
 fn test_did_creation() {
     let keypair = Keypair::generate();
     let did = Did::from_public_key(keypair.public_key());
-    assert!(did.as_str().starts_with("did:aip:"));
+    // v2.5.7：新铸造身份使用 did:nau；上游 did:aip 仍可被 parse 接受。
+    assert!(did.as_str().starts_with("did:nau:"));
+    assert!(Did::parse("did:aip:34750f98bd59fcfc").is_ok());
 }
 
 #[test]

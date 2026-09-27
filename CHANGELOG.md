@@ -2,6 +2,25 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.5.7] - 2026-09-27
+
+### 新增：跨实现身份一致性（Cross-Implementation Identity）
+
+- **统一三端 DID 派生口径**：`fingerprint = hex(SHA256(原始 32 字节公钥)[..8])`（16 hex）。Rust（`identity/did.rs`）、JS（`lib/keychain.js`）此前口径不一致（Rust 对原始公钥取 8 字节、前缀 aip；JS 对 SPKI DER 取 16 字节、前缀 au），现统一；新身份用 `did:nau:` 前缀以示区分。
+- **跨实现签名向量**：新增 `conformance/generate.mjs`（Node/OpenSSL 独立生成，与 Rust 零共享代码）+ `conformance/vectors.json`；规范载荷签名**逐字节命中上游 gsn-core 测试向量** `e14d3f9e…`，构成真正跨实现校验（非"自己验自己"）。
+- **上游身份向后兼容**：`Did::parse` 同时接受 `did:aip:` / `did:nau:`、拒绝其他方法；ACA `register_peer` 改为只比对指纹（与方法无关），声明 aip 的上游对端可正常注册。
+
+### 修复：客户端构建链路（client/desktop）
+
+- **根包补 `/lib/*` 子路径**：新增根 `lib/` 6 个 re-export，根 package.json files 加 `lib`；此前根发布包只含 `js/`，客户端 import `/lib/market.js` 落空（GAP §9.5）。
+- **依赖改 `file:..`**：client/desktop 不再从 registry 拉 SDK，直接打包仓库根源码，根治"tag 触发构建时本版本 npm 包尚未发布"的时序竞争；新增 `.npmrc` `install-links=true`（打包成 node_modules 真实拷贝而非 symlink）。
+- **import 改 default + 解构**：规避 rollup 对 re-export CJS 命名导出的静态识别失败；client/desktop `vite build` 均验证通过。
+- 全仓 bump 到 npm 2.5.7 / gsn-core 0.2.57；补登记 Python SDK 三处版本常量、客户端 index.html 等长期遗漏的版本点。
+
+### 验证
+
+- Rust cargo test 0 failed（v2.5.7 独立快照）；JS SDK 12 项通过；client/desktop Vite build 通过；跨实现签名逐字节命中上游向量。
+
 ## [v2.5.6] - 2026-09-27
 
 ### 新增：历史 Bug 回归套件（Regression Suite）

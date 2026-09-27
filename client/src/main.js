@@ -1,4 +1,7 @@
-import { AgentMarket, MIN_STAKE } from '@twinsearth/agent-universe/lib/market.js';
+// CJS 模块经 rollup 打包时命名导入需静态分析；default 导入拿整个 module.exports 再解构最稳妥
+// （对 npm file: 链接 / registry 安装均成立）。
+import AU from '@twinsearth/agent-universe/lib/market.js';
+const { AgentMarket, MIN_STAKE } = AU;
 
 const logEl = document.getElementById('log');
 const btn = document.getElementById('btn-run');

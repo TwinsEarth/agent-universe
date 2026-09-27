@@ -1,5 +1,5 @@
 // test/test.js
-// Agent Universe JS SDK 测试（8 项）
+// Agent Universe JS SDK 测试（12 项）
 
 const assert = require('node:assert');
 const {
@@ -41,15 +41,15 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.5.6', () => {
-  assert.strictEqual(version, '2.5.6');
+test('版本号为 2.5.7', () => {
+  assert.strictEqual(version, '2.5.7');
 });
 
 // 2. 密钥对 + DID + 签名验证
 test('Keypair 生成 DID 且签名可验证', () => {
   const kp = Keypair.generate();
-  assert.ok(kp.did.startsWith('did:au:'), 'DID 前缀');
-  assert.strictEqual(kp.did.length, 'did:au:'.length + 32);
+  assert.ok(kp.did.startsWith('did:nau:'), 'DID 前缀');
+  assert.strictEqual(kp.did.length, 'did:nau:'.length + 16);
   const msg = 'hello agent universe';
   const sig = kp.sign(msg);
   assert.ok(kp.verify(msg, sig), '签名验证通过');

@@ -38,7 +38,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.3 (Mesh - 自组网)
                                                         ├── v2.5.4 (Traversal - NAT 穿透)
                                                         ├── v2.5.5 (Relay Pool - 中继池+多通道)
-                                                        └── v2.5.6 (Regression - 历史 Bug 回归套件) ← 当前
+                                                        ├── v2.5.6 (Regression - 历史 Bug 回归套件)
+                                                        └── v2.5.7 (Identity - 跨实现身份一致性) ← 当前
 ```
 
 ## 大版本详情
@@ -320,6 +321,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：把 v1.0.0~v2.5.5 开发中踩过、修过的全部 bug / 遗漏 / 注意事项固化为每次必跑的回归测试。新增 `test/regression.js`（14 条：版本一致性 / 编译CI守卫 / 市场重复防护 / 资金守恒）、`gsn-core/tests/regression_net.rs`（subscribe→publish 不 panic）、`test/run-all.sh` / `run-all.ps1` 一键全量、`test/README.md` 用例索引与易踩坑清单；CI 强制跑回归、失败禁止发版；修复 `bump-version.sh` 自身 5 处缺陷。gsn-core **0.2.56**。验证 JS 12 项、回归 14/14、Rust 0 failed。详见 [releases/v2.5.6.md](releases/v2.5.6.md)。
 
+### v2.5.7 - Identity（跨实现身份一致性）
+
+**核心内容**：统一 Rust / JS 两端（及上游 gsn-core）的 DID 派生口径为 `hex(SHA256(原始 32B 公钥)[..8])`（16 hex），新身份用 `did:nau:` 前缀；新增 `conformance/generate.mjs`（Node/OpenSSL 独立实现、与 Rust 零共享代码）+ `vectors.json`，规范载荷签名**逐字节命中上游测试向量** `e14d3f9e…`，构成真正跨实现校验（非"自己验自己"）；`Did::parse` 同时接受 aip/nau、ACA register_peer 只比指纹，上游身份向后兼容。根治客户端构建链路：根包补 `/lib/*` 子路径、client/desktop 依赖改 `file:..` + `.npmrc install-links=true`、import 改 default + 解构，Vite build 双双通过。gsn-core **0.2.57**。验证 Rust 0 failed、JS 12 项、conformance 签名逐字节命中、client/desktop build 通过。详见 [releases/v2.5.7.md](releases/v2.5.7.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -379,6 +384,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **Mesh 自组网 + NAT 穿透（Circuit Relay v2/AutoNAT/DCUtR）**（v2.5.3–v2.5.4）
 - ✅ **Relay 节点池 + 多通道智能切换**（v2.5.5）
 - ✅ **历史 Bug 回归套件 + CI 强制全量回归（失败禁止发版）**（v2.5.6）
+- ✅ **跨实现身份一致性（统一 DID 派生 + conformance 签名逐字节命中上游）+ 客户端构建链路根治（file: 依赖）**（v2.5.7）
 
 ### 技术栈
 

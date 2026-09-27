@@ -4,6 +4,7 @@
 //! 信誉不可转让，半衰期 90 天
 //! 质押锁定，作恶罚没
 
+use crate::marketplace::money::Money;
 use serde::{Deserialize, Serialize};
 
 /// 多维信誉
@@ -107,7 +108,7 @@ pub enum StakeStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StakeRecord {
     pub agent_id: String,
-    pub amount: f64,
+    pub amount: Money,
     pub status: StakeStatus,
     pub locked_at: u64,
 }
@@ -117,11 +118,11 @@ pub struct StakeRecord {
 pub struct ReputationManager {
     reputations: std::collections::HashMap<String, MarketReputation>,
     stakes: std::collections::HashMap<String, StakeRecord>,
-    min_stake: f64,
+    min_stake: Money,
 }
 
 impl ReputationManager {
-    pub fn new(min_stake: f64) -> Self {
+    pub fn new(min_stake: Money) -> Self {
         Self {
             reputations: std::collections::HashMap::new(),
             stakes: std::collections::HashMap::new(),
@@ -130,7 +131,7 @@ impl ReputationManager {
     }
 
     /// 注册质押
-    pub fn register_stake(&mut self, agent_id: &str, amount: f64) -> Result<(), String> {
+    pub fn register_stake(&mut self, agent_id: &str, amount: Money) -> Result<(), String> {
         if amount < self.min_stake {
             return Err(format!(
                 "质押不足：需要至少 {}，当前 {}",
@@ -168,7 +169,7 @@ impl ReputationManager {
     }
 
     /// 罚没质押
-    pub fn slash_stake(&mut self, agent_id: &str, amount: f64) -> Result<f64, String> {
+    pub fn slash_stake(&mut self, agent_id: &str, amount: Money) -> Result<Money, String> {
         let stake = self
             .stakes
             .get_mut(agent_id)
@@ -181,8 +182,8 @@ impl ReputationManager {
             ));
         }
 
-        stake.amount -= amount;
-        if stake.amount <= 0.0 {
+        stake.amount = stake.amount.checked_sub(amount)?;
+        if stake.amount <= Money::ZERO {
             stake.status = StakeStatus::Slashed;
         }
 

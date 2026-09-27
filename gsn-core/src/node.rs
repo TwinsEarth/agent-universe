@@ -1041,7 +1041,9 @@ async fn run_api_server(
                     let skills = v.get("skills").and_then(|x| x.as_array())
                         .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(","))
                         .unwrap_or_default();
-                    let stake = v.get("stake").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    let stake = v.get("stake")
+                        .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
+                        .unwrap_or(0);
                     let stored = StoredAgent {
                         agent_id: agent_id.to_string(), name: name.to_string(),
                         skills, stake, reputation: 0.0,

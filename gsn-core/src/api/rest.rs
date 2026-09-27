@@ -232,7 +232,10 @@ pub async fn route(
         Some(RouteTarget::DisputeArbitrate(id)) => {
             if let Some(v) = parsed_body {
                 let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
-                let slash = v.get("slash_amount").and_then(|x| x.as_f64()).unwrap_or(0.0);
+                let slash = v.get("slash_amount")
+                    .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
+                    .map(crate::marketplace::Money::new)
+                    .unwrap_or(crate::marketplace::Money::ZERO);
                 return from_mr(market.arbitrate(id, guilty, slash).await, 200);
             }
             return Routed::bad_request("缺少仲裁数据")
@@ -240,10 +243,10 @@ pub async fn route(
         Some(RouteTarget::AccountDeposit(account)) => {
             let amount = parsed_body.as_ref()
                 .and_then(|v| v.get("amount"))
-                .and_then(|x| x.as_f64())
-                .or_else(|| q.get("amount").and_then(|s| s.parse::<f64>().ok()));
+                .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
+                .or_else(|| q.get("amount").and_then(|s| s.parse::<i64>().ok()));
             if let Some(amount) = amount {
-                return from_mr(market.deposit(account, amount).await, 200);
+                return from_mr(market.deposit(account, crate::marketplace::Money::new(amount)).await, 200);
             }
             return Routed::bad_request("缺少 amount")
         }

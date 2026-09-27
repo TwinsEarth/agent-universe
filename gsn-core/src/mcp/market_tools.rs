@@ -27,8 +27,8 @@ impl MarketMcpBridge {
                 .param("agent_id", "string", "全局唯一 DID", true)
                 .param("name", "string", "智能体名称", true)
                 .param("skills", "array", "技能标签数组，如 [\"translation\"]", false)
-                .param("stake", "number", "质押金额（须 ≥ 最低质押 100）", false)
-                .param("price", "number", "单次调用价格", false)
+                .param("stake", "integer", "质押金额（整数，须 ≥ 最低质押 100，注册前先 deposit）", false)
+                .param("price", "integer", "单次调用价格（整数）", false)
                 .param("description", "string", "能力描述", false),
             tool("market_get_agent", "按 agent_id 查询智能体详情")
                 .param("agent_id", "string", "智能体 DID", true),
@@ -57,10 +57,10 @@ impl MarketMcpBridge {
             tool("market_arbitrate", "仲裁争议，可罚没质押")
                 .param("dispute_id", "string", "争议 ID", true)
                 .param("guilty", "boolean", "是否裁定有罪", true)
-                .param("slash_amount", "number", "罚没金额", false),
+                .param("slash_amount", "integer", "罚没金额（整数）", false),
             tool("market_deposit", "向账户充值")
                 .param("account", "string", "账户 DID", true)
-                .param("amount", "number", "充值金额", true),
+                .param("amount", "integer", "充值金额（整数）", true),
             tool("market_balance", "查询账户余额")
                 .param("account", "string", "账户 DID", true),
             tool("market_conservation", "检查结算守恒不变量（无参数）"),
@@ -76,7 +76,13 @@ impl MarketMcpBridge {
         let get_str = |key: &str| -> String {
             args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
         };
-        let get_f64 = |key: &str| -> f64 { args.get(key).and_then(|v| v.as_f64()).unwrap_or(0.0) };
+        let get_money = |key: &str| -> crate::marketplace::Money {
+            // 金额一律为整数；非整数/缺失按 0（严格参数校验在 v2.6.1 返回 -32602）
+            args.get(key)
+                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                .map(crate::marketplace::Money::new)
+                .unwrap_or(crate::marketplace::Money::ZERO)
+        };
 
         let result: MarketResponse = match name {
             "market_register_agent" => self.market.register_agent(args.clone()).await,
@@ -97,10 +103,10 @@ impl MarketMcpBridge {
             "market_open_dispute" => self.market.open_dispute(get("dispute")).await,
             "market_arbitrate" => {
                 let guilty = args.get("guilty").and_then(|v| v.as_bool()).unwrap_or(false);
-                let slash = get_f64("slash_amount");
+                let slash = get_money("slash_amount");
                 self.market.arbitrate(get_str("dispute_id"), guilty, slash).await
             }
-            "market_deposit" => self.market.deposit(get_str("account"), get_f64("amount")).await,
+            "market_deposit" => self.market.deposit(get_str("account"), get_money("amount")).await,
             "market_balance" => self.market.balance(get_str("account")).await,
             "market_conservation" => self.market.conservation().await,
             "market_leaderboard" => {

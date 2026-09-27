@@ -39,7 +39,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.5.4 (Traversal - NAT 穿透)
                                                         ├── v2.5.5 (Relay Pool - 中继池+多通道)
                                                         ├── v2.5.6 (Regression - 历史 Bug 回归套件)
-                                                        └── v2.5.7 (Identity - 跨实现身份一致性) ← 当前
+                                                        ├── v2.5.7 (Identity - 跨实现身份一致性)
+                                                        └── v2.5.8 (Ledger - 精确整数账本) ← 当前
 ```
 
 ## 大版本详情
@@ -325,6 +326,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：统一 Rust / JS 两端（及上游 gsn-core）的 DID 派生口径为 `hex(SHA256(原始 32B 公钥)[..8])`（16 hex），新身份用 `did:nau:` 前缀；新增 `conformance/generate.mjs`（Node/OpenSSL 独立实现、与 Rust 零共享代码）+ `vectors.json`，规范载荷签名**逐字节命中上游测试向量** `e14d3f9e…`，构成真正跨实现校验（非"自己验自己"）；`Did::parse` 同时接受 aip/nau、ACA register_peer 只比指纹，上游身份向后兼容。根治客户端构建链路：根包补 `/lib/*` 子路径、client/desktop 依赖改 `file:..` + `.npmrc install-links=true`、import 改 default + 解构，Vite build 双双通过。gsn-core **0.2.57**。验证 Rust 0 failed、JS 12 项、conformance 签名逐字节命中、client/desktop build 通过。详见 [releases/v2.5.7.md](releases/v2.5.7.md)。
 
+### v2.5.8 - Ledger（精确整数账本）
+
+**核心内容**：把全链路金额从 f64 改为精确整数——Rust 新增 `marketplace/money.rs` 的 `Money(i64)` newtype（`#[serde(transparent)]`，刻意不实现 `Add/Sub`、强制走 `checked_add/checked_sub` 防溢出）；守恒检查改为**精确相等、无容差**（旧 Rust 容差 0.001、JS 1e-9 差六个数量级，跨语言失效）。发布任务即把预算锁定到托管账户 `__escrow__:{task}`、注册即锁定质押到 `__stake__:`，付款方余额不足一律拒绝，杜绝凭空铸币（GAP §2.1–2.3）。JS `market.js` 新增 `_assertMoney`（拒绝非整数/非安全整数）、补齐 `__escrow__` 托管（旧版预算发布后"消失"、中途不守恒）、投标与罚没拒绝 `<= 0`（GAP §2.7）；Python `market_client.py` 金额注解 float→int。新增 `conformance/money-vectors.json` 权威向量，Rust 测试 `test_money_vector_matches_conformance` 与 JS 测试读取同一向量、逐账户逐聚合值一致。gsn-core **0.2.58**。验证 Rust lib 125 / v234 66 / v235 10、JS 14 项、market_demo 两场景精确守恒。详见 [releases/v2.5.8.md](releases/v2.5.8.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -385,6 +390,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **Relay 节点池 + 多通道智能切换**（v2.5.5）
 - ✅ **历史 Bug 回归套件 + CI 强制全量回归（失败禁止发版）**（v2.5.6）
 - ✅ **跨实现身份一致性（统一 DID 派生 + conformance 签名逐字节命中上游）+ 客户端构建链路根治（file: 依赖）**（v2.5.7）
+- ✅ **精确整数账本 Money(i64) + 发布即托管防铸币 + 三端共享金额向量逐值一致**（v2.5.8）
 
 ### 技术栈
 

@@ -11,6 +11,7 @@
 //! - 证据分级
 
 pub mod evidence;
+pub mod money;
 pub mod agent_card;
 pub mod task;
 pub mod qa_committee;
@@ -18,6 +19,7 @@ pub mod settlement;
 pub mod reputation;
 
 pub use evidence::EvidenceGrade;
+pub use money::Money;
 pub use agent_card::{
     MarketAgentCard, SkillManifest, Pricing, PricingModel, Currency, Sla,
     SchemaField, AgentCategory,
@@ -35,12 +37,22 @@ pub use reputation::{
 
 use std::collections::HashMap;
 
+/// 质押锁定账户（注册时从自有余额转入）
+pub fn stake_account(did: &str) -> String {
+    format!("__stake__:{}", did)
+}
+
+/// 任务托管账户（发布任务时从需求方余额锁定）
+pub fn escrow_account(task_id: &str) -> String {
+    format!("__escrow__:{}", task_id)
+}
+
 /// 投标
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Bid {
     pub agent_id: String,
     pub task_id: String,
-    pub proposed_price: f64,
+    pub proposed_price: Money,
     pub estimated_latency_ms: u64,
     pub score: f64,
 }
@@ -76,12 +88,12 @@ pub struct AgentMarket {
     /// 信誉管理器
     reputation_mgr: ReputationManager,
     /// 最低质押
-    min_stake: f64,
+    min_stake: Money,
 }
 
 impl AgentMarket {
     pub fn new() -> Self {
-        let min_stake = 100.0;
+        let min_stake = Money::MIN_STAKE;
         Self {
             agents: HashMap::new(),
             skill_index: HashMap::new(),
@@ -96,7 +108,7 @@ impl AgentMarket {
     }
 
     /// 带自定义最低质押创建
-    pub fn with_min_stake(min_stake: f64) -> Self {
+    pub fn with_min_stake(min_stake: Money) -> Self {
         Self {
             agents: HashMap::new(),
             skill_index: HashMap::new(),
@@ -127,12 +139,22 @@ impl AgentMarket {
             ));
         }
 
-        // 注册质押
+        // 资金校验：质押金必须来自 Agent 自有余额（不凭空铸造）
+        if self.settlement.balance(&card.agent_id) < card.stake {
+            return Err(format!(
+                "Agent {} 余额不足以锁定质押 {}，请先 deposit",
+                card.agent_id, card.stake
+            ));
+        }
+
+        // 质押金从自有余额转入锁定账户（可被罚没）
+        let stake_acct = stake_account(&card.agent_id);
+        self.settlement
+            .transfer(&card.agent_id, &stake_acct, card.stake)?;
+
+        // 注册质押记录
         self.reputation_mgr
             .register_stake(&card.agent_id, card.stake)?;
-
-        // 质押资金同步存入结算引擎（锁定，用于罚没）
-        self.settlement.deposit(&card.agent_id, card.stake);
 
         // 建立技能索引
         for skill in &card.skills {
@@ -157,6 +179,20 @@ impl AgentMarket {
     /// 发布任务
     pub fn publish_task(&mut self, mut task: TaskSpec) -> Result<String, Vec<String>> {
         task.validate()?;
+
+        // 发布即托管：需求方必须有足额预算，并锁定到托管账户（不托管则拒绝）
+        if self.settlement.balance(&task.requester) < task.budget {
+            return Err(vec![format!(
+                "需求方 {} 余额不足以覆盖预算 {}，请先 deposit",
+                task.requester, task.budget
+            )]);
+        }
+        let escrow = escrow_account(&task.task_id);
+        self.settlement
+            .transfer(&task.requester, &escrow, task.budget)
+            .map_err(|e| vec![e])?;
+
+        task.winner_price = None;
         task.state = TaskState::Open;
 
         let id = task.task_id.clone();
@@ -247,9 +283,10 @@ impl AgentMarket {
                 .map(|r| r.overall())
                 .unwrap_or(0.5);
 
-            // 性价比 = 信誉 / 价格
-            let cost_score = if bid.proposed_price > 0.0 {
-                rep_score / bid.proposed_price
+            // 性价比 = 信誉 / 价格（价格为整数金额，转 f64 参与打分）
+            let price_f = bid.proposed_price.as_i64() as f64;
+            let cost_score = if price_f > 0.0 {
+                rep_score / price_f
             } else {
                 rep_score
             };
@@ -263,12 +300,15 @@ impl AgentMarket {
             }
         }
 
-        let winner = best.unwrap().agent_id.clone();
+        let best_bid = best.unwrap();
+        let winner = best_bid.agent_id.clone();
+        let winner_price = best_bid.proposed_price;
 
-        // 更新任务状态
+        // 更新任务状态并记录中标价
         if let Some(task) = self.tasks.get_mut(task_id) {
             task.state = TaskState::Matched;
             task.owner = Some(winner.clone());
+            task.winner_price = Some(winner_price);
         }
 
         Ok(winner)
@@ -329,7 +369,7 @@ impl AgentMarket {
     // ===== F6: 结算 =====
 
     /// 结算已验收任务
-    pub fn settle_task(&mut self, task_id: &str) -> Result<f64, String> {
+    pub fn settle_task(&mut self, task_id: &str) -> Result<Money, String> {
         let task = self
             .tasks
             .get(task_id)
@@ -346,21 +386,28 @@ impl AgentMarket {
             .owner
             .clone()
             .ok_or_else(|| "任务无执行 Agent".to_string())?;
-        let payer = task.requester.clone();
-        let amount = task.budget;
+        let requester = task.requester.clone();
+        let budget = task.budget;
+        // 中标价：默认全额；实际支付 = min(中标价, 预算)
+        let price = task.winner_price.unwrap_or(budget);
+        let pay = price.min(budget);
+        let escrow = escrow_account(task_id);
 
-        // 确保付款方有余额
-        if self.settlement.balance(&payer) < amount {
-            self.settlement.deposit(&payer, amount);
-        }
-
+        // 从托管账户支付执行者（发布即托管，资金已锁定；无需也绝不铸币）
         let paid = self.settlement.settle(
             task_id,
-            &payer,
+            &escrow,
             &agent_id,
-            amount,
+            pay,
             SettlementReason::Completed,
         )?;
+
+        // 预算余款退回需求方
+        if budget > pay {
+            let refund_amt = budget.checked_sub(pay)?;
+            self.settlement
+                .refund(task_id, &escrow, &requester, refund_amt)?;
+        }
 
         // 更新信誉
         let envelope = self.results.get(task_id);
@@ -439,7 +486,7 @@ impl AgentMarket {
         &mut self,
         dispute_id: &str,
         guilty: bool,
-        slash_amount: f64,
+        slash_amount: Money,
     ) -> Result<String, String> {
         let dispute = self
             .disputes
@@ -448,14 +495,24 @@ impl AgentMarket {
             .ok_or_else(|| format!("争议 {} 不存在", dispute_id))?;
 
         let verdict = if guilty {
-            // 罚没
             let agent_id = dispute.respondent.clone();
-            if slash_amount > 0.0 {
+            let task_id = dispute.task_id.clone();
+            if slash_amount.is_positive() {
+                // 罚没质押：资金从质押锁定账户退出系统
+                let stake_acct = stake_account(&agent_id);
                 self.reputation_mgr
                     .slash_stake(&agent_id, slash_amount)?;
-                self.settlement.slash(&agent_id, slash_amount)?;
+                self.settlement.slash(&stake_acct, slash_amount)?;
             }
-            if let Some(task) = self.tasks.get_mut(&dispute.task_id) {
+            // 任务托管预算退回需求方（作恶方不应获得报酬）
+            if let Some(t) = self.tasks.get(&task_id) {
+                let budget = t.budget;
+                let requester = t.requester.clone();
+                let escrow = escrow_account(&task_id);
+                self.settlement
+                    .refund(&task_id, &escrow, &requester, budget)?;
+            }
+            if let Some(task) = self.tasks.get_mut(&task_id) {
                 task.state = TaskState::Slashed;
             }
             "guilty".to_string()
@@ -473,13 +530,13 @@ impl AgentMarket {
 
     // ===== 查询接口 =====
 
-    /// 充值
-    pub fn deposit(&mut self, account: &str, amount: f64) {
-        self.settlement.deposit(account, amount);
+    /// 充值（唯一资金入口）
+    pub fn deposit(&mut self, account: &str, amount: Money) -> Result<(), String> {
+        self.settlement.deposit(account, amount)
     }
 
     /// 余额
-    pub fn balance(&self, account: &str) -> f64 {
+    pub fn balance(&self, account: &str) -> Money {
         self.settlement.balance(account)
     }
 

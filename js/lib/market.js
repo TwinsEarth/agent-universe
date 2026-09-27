@@ -41,8 +41,17 @@ class AgentMarket {
     this.paidTasks = new Set();   // 已结算任务（防重复支付）
   }
 
+  /** 金额必须是安全整数（与 Rust Money(i64) 对齐，杜绝浮点导致的跨语言守恒失效） */
+  _assertMoney(v, label) {
+    if (typeof v !== 'number' || !Number.isInteger(v) || !Number.isSafeInteger(v)) {
+      throw new Error(`${label || '金额'}必须是整数`);
+    }
+    return v;
+  }
+
   /** 充值 / 质押金进入账户 */
   deposit(account, amount) {
+    this._assertMoney(amount, '金额');
     if (amount < 0) throw new Error('金额不能为负');
     const cur = this.balances.get(account) || 0;
     this.balances.set(account, cur + amount);
@@ -57,11 +66,17 @@ class AgentMarket {
     return `__stake__:${agentId}`;
   }
 
+  /** 任务预算托管账户（发布即锁定，结算时从此支付 / 退款），与 Rust 命名一致 */
+  _escrowAccount(taskId) {
+    return `__escrow__:${taskId}`;
+  }
+
   /** 注册 Agent（需质押 ≥ MIN_STAKE） */
   registerAgent(card, stake) {
     if (!card || !card.did) throw new Error('agent_id 不能为空');
     if (!card.name) throw new Error('name 不能为空');
     if (this.agents.has(card.did)) throw new Error('Agent 已存在');
+    this._assertMoney(stake, '质押');
     if (stake < MIN_STAKE) {
       throw new Error(`质押不足，最低 ${MIN_STAKE}`);
     }
@@ -86,12 +101,15 @@ class AgentMarket {
   /** 发布任务 */
   publishTask(taskId, goal, budget, requester) {
     if (!goal) throw new Error('goal 不能为空');
+    this._assertMoney(budget, '预算');
     if (budget <= 0) throw new Error('预算必须为正');
     if (this.balance(requester) < budget) {
       throw new Error('需求方余额不足以覆盖预算');
     }
-    // 预算锁定
+    // 发布即托管：预算从需求方转入任务托管账户（钱仍在系统内，任意时刻守恒）
     this.balances.set(requester, this.balance(requester) - budget);
+    const escrowAcc = this._escrowAccount(taskId);
+    this.balances.set(escrowAcc, this.balance(escrowAcc) + budget);
 
     const task = new Task(taskId, goal);
     task.transition(TaskStatus.OPEN);
@@ -105,6 +123,8 @@ class AgentMarket {
   /** 提交投标 */
   submitBid(taskId, agentId, price) {
     if (!this.agents.has(agentId)) throw new Error('Agent 未注册');
+    this._assertMoney(price, '出价');
+    if (price <= 0) throw new Error('出价必须为正');
     const task = this.tasks.get(taskId);
     if (!task || task.status !== TaskStatus.OPEN) {
       throw new Error('任务不在开放状态');
@@ -166,12 +186,15 @@ class AgentMarket {
     const price = task.winnerPrice || task.budget;
     const pay = Math.min(price, task.budget);
 
-    // 从任务锁定预算中支付给执行者（账户间转账，系统总余额不变）
+    // 从托管账户支付给执行者、余款退还需求方（账户间转账，总余额不变）
+    const escrowAcc = this._escrowAccount(taskId);
     const assignee = task.assignee;
+    this.balances.set(escrowAcc, this.balance(escrowAcc) - pay);
     this.balances.set(assignee, this.balance(assignee) + pay);
     // 未用完的预算退还需求方
     const refund = task.budget - pay;
     if (refund > 0) {
+      this.balances.set(escrowAcc, this.balance(escrowAcc) - refund);
       this.balances.set(task.requester, this.balance(task.requester) + refund);
     }
 
@@ -184,6 +207,8 @@ class AgentMarket {
   slash(agentId, amount, reason) {
     const entry = this.agents.get(agentId);
     if (!entry) throw new Error('Agent 不存在');
+    this._assertMoney(amount, '罚没金额');
+    if (amount <= 0) throw new Error('罚没金额必须为正');
     const actual = Math.min(amount, entry.stake);
     entry.stake -= actual;
     // 从锁定账户实际扣除（退出系统）
@@ -229,7 +254,7 @@ class AgentMarket {
     for (const v of this.balances.values()) balanceSum += v;
     const expected = totalDeposits - this.totalSlashed;
     return {
-      conserved: Math.abs(balanceSum - expected) < 1e-9,
+      conserved: balanceSum === expected,
       balanceSum,
       totalSlashed: this.totalSlashed,
       expected,

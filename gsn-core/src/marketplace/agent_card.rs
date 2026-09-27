@@ -4,6 +4,7 @@
 //! Agent 上架前必须质押、签名、声明能力
 
 use crate::marketplace::evidence::EvidenceGrade;
+use crate::marketplace::money::Money;
 use serde::{Deserialize, Serialize};
 
 /// 定价模式
@@ -34,7 +35,7 @@ pub enum Currency {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pricing {
     pub model: PricingModel,
-    pub price: f64,
+    pub price: Money,
     pub currency: Currency,
 }
 
@@ -81,8 +82,8 @@ pub struct MarketAgentCard {
     pub sla: Sla,
     /// 发布者 DID
     pub owner: String,
-    /// 质押金额
-    pub stake: f64,
+    /// 质押金额（整数，注册时锁定）
+    pub stake: Money,
     /// 信誉分（0-1）
     pub reputation_score: f64,
     /// 总调用次数
@@ -116,8 +117,8 @@ pub struct SkillManifest {
     pub tool_permissions: Vec<String>,
     /// 超时（毫秒）
     pub timeout_ms: u64,
-    /// 预估成本
-    pub estimated_cost: f64,
+    /// 预估成本（整数）
+    pub estimated_cost: Money,
     /// 证据等级
     pub evidence_grade: EvidenceGrade,
 }

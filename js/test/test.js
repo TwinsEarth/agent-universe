@@ -1,7 +1,9 @@
 // test/test.js
-// Agent Universe JS SDK 测试（12 项）
+// Agent Universe JS SDK 测试（14 项）
 
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   version,
   AgentUniverse,
@@ -41,8 +43,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.5.7', () => {
-  assert.strictEqual(version, '2.5.7');
+test('版本号为 2.5.8', () => {
+  assert.strictEqual(version, '2.5.8');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -152,6 +154,45 @@ test('罚没后守恒：总余额 = 总充值 − 罚没', () => {
   const check = market.conservationCheck(200);
   assert.ok(check.conserved, `罚没守恒: ${JSON.stringify(check)}`);
   assert.strictEqual(check.balanceSum, 140);
+});
+
+// 8b. 整数账本：拒绝浮点金额与 0/负出价（与 Rust Money(i64) 对齐）
+test('整数账本：拒绝浮点金额与非正出价', () => {
+  const market = new AgentMarket();
+  const owner = 'did:au:int';
+  assert.throws(() => market.deposit(owner, 10.5), /整数/);
+  market.deposit(owner, 200);
+  const card = AgentCard.new({ did: owner, name: 'int' });
+  market.registerAgent(card, MIN_STAKE);
+  market.publishTask('t-int', 'goal', 50, owner);
+  assert.throws(() => market.submitBid('t-int', owner, 0), /正/);
+  assert.throws(() => market.submitBid('t-int', owner, -5), /正/);
+  assert.throws(() => market.submitBid('t-int', owner, 5.5), /整数/);
+});
+
+// 8c. 跨语言金额向量：逐账户余额命中 conformance/money-vectors.json（与 Rust 一致）
+test('跨语言金额向量：逐账户余额命中 conformance 向量', () => {
+  const vector = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '../../conformance/money-vectors.json'), 'utf8')
+  );
+  const market = new AgentMarket();
+  market.deposit('agent-1', 100);
+  const card = AgentCard.new({ did: 'agent-1', name: 'worker' }).withSkill('writing');
+  market.registerAgent(card, MIN_STAKE);
+  market.deposit('requester-1', 50);
+  market.publishTask('task-1', 'translate', 50, 'requester-1');
+  market.submitBid('task-1', 'agent-1', 10);
+  assert.strictEqual(market.matchTask('task-1').agentId, 'agent-1');
+  market.completeTask('task-1', true);
+  const paid = market.settle('task-1');
+  assert.strictEqual(paid.paid, vector.expected_report.total_paid);
+  for (const [key, want] of Object.entries(vector.expected_balances)) {
+    assert.strictEqual(market.balance(key), want, `账户 ${key} 跨语言不一致`);
+  }
+  const report = market.conservationCheck(vector.expected_report.total_deposits);
+  assert.strictEqual(report.totalSlashed, vector.expected_report.total_slashed);
+  assert.strictEqual(report.balanceSum, vector.expected_report.balance_sum);
+  assert.strictEqual(report.conserved, vector.expected_report.conserved);
 });
 
 // 9. AipIdentity DID 与签名往返

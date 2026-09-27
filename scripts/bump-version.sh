@@ -65,6 +65,9 @@ bump_lock gsn-core/Cargo.lock gsn-core "$RUST"
 bump_lock client/src-tauri/Cargo.lock au-client-universal "$NEW"
 bump_lock desktop/src-tauri/Cargo.lock au-client "$NEW"
 
+# v2.5.8 补：跨语言金额向量的版本标注（conformance/money-vectors.json）
+sed -i "s/\"version\": \"v$V\"/\"version\": \"v$NEW\"/" conformance/money-vectors.json
+
 # ── E. Python SDK ──
 sed -i "s/^version = \"$V\"/version = \"$NEW\"/" aip-sdk-py/pyproject.toml
 # v2.5.7 补：SDK 内部三处版本常量（此前遗漏，长期停留在 2.3.6）
@@ -83,15 +86,23 @@ sed -i "s/当前版本：\*\*npm $V/当前版本：**npm $NEW/; s/Rust gsn-core 
 # 第一节表格"当前值"列：仅在 "## 一、" 与 "## 二、" 之间替换；
 # 先用占位符隔离 Rust 线 / 带v前缀，避免被裸版本正则二次匹配。
 awk -v NEW="$NEW" -v RUST="$RUST" '
+  BEGIN { FS = "|"; OFS = "|" }
   /^## 一、/ { s = 1 }
   /^## 二、/ { s = 0 }
-  s {
-    gsub(/0\.2\.[0-9]+/, "XRUSTX")
-    gsub(/v[0-9]+\.[0-9]+\.[0-9]+/, "XVNEWX")
-    gsub(/[0-9]+\.[0-9]+\.[0-9]+/, "XNEWX")
-    gsub(/XRUSTX/, RUST)
-    gsub(/XVNEWX/, "v" NEW)
-    gsub(/XNEWX/, NEW)
+  s && /^\|/ {
+    gsub(/\|\|/, "XOR2X")          # 保护字段内容里的 "||"（如 opts.version || '...'），避免被当字段分隔
+    if (NF >= 6) {
+      # 只更新“当前值”列（第 5 字段）；“说明”列里的历史版本引用保持原样，不被 bump
+      c = $5
+      gsub(/0\.2\.[0-9]+/, "XRUSTX", c)
+      gsub(/v[0-9]+\.[0-9]+\.[0-9]+/, "XVNEWX", c)
+      gsub(/[0-9]+\.[0-9]+\.[0-9]+/, "XNEWX", c)
+      gsub(/XRUSTX/, RUST, c)
+      gsub(/XVNEWX/, "v" NEW, c)
+      gsub(/XNEWX/, NEW, c)
+      $5 = c
+    }
+    gsub(/XOR2X/, "||")            # 还原
   }
   { print }
 ' docs/version-checklist.md > docs/version-checklist.md.tmp \

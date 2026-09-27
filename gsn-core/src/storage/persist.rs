@@ -17,7 +17,7 @@ pub struct StoredAgent {
     pub agent_id: String,
     pub name: String,
     pub skills: String,
-    pub stake: f64,
+    pub stake: i64,
     pub reputation: f64,
     pub created_at: String,
 }
@@ -29,7 +29,7 @@ pub struct StoredTask {
     pub goal: String,
     pub state: String,
     pub owner: Option<String>,
-    pub budget: f64,
+    pub budget: i64,
     pub created_at: String,
 }
 
@@ -65,7 +65,7 @@ impl PersistentStore {
                 agent_id   TEXT PRIMARY KEY,
                 name       TEXT NOT NULL,
                 skills     TEXT NOT NULL DEFAULT '',
-                stake      REAL NOT NULL DEFAULT 0,
+                stake      INTEGER NOT NULL DEFAULT 0,
                 reputation REAL NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
@@ -75,7 +75,7 @@ impl PersistentStore {
                 goal       TEXT NOT NULL,
                 state      TEXT NOT NULL,
                 owner      TEXT,
-                budget     REAL NOT NULL DEFAULT 0,
+                budget     INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
 

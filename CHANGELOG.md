@@ -2,6 +2,20 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.5.8] - 2026-09-27
+
+### 修复：精确整数账本（Money），根治 f64 跨语言守恒失效（GAP §2.1–2.3）
+
+- **Rust 引入 `Money(i64)` 整数金额**：新增 `marketplace/money.rs`（newtype，`#[serde(transparent)]`；刻意不实现 `Add/Sub`，强制走 `checked_add/checked_sub` 防溢出）；账本、质押、托管、结算、罚没全程 `Money`，`conservation_check` 改为**精确相等、无任何容差**（旧版 f64：Rust 容差 0.001、JS 容差 1e-9，相差六个数量级，跨语言必然失效）。
+- **发布即托管，杜绝凭空铸币**：发布任务时预算从需求方转入托管账户 `__escrow__:{task}`（钱仍在系统内，任意时刻守恒）；结算时从托管账户支付给执行者、余款退回需求方；付款方余额不足一律 `Err`，不再像旧版那样在余额不足时凭空铸币完成支付。
+- **JS SDK 整数化并对齐托管模型**：`market.js` 新增 `_assertMoney`（拒绝非整数、非安全整数），在充值/质押/发布/投标/罚没各入口校验，投标与罚没额外拒绝 `<= 0`（GAP §2.7 出价 0/负反而最优）；新增 `__escrow__` 托管账户（旧版 JS 发布时预算只从需求方扣除、未进任何账户，中途不守恒），守恒改为 `===` 精确相等。
+- **Python SDK 类型对齐**：`market_client.py` 的 `budget` / `deposit amount` / `slash_amount` 由 `float` 改为 `int`。
+- **跨语言金额向量**：新增 `conformance/money-vectors.json`（权威单一来源），Rust 测试 `test_money_vector_matches_conformance` 与 JS 测试读取同一向量，对同一市场场景的**逐账户余额与聚合守恒报告逐值一致**。
+
+### 验证
+
+- Rust：lib 125、v234 66、v235 10，0 failed；`market_demo` 端到端两场景守恒成立（场景一 充值600/支付8/罚0/余额600；场景二 充值600/支付8/罚80/余额520，精确）。JS SDK 14 项通过（含跨语言金额向量）。
+
 ## [v2.5.7] - 2026-09-27
 
 ### 新增：跨实现身份一致性（Cross-Implementation Identity）

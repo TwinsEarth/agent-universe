@@ -38,12 +38,12 @@ pub struct RegisterAgentInput {
     pub endpoint: String,
     #[serde(default)]
     pub owner: String,
-    /// 质押金额（须 ≥ 市场最低质押）
+    /// 质押金额（须 ≥ 市场最低质押，整数；注册前需先 deposit）
     #[serde(default)]
-    pub stake: f64,
-    /// 单次调用价格
+    pub stake: Money,
+    /// 单次调用价格（整数）
     #[serde(default)]
-    pub price: f64,
+    pub price: Money,
     /// 货币：credit / token / fiat（默认 credit）
     #[serde(default = "default_currency")]
     pub currency: String,
@@ -124,9 +124,9 @@ pub enum MarketCommand {
     /// 开启争议
     OpenDispute { dispute: Value, reply: oneshot::Sender<MarketResponse> },
     /// 仲裁
-    Arbitrate { dispute_id: String, guilty: bool, slash: f64, reply: oneshot::Sender<MarketResponse> },
+    Arbitrate { dispute_id: String, guilty: bool, slash: Money, reply: oneshot::Sender<MarketResponse> },
     /// 充值
-    Deposit { account: String, amount: f64, reply: oneshot::Sender<MarketResponse> },
+    Deposit { account: String, amount: Money, reply: oneshot::Sender<MarketResponse> },
     /// 查询余额
     Balance { account: String, reply: oneshot::Sender<MarketResponse> },
     /// 守恒检查
@@ -175,7 +175,7 @@ impl MarketActorHandle {
     }
 
     /// 指定最低质押启动
-    pub fn spawn_with_min_stake(min_stake: f64) -> Self {
+    pub fn spawn_with_min_stake(min_stake: Money) -> Self {
         let (tx, mut rx) = mpsc::channel::<MarketCommand>(256);
         tokio::spawn(async move {
             let mut market = AgentMarket::with_min_stake(min_stake);
@@ -235,10 +235,10 @@ impl MarketActorHandle {
     pub async fn open_dispute(&self, dispute: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::OpenDispute { dispute, reply }).await
     }
-    pub async fn arbitrate(&self, dispute_id: String, guilty: bool, slash: f64) -> MarketResponse {
+    pub async fn arbitrate(&self, dispute_id: String, guilty: bool, slash: Money) -> MarketResponse {
         self.call(|reply| MarketCommand::Arbitrate { dispute_id, guilty, slash, reply }).await
     }
-    pub async fn deposit(&self, account: String, amount: f64) -> MarketResponse {
+    pub async fn deposit(&self, account: String, amount: Money) -> MarketResponse {
         self.call(|reply| MarketCommand::Deposit { account, amount, reply }).await
     }
     pub async fn balance(&self, account: String) -> MarketResponse {
@@ -416,18 +416,22 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                         "status": "arbitrated",
                         "dispute_id": dispute_id,
                         "verdict": verdict,
-                        "slash_amount": if guilty { slash } else { 0.0 },
+                        "slash_amount": if guilty { slash } else { Money::ZERO },
                     })));
                 }
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
         MarketCommand::Deposit { account, amount, reply } => {
-            market.deposit(&account, amount);
-            let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                "status": "deposited", "account": account,
-                "amount": amount, "balance": market.balance(&account),
-            })));
+            match market.deposit(&account, amount) {
+                Ok(_) => {
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "deposited", "account": account,
+                        "amount": amount, "balance": market.balance(&account),
+                    })));
+                }
+                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+            }
         }
         MarketCommand::Balance { account, reply } => {
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
@@ -438,7 +442,7 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
             let report = market.conservation_check();
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
                 "conserved": report.conserved,
-                "total_budget": report.total_budget,
+                "total_deposits": report.total_deposits,
                 "total_paid": report.total_paid,
                 "total_slashed": report.total_slashed,
                 "balance_sum": report.balance_sum,

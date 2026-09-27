@@ -31,7 +31,7 @@ def build_task_spec(
     requester: str,
     goal: str,
     todo: List[str],
-    budget: float,
+    budget: int,
     required_skills: List[str],
     *,
     context: str = "",
@@ -114,7 +114,7 @@ class MarketClient:
         return self._request("GET", "/health")
 
     # ───────── 账户 ─────────
-    def deposit(self, account: str, amount: float) -> Dict[str, Any]:
+    def deposit(self, account: str, amount: int) -> Dict[str, Any]:
         return self._request(
             "POST", f"/api/v1/accounts/{urllib.parse.quote(account)}/deposit",
             {"amount": amount},
@@ -260,7 +260,7 @@ class MarketClient:
         return self._request("POST", "/api/v1/disputes", body)
 
     def arbitrate(
-        self, dispute_id: str, guilty: bool, slash_amount: float = 0.0
+        self, dispute_id: str, guilty: bool, slash_amount: int = 0
     ) -> Dict[str, Any]:
         body = {"guilty": guilty, "slash_amount": slash_amount}
         return self._request(

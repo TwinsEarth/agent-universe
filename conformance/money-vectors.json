@@ -1,0 +1,28 @@
+{
+  "version": "v2.5.8",
+  "description": "跨语言金额向量：Rust gsn-core、JS SDK 对同一市场场景逐账户余额必须完全一致。金额为精确整数（Rust Money(i64) / JS 安全整数 / Python int），守恒为精确相等，无任何容差。",
+  "scenario": {
+    "worker": { "id": "agent-1", "deposit": 100, "stake": 100, "bid": 10 },
+    "requester": { "id": "requester-1", "deposit": 50 },
+    "task": { "id": "task-1", "budget": 50 },
+    "steps": [
+      "deposit worker 100; register worker stake 100",
+      "deposit requester 50; publish task budget 50 (发布即托管到 __escrow__)",
+      "worker bid 10; match (唯一投标); submit result; QA 3 STOP 通过",
+      "settle: pay worker 10 from escrow; refund requester 40; escrow 清零"
+    ]
+  },
+  "expected_balances": {
+    "agent-1": 10,
+    "__stake__:agent-1": 100,
+    "requester-1": 40,
+    "__escrow__:task-1": 0
+  },
+  "expected_report": {
+    "total_deposits": 150,
+    "total_paid": 10,
+    "total_slashed": 0,
+    "balance_sum": 150,
+    "conserved": true
+  }
+}

@@ -4,6 +4,7 @@
 //! DRAFT → OPEN → MATCHED → RUNNING → VERIFYING → SETTLED
 
 use crate::marketplace::evidence::EvidenceGrade;
+use crate::marketplace::money::Money;
 use serde::{Deserialize, Serialize};
 
 /// 任务状态
@@ -92,8 +93,10 @@ pub struct TaskSpec {
     pub trace: Vec<String>,
     /// 责任所有者
     pub owner: Option<String>,
-    /// 预算
-    pub budget: f64,
+    /// 预算（整数，发布时锁定到托管账户）
+    pub budget: Money,
+    /// 中标价（匹配时确定；结算按此，余款退回需求方）
+    pub winner_price: Option<Money>,
     /// 截止时间（Unix 毫秒）
     pub deadline: u64,
     /// 所需技能
@@ -122,7 +125,7 @@ impl TaskSpec {
         if self.todo.is_empty() {
             gaps.push("todo 不能为空".to_string());
         }
-        if self.budget <= 0.0 {
+        if !self.budget.is_positive() {
             gaps.push("budget 必须大于 0".to_string());
         }
         if self.required_skills.is_empty() {

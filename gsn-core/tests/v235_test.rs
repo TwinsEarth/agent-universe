@@ -52,10 +52,16 @@ fn test_rest_full_market_lifecycle() {
     rt().block_on(async {
         let market = MarketActorHandle::spawn();
 
-        // 1. 调用方充值
+        // 1. 调用方充值（需求方，付任务预算）
         let (s, _) = rest(&market, "POST",
             "/api/v1/accounts/caller-1/deposit",
-            r#"{"amount":1000.0}"#).await;
+            r#"{"amount":1000}"#).await;
+        assert_ok(s);
+
+        // 1b. 智能体自充质押金（注册即锁定质押，不能凭空铸造）
+        let (s, _) = rest(&market, "POST",
+            "/api/v1/accounts/agent-translate/deposit",
+            r#"{"amount":100}"#).await;
         assert_ok(s);
 
         // 2. 发布者注册智能体（stake=100 ≥ min_stake）
@@ -64,8 +70,8 @@ fn test_rest_full_market_lifecycle() {
             "name": "翻译智能体",
             "description": "中英互译",
             "skills": ["translation", "english"],
-            "stake": 100.0,
-            "price": 10.0,
+            "stake": 100,
+            "price": 10,
             "currency": "credit"
         });
         let (s, body) = rest(&market, "POST", "/api/v1/agents",
@@ -78,7 +84,7 @@ fn test_rest_full_market_lifecycle() {
             "/api/v1/agents/agent-translate", "").await;
         assert_ok(s);
         assert_eq!(body["name"], "翻译智能体");
-        assert_eq!(body["stake"], 100.0);
+        assert_eq!(body["stake"], 100);
 
         // 4. 按技能发现
         let (s, body) = rest(&market, "GET",
@@ -99,7 +105,7 @@ fn test_rest_full_market_lifecycle() {
             "todo": ["translate"],
             "trace": [],
             "owner": "caller-1",
-            "budget": 50.0,
+            "budget": 50,
             "deadline": 2000000000000u64,
             "required_skills": ["translation"],
             "verification_policy": {"BftLite": {"n": 4, "f": 1}},
@@ -119,7 +125,7 @@ fn test_rest_full_market_lifecycle() {
         let bid = json!({
             "agent_id": "agent-translate",
             "task_id": "task-1",
-            "proposed_price": 10.0,
+            "proposed_price": 10,
             "estimated_latency_ms": 500,
             "score": 0.9
         });
@@ -277,11 +283,17 @@ fn test_mcp_full_flow_via_bridge() {
         let market = MarketActorHandle::spawn();
         let bridge = MarketMcpBridge::new(market.clone());
 
+        // 先充值质押金（注册即锁定，不能凭空铸造）
+        let r = bridge.call("market_deposit", &json!({
+            "account":"a-mcp","amount":100
+        })).await;
+        assert!(!r.is_error, "充值质押金不应报错");
+
         // 注册
         let r = bridge.call("market_register_agent", &json!({
-            "agent_id":"a-mcp","name":"MCP智能体","skills":["math"],"stake":100.0
+            "agent_id":"a-mcp","name":"MCP智能体","skills":["math"],"stake":100
         })).await;
-        assert!(!r.is_error);
+        assert!(!r.is_error, "注册不应报错");
 
         // 发现
         let r = bridge.call("market_discover_agents",

@@ -250,6 +250,18 @@ class MarketClient:
             "POST", f"/api/v1/tasks/{urllib.parse.quote(task_id)}/settle"
         )
 
+    def resume_after_rework(self, task_id: str) -> Dict[str, Any]:
+        """恢复边：返工任务回到执行中（v2.6.0）。"""
+        return self._request(
+            "POST", f"/api/v1/tasks/{urllib.parse.quote(task_id)}/resume"
+        )
+
+    def reopen_task(self, task_id: str) -> Dict[str, Any]:
+        """恢复边：无共识任务重新开放（v2.6.0，消除吸收态）。"""
+        return self._request(
+            "POST", f"/api/v1/tasks/{urllib.parse.quote(task_id)}/reopen"
+        )
+
     # ───────── 争议与仲裁 ─────────
     def open_dispute(
         self,

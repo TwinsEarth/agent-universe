@@ -2,6 +2,19 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.0] - 2026-09-27
+
+### 新增：状态机恢复边、证据分级结算闸门（GAP §3.4 及证据谓词零调用）
+
+- **集中状态转移表 + 恢复边**：旧状态机无集中转移合法性表，任务进入 `NoQuorum` 后无任何出边（吸收态，永久卡死），`Rework` 也缺回 `Running` 的边。`TaskState` 新增 `can_transition_to`（集中合法边表）与 `transition`（非法转移报错），补上 **NoQuorum→Open**、**Rework→Running** 两条恢复边；`AgentMarket` 新增 `resume_after_rework` / `reopen_after_no_quorum`（均显式校验前置态），匹配 / 提交 / 验收 / 结算状态赋值全部改走 transition。
+- **证据分级强制结算闸门**：旧 `settle_task` 只看 `envelope.is_success()`，信封缺失时 `unwrap_or(true)` 放行；`is_trustworthy()` 已定义但全仓零调用。现 policy 非 None 时要求结果信封存在且 `evidence_grade.is_trustworthy()`（Verified/CpuProto），Unverified 或缺信封即拒付、状态保持 Accepted。
+- **policy=None 提交即验收**：`submit_result` 在 policy=None 时直接转 Accepted（无需 QA），状态表加 Matched/Running→Accepted 边；同时豁免证据门禁。
+- **三端同步**：Rust（task.rs / mod.rs / rest.rs 新增 resume、reopen 端点 / market_actor.rs）、JS（models.js 加 NO_QUORUM 与恢复边、market.js 加 resumeAfterRework/reopenTask 与 settle 证据门禁、completeTask 支持证据/policy）、Python（market_client.py 加 resume_after_rework/reopen_task）。
+
+### 验证
+
+- Rust v234 **71** passed（新增状态转移表、两条恢复边、Unverified 拒付、policy=None 豁免 5 用例）；JS SDK **19** 项通过；Python py_compile 通过；`cargo build` 通过。
+
 ## [v2.5.9] - 2026-09-27
 
 ### 修复：认证式 BFT、可失败独立审计、重放保护（GAP §2.4/§2.5/§3.1/§4.7）

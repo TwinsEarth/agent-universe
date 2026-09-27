@@ -236,6 +236,14 @@ pub async fn route(
         Some(RouteTarget::TaskSettle(id)) => {
             return from_mr(market.settle_task(id).await, 200);
         }
+        Some(RouteTarget::TaskResume(id)) => {
+            // 恢复边：返工任务回到执行中（v2.6.0）
+            return from_mr(market.resume_rework(id.clone()).await, 200);
+        }
+        Some(RouteTarget::TaskReopen(id)) => {
+            // 恢复边：无共识任务重新开放（v2.6.0）
+            return from_mr(market.reopen_task(id.clone()).await, 200);
+        }
         Some(RouteTarget::DisputesCollection) => {
             if let Some(v) = parsed_body {
                 return from_mr(market.open_dispute(v).await, 201);
@@ -296,6 +304,8 @@ enum RouteTarget {
     TaskResults(String),
     TaskVerify(String),
     TaskSettle(String),
+    TaskResume(String),
+    TaskReopen(String),
     DisputesCollection,
     DisputeArbitrate(String),
     AccountDeposit(String),
@@ -340,6 +350,8 @@ fn map_api_segments(seg: &[&str]) -> Option<RouteTarget> {
         ["tasks", id, "results"] => Some(RouteTarget::TaskResults((*id).to_string())),
         ["tasks", id, "verify"] => Some(RouteTarget::TaskVerify((*id).to_string())),
         ["tasks", id, "settle"] => Some(RouteTarget::TaskSettle((*id).to_string())),
+        ["tasks", id, "resume"] => Some(RouteTarget::TaskResume((*id).to_string())),
+        ["tasks", id, "reopen"] => Some(RouteTarget::TaskReopen((*id).to_string())),
         ["disputes"] => Some(RouteTarget::DisputesCollection),
         ["disputes", id, "arbitrate"] => Some(RouteTarget::DisputeArbitrate((*id).to_string())),
         ["accounts", account, "deposit"] => Some(RouteTarget::AccountDeposit((*account).to_string())),

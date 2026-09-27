@@ -318,7 +318,7 @@ impl AgentMarket {
 
         // 更新任务状态并记录中标价
         if let Some(task) = self.tasks.get_mut(task_id) {
-            task.state = TaskState::Matched;
+            task.state = task.state.transition(TaskState::Matched)?;
             task.owner = Some(winner.clone());
             task.winner_price = Some(winner_price);
         }
@@ -343,7 +343,14 @@ impl AgentMarket {
         }
 
         if let Some(task) = self.tasks.get_mut(&envelope.task_id) {
-            task.state = TaskState::Verifying;
+            // policy=None：无需 QA，提交结果直接验收；否则进入验收阶段
+            let target = if matches!(task.verification_policy, VerificationPolicy::None)
+            {
+                TaskState::Accepted
+            } else {
+                TaskState::Verifying
+            };
+            task.state = task.state.transition(target)?;
         }
 
         self.results.insert(envelope.task_id.clone(), envelope);
@@ -363,17 +370,12 @@ impl AgentMarket {
             .get_mut(task_id)
             .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
 
-        match decision {
-            QaDecision::Stop => {
-                task.state = TaskState::Accepted;
-            }
-            QaDecision::Continue => {
-                task.state = TaskState::Rework;
-            }
-            QaDecision::NoQuorum => {
-                task.state = TaskState::NoQuorum;
-            }
-        }
+        let target = match decision {
+            QaDecision::Stop => TaskState::Accepted,
+            QaDecision::Continue => TaskState::Rework,
+            QaDecision::NoQuorum => TaskState::NoQuorum,
+        };
+        task.state = task.state.transition(target)?;
 
         Ok(decision)
     }
@@ -401,18 +403,51 @@ impl AgentMarket {
             .tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
-        match decision {
-            QaDecision::Stop => {
-                task.state = TaskState::Accepted;
-            }
-            QaDecision::Continue => {
-                task.state = TaskState::Rework;
-            }
-            QaDecision::NoQuorum => {
-                task.state = TaskState::NoQuorum;
-            }
-        }
+        let target = match decision {
+            QaDecision::Stop => TaskState::Accepted,
+            QaDecision::Continue => TaskState::Rework,
+            QaDecision::NoQuorum => TaskState::NoQuorum,
+        };
+        task.state = task.state.transition(target)?;
         Ok(decision)
+    }
+
+    /// 恢复边：返工任务回到执行中（v2.6.0，GAP §3.4）。
+    ///
+    /// QA 判 Continue 后任务进入 Rework；执行者按意见修改后调用本方法，
+    /// 任务回到 Running，随后可重新 `submit_result` 提交新一轮结果。
+    pub fn resume_after_rework(&mut self, task_id: &str) -> Result<(), String> {
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+        if task.state != TaskState::Rework {
+            return Err(format!(
+                "任务状态为 {}，非 REWORK，不能恢复执行",
+                task.state.label()
+            ));
+        }
+        task.state = task.state.transition(TaskState::Running)?;
+        Ok(())
+    }
+
+    /// 恢复边：无共识任务重新开放（v2.6.0，GAP §3.4）。
+    ///
+    /// QA 本轮未达成共识（NoQuorum）时任务不再卡死；调用本方法把任务
+    /// 重新置为 Open，可重新匹配或组织下一轮验收，消除 NoQuorum 吸收态。
+    pub fn reopen_after_no_quorum(&mut self, task_id: &str) -> Result<(), String> {
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+        if task.state != TaskState::NoQuorum {
+            return Err(format!(
+                "任务状态为 {}，非 NO_QUORUM，不能重新开放",
+                task.state.label()
+            ));
+        }
+        task.state = task.state.transition(TaskState::Open)?;
+        Ok(())
     }
 
     // ===== F6: 结算 =====
@@ -429,6 +464,21 @@ impl AgentMarket {
                 "任务状态为 {}，不能结算",
                 task.state.label()
             ));
+        }
+
+        // 证据分级强制闸门（v2.6.0，GAP「证据谓词零调用点」）：
+        // 需要验证的任务，结果信封必须存在且证据等级可信（Verified/CpuProto）；
+        // Unverified 或缺失结果一律拒绝结算付款。verification_policy = None 时豁免。
+        if !matches!(task.verification_policy, VerificationPolicy::None) {
+            let envelope = self.results.get(task_id).ok_or_else(|| {
+                "任务缺少结果信封，无法核验证据等级，不能结算".to_string()
+            })?;
+            if !envelope.evidence_grade.is_trustworthy() {
+                return Err(format!(
+                    "结果证据等级为 {}（不可信），不能结算；请重新执行或升级证据等级",
+                    envelope.evidence_grade.label()
+                ));
+            }
         }
 
         let agent_id = task
@@ -489,7 +539,7 @@ impl AgentMarket {
 
         // 更新任务状态
         if let Some(task) = self.tasks.get_mut(task_id) {
-            task.state = TaskState::Settled;
+            task.state = task.state.transition(TaskState::Settled)?;
         }
 
         Ok(paid)

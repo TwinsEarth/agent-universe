@@ -61,6 +61,65 @@ impl TaskState {
             TaskState::Settled | TaskState::Slashed
         )
     }
+
+    /// 状态机合法转移表。
+    ///
+    /// 主生命周期：
+    /// `Draft/Open → Matched → Running → Verifying → Accepted → Settled`
+    /// 两条**恢复边**（v2.6.0，GAP §3.4，消除吸收态）：
+    /// - `Rework → Running`：返工后执行者继续执行；
+    /// - `NoQuorum → Open`：本轮无共识，任务重新开放（可重新匹配 / 重新组织验收）。
+    pub fn can_transition_to(&self, to: TaskState) -> bool {
+        use TaskState::*;
+        matches!(
+            (*self, to),
+            // 发布（publish 对传入状态做归一化，亦允许自环）
+            (Draft, Open)
+                | (Open, Open)
+                // 匹配
+                | (Open, Matched)
+                | (Matched, Running)
+                // 提交结果（匹配后可直接提交，或执行中提交）
+                | (Matched, Verifying)
+                | (Running, Verifying)
+                // policy=None：无需 QA，提交结果即验收
+                | (Matched, Accepted)
+                | (Running, Accepted)
+                // QA 验收
+                | (Verifying, Accepted)
+                | (Verifying, Rework)
+                | (Verifying, NoQuorum)
+                // 结算
+                | (Accepted, Settled)
+                // 恢复边：返工 → 继续执行
+                | (Rework, Running)
+                // 恢复边：无共识 → 重新开放
+                | (NoQuorum, Open)
+                // 争议 / 仲裁
+                | (Accepted, Disputed)
+                | (Running, Disputed)
+                | (Verifying, Disputed)
+                | (Rework, Disputed)
+                | (Disputed, Arbitration)
+                | (Disputed, Slashed)
+                | (Disputed, Accepted)
+                | (Arbitration, Slashed)
+                | (Arbitration, Accepted)
+        )
+    }
+
+    /// 校验并执行一次状态转移；非法转移返回错误（不改变状态）。
+    pub fn transition(self, to: TaskState) -> Result<TaskState, String> {
+        if self.can_transition_to(to) {
+            Ok(to)
+        } else {
+            Err(format!(
+                "非法状态转移：{} → {}",
+                self.label(),
+                to.label()
+            ))
+        }
+    }
 }
 
 /// 验证策略

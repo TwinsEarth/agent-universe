@@ -131,6 +131,10 @@ pub enum MarketCommand {
     },
     /// 结算任务
     SettleTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    /// 恢复边：返工任务回到执行中（v2.6.0）
+    ResumeRework { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    /// 恢复边：无共识任务重新开放（v2.6.0）
+    ReopenTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
     /// 开启争议
     OpenDispute { dispute: Value, reply: oneshot::Sender<MarketResponse> },
     /// 仲裁
@@ -259,6 +263,14 @@ impl MarketActorHandle {
     }
     pub async fn settle_task(&self, task_id: String) -> MarketResponse {
         self.call(|reply| MarketCommand::SettleTask { task_id, reply }).await
+    }
+    /// 恢复边：返工任务回到执行中（v2.6.0）
+    pub async fn resume_rework(&self, task_id: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::ResumeRework { task_id, reply }).await
+    }
+    /// 恢复边：无共识任务重新开放（v2.6.0）
+    pub async fn reopen_task(&self, task_id: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::ReopenTask { task_id, reply }).await
     }
     pub async fn open_dispute(&self, dispute: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::OpenDispute { dispute, reply }).await
@@ -416,6 +428,26 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 Ok(amount) => {
                     let _ = reply.send(MarketResponse::ok(serde_json::json!({
                         "status": "settled", "task_id": task_id, "amount": amount
+                    })));
+                }
+                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+            }
+        }
+        MarketCommand::ResumeRework { task_id, reply } => {
+            match market.resume_after_rework(&task_id) {
+                Ok(()) => {
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "running", "task_id": task_id
+                    })));
+                }
+                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+            }
+        }
+        MarketCommand::ReopenTask { task_id, reply } => {
+            match market.reopen_after_no_quorum(&task_id) {
+                Ok(()) => {
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "open", "task_id": task_id
                     })));
                 }
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }

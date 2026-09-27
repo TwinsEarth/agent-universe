@@ -175,11 +175,33 @@ class AgentMarket {
   }
 
   /** 执行 → 完成 → 验证 */
-  completeTask(taskId, passed = true) {
+  completeTask(taskId, passed = true, evidenceGrade = 'CpuProto') {
     const task = this.tasks.get(taskId);
     task.start();
     task.complete();
-    task.verify(passed);
+    task.evidenceGrade = evidenceGrade;
+    if (task.verificationPolicy === 'None') {
+      // 无需 QA：提交结果即验收（证据门禁亦豁免）
+      task.transition(TaskStatus.VERIFIED);
+    } else {
+      task.verify(passed);
+    }
+    return task;
+  }
+
+  /** 恢复边：返工任务回到执行中（v2.6.0） */
+  resumeAfterRework(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error('任务不存在');
+    task.resumeAfterRework();
+    return task;
+  }
+
+  /** 恢复边：无共识任务重新开放（v2.6.0，消除吸收态） */
+  reopenTask(taskId) {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error('任务不存在');
+    task.reopenAfterNoQuorum();
     return task;
   }
 
@@ -193,6 +215,14 @@ class AgentMarket {
     }
     if (task.status !== TaskStatus.VERIFIED) {
       return { paid: 0, reason: 'rejected' };
+    }
+
+    // 证据分级强制闸门（v2.6.0）：需要验证的任务，结果证据必须可信；
+    // policy='None' 时豁免。
+    if (task.verificationPolicy !== 'None') {
+      if (task.evidenceGrade !== 'Verified' && task.evidenceGrade !== 'CpuProto') {
+        return { paid: 0, reason: 'untrusted_evidence' };
+      }
     }
 
     const price = task.winnerPrice || task.budget;

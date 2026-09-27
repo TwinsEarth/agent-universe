@@ -43,8 +43,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.5.9', () => {
-  assert.strictEqual(version, '2.5.9');
+test('版本号为 2.6.0', () => {
+  assert.strictEqual(version, '2.6.0');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -350,6 +350,71 @@ test('ACA receipt 签名、结果哈希正反例', () => {
   assert.ok(verifyReceipt(receipt, owner.publicKey));
   assert.ok(verifyReceiptResult(receipt, result));
   assert.ok(!verifyReceiptResult(receipt, Buffer.from('other')));
+});
+
+// 13. v2.6.0 状态机恢复边：rework→running、no_quorum→open
+test('v2.6.0 状态机恢复边', () => {
+  const market = new AgentMarket();
+  market.deposit('did:au:req', 50);
+  market.publishTask('task-1', 'goal', 50, 'did:au:req');
+  const t = market.tasks.get('task-1');
+  t.assign('did:au:worker'); // OPEN→MATCHED→ASSIGNED
+  t.start();                 // ASSIGNED→RUNNING
+  t.complete();              // RUNNING→COMPLETED
+
+  // 返工 → 恢复执行
+  t.transition(TaskStatus.REWORK);
+  assert.strictEqual(t.status, TaskStatus.REWORK);
+  market.resumeAfterRework('task-1');
+  assert.strictEqual(t.status, TaskStatus.RUNNING);
+  // 非 REWORK 不能恢复
+  assert.throws(() => market.resumeAfterRework('task-1'), /REWORK/);
+
+  // 无共识 → 重新开放
+  t.complete();              // RUNNING→COMPLETED
+  t.markNoQuorum();          // COMPLETED→NO_QUORUM
+  assert.strictEqual(t.status, TaskStatus.NO_QUORUM);
+  market.reopenTask('task-1'); // NO_QUORUM→OPEN
+  assert.strictEqual(t.status, TaskStatus.OPEN);
+  // 非 NO_QUORUM 不能 reopen
+  assert.throws(() => market.reopenTask('task-1'), /NO_QUORUM/);
+});
+
+// 14. v2.6.0 Unverified 证据拒绝结算
+test('v2.6.0 Unverified 证据拒绝结算', () => {
+  const market = new AgentMarket();
+  const owner = 'did:au:owner';
+  market.deposit(owner, 100);
+  market.deposit('did:au:req', 50);
+  market.registerAgent(AgentCard.new({ did: owner, name: 'w' }), MIN_STAKE);
+  market.publishTask('task-1', 'goal', 50, 'did:au:req');
+  market.submitBid('task-1', owner, 40);
+  market.matchTask('task-1');
+  // 验收通过但证据 Unverified
+  market.completeTask('task-1', true, 'Unverified');
+  assert.strictEqual(market.tasks.get('task-1').status, TaskStatus.VERIFIED);
+  const r = market.settle('task-1');
+  assert.strictEqual(r.reason, 'untrusted_evidence');
+  assert.strictEqual(r.paid, 0);
+});
+
+// 15. v2.6.0 policy=None 提交即验收、豁免证据门禁
+test('v2.6.0 policy=None 提交即验收并豁免证据', () => {
+  const market = new AgentMarket();
+  const owner = 'did:au:owner';
+  market.deposit(owner, 100);
+  market.deposit('did:au:req', 50);
+  market.registerAgent(AgentCard.new({ did: owner, name: 'w' }), MIN_STAKE);
+  const t = market.publishTask('task-1', 'goal', 50, 'did:au:req');
+  t.verificationPolicy = 'None';
+  market.submitBid('task-1', owner, 40);
+  market.matchTask('task-1');
+  // 无 QA 投票，提交（证据 Unverified）即验收
+  market.completeTask('task-1', true, 'Unverified');
+  assert.strictEqual(t.status, TaskStatus.VERIFIED);
+  const r = market.settle('task-1');
+  assert.strictEqual(r.reason, 'settled');
+  assert.strictEqual(r.paid, 40);
 });
 
 console.log(`\n${passed} 项测试通过`);

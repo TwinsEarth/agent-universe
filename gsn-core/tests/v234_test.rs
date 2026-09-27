@@ -958,3 +958,230 @@ fn test_money_vector_matches_conformance() {
     );
     assert_eq!(report.conserved, exp_rep["conserved"].as_bool().unwrap());
 }
+
+// ===== v2.6.0 状态机恢复边 + 证据分级结算闸门（GAP §3.4 / 证据谓词零调用点）=====
+
+fn submit_envelope(
+    market: &mut AgentMarket,
+    task: &str,
+    agent: &str,
+    grade: EvidenceGrade,
+) {
+    market
+        .submit_result(ResultEnvelope {
+            task_id: task.to_string(),
+            agent_id: agent.to_string(),
+            report: r#"{"ok":true}"#.to_string(),
+            confidence: 0.95,
+            error_type: ErrorType::None,
+            trace_ref: "trace://x".to_string(),
+            evidence_grade: grade,
+            latency_ms: 300,
+        })
+        .unwrap();
+}
+
+/// 3 票 Continue 的 QA 委员会（n=4,f=1 → Continue）
+fn rework_committee() -> QaCommittee {
+    let mut c = QaCommittee::new(4, 1).unwrap();
+    for i in 0..4 {
+        c.add_member(format!("q{}", i));
+    }
+    c.cast_vote("q0", QaVote::Continue).unwrap();
+    c.cast_vote("q1", QaVote::Continue).unwrap();
+    c.cast_vote("q2", QaVote::Continue).unwrap();
+    c.cast_vote("q3", QaVote::Stop).unwrap();
+    c
+}
+
+/// 3 票 Stop 的 QA 委员会（n=4,f=1 → Stop）
+fn stop_committee(prefix: &str) -> QaCommittee {
+    let mut c = QaCommittee::new(4, 1).unwrap();
+    for i in 0..4 {
+        c.add_member(format!("{}{}", prefix, i));
+    }
+    c.cast_vote(&format!("{}0", prefix), QaVote::Stop).unwrap();
+    c.cast_vote(&format!("{}1", prefix), QaVote::Stop).unwrap();
+    c.cast_vote(&format!("{}2", prefix), QaVote::Stop).unwrap();
+    c.cast_vote(&format!("{}3", prefix), QaVote::Continue).unwrap();
+    c
+}
+
+#[test]
+fn test_state_transition_table() {
+    // 两条恢复边
+    assert!(TaskState::Rework.can_transition_to(TaskState::Running));
+    assert!(TaskState::NoQuorum.can_transition_to(TaskState::Open));
+    // 主生命周期
+    assert!(TaskState::Draft.can_transition_to(TaskState::Open));
+    assert!(TaskState::Open.can_transition_to(TaskState::Matched));
+    assert!(TaskState::Matched.can_transition_to(TaskState::Verifying));
+    assert!(TaskState::Running.can_transition_to(TaskState::Verifying));
+    assert!(TaskState::Verifying.can_transition_to(TaskState::Accepted));
+    assert!(TaskState::Accepted.can_transition_to(TaskState::Settled));
+    // 终态无出边、跨级非法
+    assert!(!TaskState::Settled.can_transition_to(TaskState::Open));
+    assert!(!TaskState::Open.can_transition_to(TaskState::Settled));
+    assert!(TaskState::Open.transition(TaskState::Settled).is_err());
+    // 合法 transition 改变状态
+    assert_eq!(
+        TaskState::Rework.transition(TaskState::Running).unwrap(),
+        TaskState::Running
+    );
+    assert_eq!(
+        TaskState::NoQuorum.transition(TaskState::Open).unwrap(),
+        TaskState::Open
+    );
+}
+
+#[test]
+fn test_resume_after_rework() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "agent-1", 100);
+    market.deposit("requester-1", Money::new(50)).unwrap();
+    market
+        .publish_task(make_task("task-1", 50, "requester-1"))
+        .unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
+    market.match_task("task-1").unwrap();
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::CpuProto);
+
+    // QA 判 Continue → Rework
+    let committee = rework_committee();
+    assert_eq!(
+        market.verify_result("task-1", &committee).unwrap(),
+        QaDecision::Continue
+    );
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Rework
+    );
+
+    // 恢复边：Rework → Running
+    market.resume_after_rework("task-1").unwrap();
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Running
+    );
+    // 已在 Running，再次 resume 非法（转移表无 Running→Running）
+    assert!(market.resume_after_rework("task-1").is_err());
+    // 不存在任务报错
+    assert!(market.resume_after_rework("nope").is_err());
+}
+
+#[test]
+fn test_reopen_after_no_quorum_then_resettle() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "agent-1", 100);
+    market.deposit("requester-1", Money::new(50)).unwrap();
+    market
+        .publish_task(make_task("task-1", 50, "requester-1"))
+        .unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
+    market.match_task("task-1").unwrap();
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::CpuProto);
+
+    // 仅 1 票（< quorum=3）→ NoQuorum
+    let mut committee = QaCommittee::new(4, 1).unwrap();
+    for i in 0..4 {
+        committee.add_member(format!("q{}", i));
+    }
+    committee.cast_vote("q0", QaVote::Stop).unwrap();
+    assert_eq!(
+        market.verify_result("task-1", &committee).unwrap(),
+        QaDecision::NoQuorum
+    );
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::NoQuorum
+    );
+
+    // 恢复边：NoQuorum → Open，消除吸收态
+    market.reopen_after_no_quorum("task-1").unwrap();
+    assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Open);
+    // 非 NoQuorum 状态不能 reopen
+    assert!(market.reopen_after_no_quorum("task-1").is_err());
+
+    // reopen 后重新走全链路：匹配 → 提交 → 验收 → 结算
+    market.match_task("task-1").unwrap();
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::CpuProto);
+    let c2 = stop_committee("r");
+    assert_eq!(
+        market.verify_result("task-1", &c2).unwrap(),
+        QaDecision::Stop
+    );
+    let paid = market.settle_task("task-1").unwrap();
+    assert_eq!(paid, Money::new(10));
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Settled
+    );
+}
+
+#[test]
+fn test_settle_rejected_for_unverified_evidence() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "agent-1", 100);
+    market.deposit("requester-1", Money::new(50)).unwrap();
+    market
+        .publish_task(make_task("task-1", 50, "requester-1"))
+        .unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
+    market.match_task("task-1").unwrap();
+    // 结果证据 Unverified
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::Unverified);
+
+    // 验收仍可 Stop（票数决定），任务进入 Accepted
+    let committee = stop_committee("q");
+    assert_eq!(
+        market.verify_result("task-1", &committee).unwrap(),
+        QaDecision::Stop
+    );
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Accepted
+    );
+
+    // 证据闸门：Unverified 拒绝结算付款
+    let err = market.settle_task("task-1").unwrap_err();
+    assert!(err.contains("不可信"), "实际错误：{err}");
+    // 未付款、任务状态仍是 Accepted
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Accepted
+    );
+}
+
+#[test]
+fn test_settle_none_policy_exempts_evidence_gate() {
+    let mut market = AgentMarket::new();
+    fund_and_register(&mut market, "agent-1", 100);
+    market.deposit("requester-1", Money::new(50)).unwrap();
+    let mut task = make_task("task-1", 50, "requester-1");
+    task.verification_policy = VerificationPolicy::None;
+    market.publish_task(task).unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
+    market.match_task("task-1").unwrap();
+
+    // policy None：提交结果即验收（无需 QA 委员会）；证据即使 Unverified，门禁也豁免
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::Unverified);
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Accepted
+    );
+    // 无 QA、证据豁免 → 结算成功
+    let paid = market.settle_task("task-1").unwrap();
+    assert_eq!(paid, Money::new(10));
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Settled
+    );
+}

@@ -13,6 +13,7 @@ const TaskStatus = {
   VERIFIED: 'verified',
   SETTLED: 'settled',
   REWORK: 'rework',
+  NO_QUORUM: 'no_quorum',
   DISPUTED: 'disputed',
   REJECTED: 'rejected',
 };
@@ -24,9 +25,10 @@ const TRANSITIONS = {
   [TaskStatus.MATCHED]: [TaskStatus.ASSIGNED],
   [TaskStatus.ASSIGNED]: [TaskStatus.RUNNING],
   [TaskStatus.RUNNING]: [TaskStatus.COMPLETED, TaskStatus.REWORK],
-  [TaskStatus.COMPLETED]: [TaskStatus.VERIFIED, TaskStatus.DISPUTED, TaskStatus.REWORK],
+  [TaskStatus.COMPLETED]: [TaskStatus.VERIFIED, TaskStatus.DISPUTED, TaskStatus.REWORK, TaskStatus.NO_QUORUM],
   [TaskStatus.VERIFIED]: [TaskStatus.SETTLED],
-  [TaskStatus.REWORK]: [TaskStatus.RUNNING],
+  [TaskStatus.REWORK]: [TaskStatus.RUNNING], // 恢复边：返工 → 继续执行
+  [TaskStatus.NO_QUORUM]: [TaskStatus.OPEN], // 恢复边：无共识 → 重新开放
   [TaskStatus.DISPUTED]: [TaskStatus.SETTLED, TaskStatus.REJECTED],
   [TaskStatus.SETTLED]: [],
   [TaskStatus.REJECTED]: [],
@@ -78,6 +80,8 @@ class Task {
     this.goal = goal;
     this.status = TaskStatus.PENDING;
     this.assignee = null;
+    this.verificationPolicy = 'BftLite'; // 验证策略；'None' 时提交即验收、豁免证据门禁
+    this.evidenceGrade = null;           // 结果信封证据等级
     this.history = [TaskStatus.PENDING];
   }
 
@@ -114,6 +118,27 @@ class Task {
   settle() {
     if (this.status === TaskStatus.VERIFIED) return this.transition(TaskStatus.SETTLED);
     throw new Error('只有验证通过的任务才能结算');
+  }
+
+  /** 本轮验收无共识（v2.6.0） */
+  markNoQuorum() {
+    return this.transition(TaskStatus.NO_QUORUM);
+  }
+
+  /** 恢复边：无共识任务重新开放（v2.6.0，消除吸收态） */
+  reopenAfterNoQuorum() {
+    if (this.status !== TaskStatus.NO_QUORUM) {
+      throw new Error(`只有 NO_QUORUM 状态才能重新开放，当前 ${this.status}`);
+    }
+    return this.transition(TaskStatus.OPEN);
+  }
+
+  /** 恢复边：返工任务回到执行中（v2.6.0） */
+  resumeAfterRework() {
+    if (this.status !== TaskStatus.REWORK) {
+      throw new Error(`只有 REWORK 状态才能恢复执行，当前 ${this.status}`);
+    }
+    return this.transition(TaskStatus.RUNNING);
   }
 
   get isTerminal() {

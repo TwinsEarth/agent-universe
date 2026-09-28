@@ -30,7 +30,7 @@ impl Default for MeshConfig {
             hostname: "unknown".into(),
             os: std::env::consts::OS.into(),
             port: 4001,
-            protocol_version: "gsn/0.2.53".into(),
+            protocol_version: format!("gsn/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 }
@@ -184,7 +184,7 @@ mod tests {
             os: os.into(),
             listen_addrs: vec![],
             port: 4001,
-            protocol_version: "gsn/0.2.53".into(),
+            protocol_version: format!("gsn/{}", env!("CARGO_PKG_VERSION")),
         }
     }
 
@@ -276,7 +276,7 @@ mod tests {
             os: "macos".into(),
             listen_addrs: vec!["/ip4/192.168.1.10/tcp/4001".into()],
             port: 4001,
-            protocol_version: "gsn/0.2.53".into(),
+            protocol_version: format!("gsn/{}", env!("CARGO_PKG_VERSION")),
         });
         cloud.discover_peer(DiscoveryAnnouncement {
             session_sn: "SN-win".into(),
@@ -285,7 +285,7 @@ mod tests {
             os: "windows".into(),
             listen_addrs: vec!["/ip4/192.168.1.20/tcp/4001".into()],
             port: 4001,
-            protocol_version: "gsn/0.2.53".into(),
+            protocol_version: format!("gsn/{}", env!("CARGO_PKG_VERSION")),
         });
 
         cloud.peer_pong("SN-mac", 25);

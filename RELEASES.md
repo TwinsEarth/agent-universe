@@ -46,7 +46,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.1 (Ledger Persistence - 账本落盘重放 + MCP 参数校验)
                                                         ├── v2.6.2 (Version Source - 版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化)
                                                         ├── v2.6.3 (Settlement Closeout - 重复注册拒绝 + 出价脱钩校验 + Rejected/DuplicateWork 终局可达)
-                                                        └── v2.6.4 (Consensus Hardening - BFT checked 算术 + 规范签名 Result 化 + 时钟端口 + 弱公钥拒绝) ← 当前
+                                                        ├── v2.6.4 (Consensus Hardening - BFT checked 算术 + 规范签名 Result 化 + 时钟端口 + 弱公钥拒绝)
+                                                        └── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶) ← 当前
 ```
 
 ## 大版本详情
@@ -360,6 +361,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：按 GAP 集中加固共识与身份九处缺陷。**BFT 算术安全**（GAP §3.3）：委员会 `min_n=3f+1` 与 `quorum` 改 checked，溢出即 Err/安全降级。**贡献验证带签名身份**（§3.6）：新增 `verify_contribution_signed`，验签覆盖 `hash||verifier_did`、禁自验、去重、饱和计数，杜绝重复投票凑数。**规范签名 Result 化**（§4.2/§4.3）：`canonical_object` 要求根为对象、`strip_signatures` 任意深度递归剥离、`sign_hex/verify_hex/canonical_payload` 全改 `Result`，不可序列化对象不再静默签空字节。**跨语言键序码点化**（§4.4）：JS 排序器改 Unicode 码点序，新增 astral 平面键序向量钉住三端一致。**规范字节契约**（§4.5）：`PROTOCOL_VERSION="nau/1"`。**弱公钥拒绝**（§4.6）：`is_weak_pubkey` 拒长度错/全零/全 0xFF/全相同，保留 8 字节指纹兼容上游。**时钟端口**（§4.8）：新建 `aca::clock`（`SystemClock` 饱和不 panic + `ManualClock` 确定性），消除八处早于 1970 panic 路径。**常量时间比较文档**（§4.9）：公开摘要不构成安全边界。gsn-core **0.2.64**。验证 Rust 全量 **146** 单元 + 集成 0 failed/0 ignored，JS **20**，clippy `-D warnings` 清零，上游跨语言签名向量逐字节命中保持。详见 [releases/v2.6.4.md](releases/v2.6.4.md)。
 
+### v2.6.5 - Topology Truth（分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶）
+
+**核心内容**：按 GAP 重写分层拓扑三处缺陷。**route_hops 去常量**（§5.2）：不再对所有跨房间对返回 7，改按两房间在聚合树中的最近公共祖先 lca 真实计算 `2·(lca-1)`，未注册返回 None；fanout9/500 节点下同 Lv2 组两房间 2 跳、跨 Lv2 组 4 跳。**边数增长率验证**（§5.3）：`logical_edges` 改 O(1) 公式，新增 N→2N 规模对照（edges 比值 < 2.5）钉住线性而非二次。**房间归属确定性**（§5.4）：leaf_groups 由 HashMap 改 BTreeSet 排名分桶，与插入顺序无关（500 id 正序/逆序构建逐一对等），join 从 O(depth·N) 降为 O(log N)；fanin_of 补回漏算的上行边。**协议版本唯一来源**（§5.7）：Identify/MeshConfig 硬编码版本改 `env!("CARGO_PKG_VERSION")`。gsn-core **0.2.65**。Rust **147** 测试 0 failed/0 ignored，JS **20**，clippy 清零。详见 [releases/v2.6.5.md](releases/v2.6.5.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -427,6 +432,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **VERSION 唯一来源 + 全仓版本一致性断言（CI 强制）+ 合约真实可部署（Hardhat 18 测试）+ 真实 Reed-Solomon 纠删码 + 网络替身诚实化**（v2.6.2）
 - ✅ **经济结算收尾：重复注册拒绝 + 投标报价与预算强校验 + Rejected / DuplicateWork 终局可达（返工重提相同结果自动拒绝、付0退预算罚没10%）**（v2.6.3）
 - ✅ **共识/身份签名加固：BFT checked 算术 + 规范签名 Result 化/递归剥离 + JS 码点序 + PROTOCOL_VERSION 契约 + 弱公钥拒绝 + 时钟端口（消除 1970 panic）**（v2.6.4）
+- ✅ **分层拓扑真相化：route_hops 按真实 lca（去常量7）+ 边数 N→2N 线性验证 + 房间 BTreeSet 确定性分桶（与插入顺序无关）+ 协议版本 env! 唯一来源**（v2.6.5）
 
 ### 技术栈
 

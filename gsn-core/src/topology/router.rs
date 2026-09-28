@@ -72,7 +72,9 @@ mod tests {
         }
         let (hops, backend) = r.route("did:aip:0000", &format!("did:aip:{:04x}", 199));
         assert_eq!(backend, RouteBackend::Layered);
-        assert_eq!(hops, Some(7));
+        // v2.6.5：跳数按两房间真实 lca 计算（200 节点 / fanout9：room0 vs room22，lca=3 → 4 跳），
+        // 不再恒为 7；跨房间跳数必 >1 且 ≤7。
+        assert_eq!(hops, Some(4));
         assert_eq!(r.fallback_count, 0);
     }
 

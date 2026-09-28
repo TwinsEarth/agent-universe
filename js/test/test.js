@@ -1,5 +1,5 @@
 // test/test.js
-// Agent Universe JS SDK 测试（20 项）
+// Agent Universe JS SDK 测试（21 项）
 
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -43,8 +43,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.7.0', () => {
-  assert.strictEqual(version, '2.7.0');
+test('版本号为 2.7.1', () => {
+  assert.strictEqual(version, '2.7.1');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -428,6 +428,23 @@ test('v2.6.4 canonical 键序按码点序，BMP私用区与astral分歧被修复
   const s2 = stableStringify({ [bmp]: 2, [astral]: 1 });
   assert.strictEqual(s1, s2, '不同插入顺序应产出同一紧凑 JSON');
   assert.strictEqual(s1, '{"":2,"😀":1}', '键序必须是码点序（bmp 在前）');
+});
+
+// 17. v2.7.1 stableStringify 拒绝非法/静默错误载荷（GAP §9.1）
+test('v2.7.1 stableStringify：undefined 键省略、BigInt/Date 显式拒绝、数组空值转 null', () => {
+  const { stableStringify } = require('../lib/aca');
+  // 对象中的 undefined 键被省略，不再产出裸 undefined
+  assert.strictEqual(stableStringify({ a: undefined, b: 1 }), '{"b":1}');
+  // 数组空位/undefined 元素转 null，保持合法 JSON
+  assert.strictEqual(stableStringify([1, undefined, 2]), '[1,null,2]');
+  // BigInt 抛明确类型错误，而不是 Node 的晦涩异常
+  assert.throws(() => stableStringify({ n: 1n }), /BigInt/);
+  // Date 不再静默变成 {}
+  assert.throws(() => stableStringify({ d: new Date(0) }), /Date/);
+  // 顶层 undefined 拒绝
+  assert.throws(() => stableStringify(undefined), /undefined/);
+  // 正常路径不受影响
+  assert.strictEqual(stableStringify({ b: 1, a: 2 }), '{"a":2,"b":1}');
 });
 
 console.log(`\n${passed} 项测试通过`);

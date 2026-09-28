@@ -27,11 +27,27 @@ function nowSec() {
 
 /** 稳定 JSON 序列化：紧凑、对象键按字典序、非 ASCII 原样输出 */
 function stableStringify(value) {
+  // v2.7.1（GAP §9.1）：禁止静默产出非法 JSON 或错误载荷。
+  // - BigInt：JSON.stringify 会抛晦涩的 "Do not know how to serialize"，这里显式抛类型错误；
+  // - Date：此前 typeof object 且 own keys 为空，静默变成 {}，载荷错误却签名看似有效；
+  // - 顶层 undefined：JSON.stringify 返回 undefined（非字符串），会拼出裸标记。
+  if (typeof value === 'bigint') {
+    throw new TypeError('stableStringify: BigInt 不可进入签名载荷（Rust 侧无对应整数类型）');
+  }
+  if (value instanceof Date) {
+    throw new TypeError('stableStringify: Date 不可签名；请先传 epoch 毫秒数或 ISO 字符串');
+  }
   if (value === null || typeof value !== 'object') {
+    // 顶层 undefined 走到这里：JSON.stringify(undefined) 返回 undefined，
+    // 若被拼进对象/数组会变成裸标记。显式拒绝。
+    if (value === undefined) {
+      throw new TypeError('stableStringify: 顶层 undefined 不可序列化；对象中的 undefined 键会被省略');
+    }
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
-    return '[' + value.map(stableStringify).join(',') + ']';
+    // 数组空位/undefined 元素转 null（JSON 合法），保持位置。
+    return '[' + value.map((v) => (v === undefined ? 'null' : stableStringify(v))).join(',') + ']';
   }
   // v2.6.4（GAP §4.4）：按 Unicode 码点序排序，而非 JS 默认的 UTF-16 码元序。
   // 否则含 astral（补充平面，如 emoji）键名时，JS 与 Rust BTreeMap 的键序分歧，
@@ -49,6 +65,7 @@ function stableStringify(value) {
   return (
     '{' +
     keys
+      .filter((k) => value[k] !== undefined)
       .map((k) => JSON.stringify(k) + ':' + stableStringify(value[k]))
       .join(',') +
     '}'
@@ -141,7 +158,7 @@ function buildManifest(identity, name, capabilities, opts = {}) {
   const manifest = {
     did: identity.did,
     name,
-    version: opts.version || '2.7.0',
+    version: opts.version || '2.7.1',
     capabilities: [...capabilities],
     endpoints: opts.endpoints || [],
     hardware: {

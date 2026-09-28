@@ -2,6 +2,14 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.1] - 2026-09-28
+
+### 安全：stableStringify 拒绝非法/静默错误载荷（GAP §9.1）
+
+- 对象中 `undefined` 键省略、数组 `undefined` 元素转 null，不再产出非法 JSON；
+- BigInt / Date / 顶层 undefined 显式抛 TypeError，不再静默序列化为 `{}` 或抛晦涩异常；
+- 新增第 17 项 JS 测试覆盖正反例（JS SDK 测试 20→21）。
+
 ## [v2.7.0] - 2026-09-28
 
 ### 全平台客户端大版本

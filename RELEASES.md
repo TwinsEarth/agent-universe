@@ -52,7 +52,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.7 (Memory Hardening - 真 SHA-256 链存载荷+verify + 真 LRU + 派生质量防污染 + 盲猜死循环)
                                                         └── v2.6.8 (MCP Auth - Bearer 闸门/默认拒绝动钱 + 握手状态机 -32002 + RequestId Null + 未知工具 isError + LLM 去 panic)
                                                               └── v2.6.9 (Doc Honesty - SSE 单帧/probe 静态查表/回归跑 JS 全部诚实标注)
-                                                                    └── v2.7.0 (Client Release - 首次全平台客户端分发大版本) ← 当前
+                                                                    └── v2.7.0 (Client Release - 首次全平台客户端分发大版本)
+                                                                          └── v2.7.1 (stableStringify 拒非法/静默载荷 - GAP §9.1) ← 当前
 ```
 
 ## 大版本详情

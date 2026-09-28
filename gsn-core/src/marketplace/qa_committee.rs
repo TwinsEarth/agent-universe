@@ -193,7 +193,7 @@ impl QaCommittee {
             .members
             .iter_mut()
             .find(|m| m.did == did)
-            .ok_or_else(|| format!("委员 {} 不存在", did))?;
+            .ok_or_else(|| format!("NOT_FOUND: 委员 {} 不存在", did))?;
 
         // 检测 equivocation：已投过票且新票不同
         if member.vote != QaVote::Silent && member.vote != vote {

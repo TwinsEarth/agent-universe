@@ -47,7 +47,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.2 (Version Source - 版本唯一来源 + 合约可部署 + 纠删码真修 + 网络替身诚实化)
                                                         ├── v2.6.3 (Settlement Closeout - 重复注册拒绝 + 出价脱钩校验 + Rejected/DuplicateWork 终局可达)
                                                         ├── v2.6.4 (Consensus Hardening - BFT checked 算术 + 规范签名 Result 化 + 时钟端口 + 弱公钥拒绝)
-                                                        └── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶) ← 当前
+                                                        ├── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶)
+                                                        └── v2.6.6 (HTTP & Storage Hardening - 锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀) ← 当前
 ```
 
 ## 大版本详情
@@ -365,6 +366,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：按 GAP 重写分层拓扑三处缺陷。**route_hops 去常量**（§5.2）：不再对所有跨房间对返回 7，改按两房间在聚合树中的最近公共祖先 lca 真实计算 `2·(lca-1)`，未注册返回 None；fanout9/500 节点下同 Lv2 组两房间 2 跳、跨 Lv2 组 4 跳。**边数增长率验证**（§5.3）：`logical_edges` 改 O(1) 公式，新增 N→2N 规模对照（edges 比值 < 2.5）钉住线性而非二次。**房间归属确定性**（§5.4）：leaf_groups 由 HashMap 改 BTreeSet 排名分桶，与插入顺序无关（500 id 正序/逆序构建逐一对等），join 从 O(depth·N) 降为 O(log N)；fanin_of 补回漏算的上行边。**协议版本唯一来源**（§5.7）：Identify/MeshConfig 硬编码版本改 `env!("CARGO_PKG_VERSION")`。gsn-core **0.2.65**。Rust **147** 测试 0 failed/0 ignored，JS **20**，clippy 清零。详见 [releases/v2.6.5.md](releases/v2.6.5.md)。
 
+### v2.6.6 - HTTP & Storage Hardening（锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀）
+
+**核心内容**：按 GAP §6.2–§6.6 修存储/HTTP。**锁毒化**（§6.2）：persist.rs 22 处 `.lock().unwrap()` 改 `unwrap_or_else(|e| e.into_inner())`，持锁 panic 中毒后仍可取内部数据、不再永久杀死存储。**accept 容错**（§6.3）：daemon 接收循环瞬时 accept 错误（EMFILE/ECONNABORTED）记录并退避 100ms 继续，不再一次错误退出整个进程。**写操作强制 POST**（§6.4）：TaskMatch/Settle/Verify/Resume/Reopen/Bids/Results/Arbitrate/Deposit 等改状态端点非 POST 返回 **405**，GET 不再误触发结算/仲裁。**错误码类型化**（§6.5）：分类由机器码前缀 match 决定（`NOT_FOUND:`→404 / `CONFLICT:`→409 / `BAD_REQUEST:`→400 / 其余 422），14 处资源不存在错误加前缀，不再匹配中文字符串「不存在」。**url_decode**（§6.6）：off-by-one 修正，末尾 `%41` 与多字节 UTF-8（`%E4%B8%AD`=中）正确解码。gsn-core **0.2.66**。新增 4 项 rest 测试，全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.6.md](releases/v2.6.6.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -433,6 +438,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **经济结算收尾：重复注册拒绝 + 投标报价与预算强校验 + Rejected / DuplicateWork 终局可达（返工重提相同结果自动拒绝、付0退预算罚没10%）**（v2.6.3）
 - ✅ **共识/身份签名加固：BFT checked 算术 + 规范签名 Result 化/递归剥离 + JS 码点序 + PROTOCOL_VERSION 契约 + 弱公钥拒绝 + 时钟端口（消除 1970 panic）**（v2.6.4）
 - ✅ **分层拓扑真相化：route_hops 按真实 lca（去常量7）+ 边数 N→2N 线性验证 + 房间 BTreeSet 确定性分桶（与插入顺序无关）+ 协议版本 env! 唯一来源**（v2.6.5）
+- ✅ **存储/HTTP 加固：persist 锁毒化根除（into_inner）+ accept 瞬时错误容错不退进程 + 写操作强制 POST（405）+ 错误码机器前缀替代中文子串分类 + url_decode off-by-one**（v2.6.6）
 
 ### 技术栈
 

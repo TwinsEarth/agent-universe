@@ -105,7 +105,7 @@ impl ProofOfContribution {
             .records
             .iter_mut()
             .find(|r| &r.hash == hash)
-            .ok_or_else(|| "贡献记录不存在".to_string())?;
+            .ok_or_else(|| "NOT_FOUND: 贡献记录不存在".to_string())?;
 
         if verifier_did == record.agent_did {
             return Err("禁止自验：贡献者不能验证自己的贡献".to_string());

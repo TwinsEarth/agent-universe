@@ -34,14 +34,31 @@ fn from_mr(r: crate::api::market_actor::MarketResponse, success_status: u16) -> 
             let text = if success_status == 201 { "Created" } else { "OK" };
             Routed { status: success_status, status_text: text, body: v }
         }
-        Err(e) => {
-            // 业务错误统一 422（语义错误），包含"不存在"用 404
-            if e.contains("不存在") {
-                Routed { status: 404, status_text: "Not Found", body: json!({"error": e}) }
-            } else {
-                Routed { status: 422, status_text: "Unprocessable Entity", body: json!({"error": e}) }
-            }
-        }
+        Err(e) => classify_error(&e),
+    }
+}
+
+/// v2.6.6：错误分类由机器可读前缀决定，不再匹配中文字符串子串。
+/// 业务层错误以 `NOT_FOUND:` / `CONFLICT:` / `BAD_REQUEST:` 前缀开头；
+/// 未知前缀统一 422（语义错误）。错误体原样回传，前缀即机器可读错误码。
+fn classify_error(e: &str) -> Routed {
+    if let Some(rest) = e.strip_prefix("NOT_FOUND:") {
+        Routed { status: 404, status_text: "Not Found", body: json!({"error": "not_found", "message": rest}) }
+    } else if e.starts_with("CONFLICT:") {
+        Routed { status: 409, status_text: "Conflict", body: json!({"error": e}) }
+    } else if e.starts_with("BAD_REQUEST:") {
+        Routed { status: 400, status_text: "Bad Request", body: json!({"error": e}) }
+    } else {
+        Routed { status: 422, status_text: "Unprocessable Entity", body: json!({"error": e}) }
+    }
+}
+
+/// v2.6.6：变更状态的端点只接受 POST；GET 等只读方法返回 405，不再误触发写操作。
+fn method_not_allowed(allow: &'static str) -> Routed {
+    Routed {
+        status: 405,
+        status_text: "Method Not Allowed",
+        body: json!({"error": "method_not_allowed", "allow": allow}),
     }
 }
 
@@ -66,7 +83,8 @@ fn url_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
+            // v2.6.6: off-by-one 修正——末尾的 %41 也要能解码（i+3<=len，即 i+2<=len-1 的等价写法）
+            b'%' if i + 3 <= bytes.len() => {
                 let h = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
                 if let Ok(b) = u8::from_str_radix(h, 16) {
                     out.push(b);
@@ -190,6 +208,7 @@ pub async fn route(
             return from_mr(market.get_task(id).await, 200);
         }
         Some(RouteTarget::TaskBids(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             if let Some(mut v) = parsed_body {
                 // 注入 task_id
                 if let Some(obj) = v.as_object_mut() {
@@ -200,9 +219,11 @@ pub async fn route(
             return Routed::bad_request("缺少投标数据")
         }
         Some(RouteTarget::TaskMatch(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             return from_mr(market.match_task(id).await, 200);
         }
         Some(RouteTarget::TaskResults(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             if let Some(mut v) = parsed_body {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("task_id".to_string(), json!(id));
@@ -212,6 +233,7 @@ pub async fn route(
             return Routed::bad_request("缺少结果数据")
         }
         Some(RouteTarget::TaskVerify(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             // v2.5.9 认证式：固定委员集 (did + 公钥) + 委员私钥签名票，
             // 不再接受 approvals / committee_size 合成投票。
             let body = parsed_body.as_ref();
@@ -234,23 +256,28 @@ pub async fn route(
             );
         }
         Some(RouteTarget::TaskSettle(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             return from_mr(market.settle_task(id).await, 200);
         }
         Some(RouteTarget::TaskResume(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             // 恢复边：返工任务回到执行中（v2.6.0）
             return from_mr(market.resume_rework(id.clone()).await, 200);
         }
         Some(RouteTarget::TaskReopen(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             // 恢复边：无共识任务重新开放（v2.6.0）
             return from_mr(market.reopen_task(id.clone()).await, 200);
         }
         Some(RouteTarget::DisputesCollection) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             if let Some(v) = parsed_body {
                 return from_mr(market.open_dispute(v).await, 201);
             }
             return Routed::bad_request("缺少争议数据")
         }
         Some(RouteTarget::DisputeArbitrate(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             if let Some(v) = parsed_body {
                 let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
                 let slash = v.get("slash_amount")
@@ -262,6 +289,7 @@ pub async fn route(
             return Routed::bad_request("缺少仲裁数据")
         }
         Some(RouteTarget::AccountDeposit(account)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
             let amount = parsed_body.as_ref()
                 .and_then(|v| v.get("amount"))
                 .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
@@ -429,4 +457,41 @@ pub(crate) fn parse_signed_votes(
         out.push(sv);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod v266_tests {
+    use super::*;
+
+    #[test]
+    fn url_decode_decodes_trailing_percent_escape() {
+        // §6.6：末尾 %41 必须解成 'A'（旧 off-by-one 会漏掉）
+        assert_eq!(url_decode("task%41"), "taskA");
+        assert_eq!(url_decode("x%41%42"), "xAB");
+    }
+
+    #[test]
+    fn url_decode_decodes_multibyte_utf8() {
+        // %E4%B8%AD = UTF-8 "中"
+        assert_eq!(url_decode("%E4%B8%AD"), "中");
+        assert_eq!(url_decode("a+b"), "a b");
+    }
+
+    #[test]
+    fn classify_not_found_is_404_not_chinese_substring() {
+        // §6.5：按机器码前缀分类，不再依赖中文"不存在"子串
+        let r = classify_error("NOT_FOUND: task 不存在: t1");
+        assert_eq!(r.status, 404);
+        // 恰好含"不存在"三字但无前缀的校验错误不得被误判为 404
+        let r2 = classify_error("字段 x 不存在合理，校验失败");
+        assert_eq!(r2.status, 422);
+        let r3 = classify_error("CONFLICT: 重复");
+        assert_eq!(r3.status, 409);
+    }
+
+    #[test]
+    fn method_not_allowed_shape() {
+        let r = method_not_allowed("POST");
+        assert_eq!(r.status, 405);
+    }
 }

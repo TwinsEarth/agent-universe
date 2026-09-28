@@ -277,7 +277,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get(&bid.task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", bid.task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", bid.task_id))?;
 
         // 价格校验（GAP §2.7）：投标价必须为正且不超过预算
         if !bid.proposed_price.is_positive() {
@@ -370,7 +370,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get(&envelope.task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", envelope.task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", envelope.task_id))?;
 
         if task.state != TaskState::Matched && task.state != TaskState::Running {
             return Err(format!(
@@ -425,7 +425,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get_mut(task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
 
         let target = match decision {
             QaDecision::Stop => TaskState::Accepted,
@@ -459,7 +459,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get_mut(task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
         let target = match decision {
             QaDecision::Stop => TaskState::Accepted,
             QaDecision::Continue => TaskState::Rework,
@@ -477,7 +477,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get_mut(task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
         if task.state != TaskState::Rework {
             return Err(format!(
                 "任务状态为 {}，非 REWORK，不能恢复执行",
@@ -497,7 +497,7 @@ impl AgentMarket {
             let task = self
                 .tasks
                 .get_mut(task_id)
-                .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+                .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
             if task.state != TaskState::NoQuorum {
                 return Err(format!(
                     "任务状态为 {}，非 NO_QUORUM，不能重新开放",
@@ -524,7 +524,7 @@ impl AgentMarket {
             .tasks
             .get(task_id)
             .map(|t| t.state)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
         if !matches!(state, TaskState::Verifying | TaskState::Rework) {
             return Err(format!(
                 "任务状态为 {}，不能终局拒绝（仅验证中/返工可拒绝）",
@@ -545,7 +545,7 @@ impl AgentMarket {
         let task = self
             .tasks
             .get(task_id)
-            .ok_or_else(|| format!("任务 {} 不存在", task_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
 
         let is_rejected = task.state == TaskState::Rejected;
         if task.state != TaskState::Accepted && !is_rejected {
@@ -676,7 +676,7 @@ impl AgentMarket {
         reason: &str,
     ) -> Result<(), String> {
         if !self.tasks.contains_key(task_id) {
-            return Err(format!("任务 {} 不存在", task_id));
+            return Err(format!("NOT_FOUND: 任务 {} 不存在", task_id));
         }
 
         if let Some(task) = self.tasks.get_mut(task_id) {
@@ -711,7 +711,7 @@ impl AgentMarket {
             .disputes
             .iter_mut()
             .find(|d| d.dispute_id == dispute_id)
-            .ok_or_else(|| format!("争议 {} 不存在", dispute_id))?;
+            .ok_or_else(|| format!("NOT_FOUND: 争议 {} 不存在", dispute_id))?;
 
         let verdict = if guilty {
             let agent_id = dispute.respondent.clone();

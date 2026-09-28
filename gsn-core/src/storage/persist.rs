@@ -115,7 +115,7 @@ impl PersistentStore {
 
     /// 插入或更新 Agent
     pub fn upsert_agent(&self, agent: &StoredAgent) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO agents (agent_id, name, skills, stake, reputation, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -138,7 +138,7 @@ impl PersistentStore {
 
     /// 读取全部 Agent
     pub fn load_agents(&self) -> anyhow::Result<Vec<StoredAgent>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT agent_id, name, skills, stake, reputation, created_at FROM agents",
         )?;
@@ -161,7 +161,7 @@ impl PersistentStore {
 
     /// 插入或更新 Task
     pub fn upsert_task(&self, task: &StoredTask) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO tasks (task_id, goal, state, owner, budget, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -184,7 +184,7 @@ impl PersistentStore {
 
     /// 读取全部 Task
     pub fn load_tasks(&self) -> anyhow::Result<Vec<StoredTask>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT task_id, goal, state, owner, budget, created_at FROM tasks",
         )?;
@@ -207,7 +207,7 @@ impl PersistentStore {
 
     /// 写入键值元数据（如节点 DID）
     pub fn set_meta(&self, key: &str, value: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO kv_meta (key, value) VALUES (?1, ?2)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -218,7 +218,7 @@ impl PersistentStore {
 
     /// 读取键值元数据
     pub fn get_meta(&self, key: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare("SELECT value FROM kv_meta WHERE key = ?1")?;
         let mut rows = stmt.query_map(params![key], |row| row.get::<_, String>(0))?;
         if let Some(r) = rows.next() {
@@ -229,14 +229,14 @@ impl PersistentStore {
 
     /// Agent 总数
     pub fn agent_count(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 = conn.query_row("SELECT COUNT(*) FROM agents", [], |row| row.get(0))?;
         Ok(count)
     }
 
     /// Task 总数
     pub fn task_count(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 = conn.query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))?;
         Ok(count)
     }
@@ -245,7 +245,7 @@ impl PersistentStore {
 
     /// 插入或更新 relay（不存在则插入；已存在则更新地址/分类，保留健康统计）
     pub fn upsert_relay(&self, relay: &StoredRelay) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO relays (relay_id, multiaddr, class, status, healthy, fail_count,
                                  limit_sec, data_bytes, last_check, created_at)
@@ -277,7 +277,7 @@ impl PersistentStore {
 
     /// 读取全部 relay
     pub fn load_relays(&self) -> anyhow::Result<Vec<StoredRelay>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT relay_id, multiaddr, class, status, healthy, fail_count, limit_sec,
                     data_bytes, last_check, created_at FROM relays",
@@ -292,7 +292,7 @@ impl PersistentStore {
 
     /// 按分类读取 relay
     pub fn load_relays_by_class(&self, class: &str) -> anyhow::Result<Vec<StoredRelay>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT relay_id, multiaddr, class, status, healthy, fail_count, limit_sec,
                     data_bytes, last_check, created_at FROM relays WHERE class = ?1",
@@ -307,7 +307,7 @@ impl PersistentStore {
 
     /// 读取全部健康 relay（可用于建立 reservation）
     pub fn healthy_relays(&self) -> anyhow::Result<Vec<StoredRelay>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
             "SELECT relay_id, multiaddr, class, status, healthy, fail_count, limit_sec,
                     data_bytes, last_check, created_at FROM relays WHERE healthy = 1",
@@ -330,7 +330,7 @@ impl PersistentStore {
         data_bytes: i64,
         last_check: &str,
     ) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE relays SET healthy = ?2, status = ?3, limit_sec = ?4,
                               data_bytes = ?5, last_check = ?6
@@ -342,7 +342,7 @@ impl PersistentStore {
 
     /// 巡检失败：fail_count 自增，达到阈值（3）则标记 dead
     pub fn mark_relay_failed(&self, relay_id: &str, last_check: &str) -> anyhow::Result<i64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "UPDATE relays SET fail_count = fail_count + 1, last_check = ?2 WHERE relay_id = ?1",
             params![relay_id, last_check],
@@ -360,28 +360,28 @@ impl PersistentStore {
 
     /// 删除 relay
     pub fn delete_relay(&self, relay_id: &str) -> anyhow::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute("DELETE FROM relays WHERE relay_id = ?1", params![relay_id])?;
         Ok(())
     }
 
     /// 删除全部 dead relay（清理过期失效节点），返回删除条数
     pub fn delete_dead_relays(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let n = conn.execute("DELETE FROM relays WHERE status = 'dead'", [])?;
         Ok(n as u64)
     }
 
     /// relay 总数
     pub fn relay_count(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 = conn.query_row("SELECT COUNT(*) FROM relays", [], |row| row.get(0))?;
         Ok(count)
     }
 
     /// 健康 relay 数
     pub fn healthy_relay_count(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 =
             conn.query_row("SELECT COUNT(*) FROM relays WHERE healthy = 1", [], |row| row.get(0))?;
         Ok(count)
@@ -392,7 +392,7 @@ impl PersistentStore {
     /// 追加一条结算流水（只追加，不可变；SQLite 事务保证不会出现半行）
     pub fn append_ledger_record(&self, rec: &SettlementRecord) -> anyhow::Result<()> {
         let payload = serde_json::to_string(rec)?;
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "INSERT INTO ledger_entries (payload) VALUES (?1)",
             params![payload],
@@ -403,7 +403,7 @@ impl PersistentStore {
     /// 按序读回全部结算流水（用于重放恢复）。
     /// 损坏 / 无法解析的行被容错跳过，不使整个账本不可读。
     pub fn load_ledger_records(&self) -> anyhow::Result<Vec<SettlementRecord>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
             conn.prepare("SELECT payload FROM ledger_entries ORDER BY seq ASC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
@@ -419,7 +419,7 @@ impl PersistentStore {
 
     /// 已持久化流水条数（持久化水位）
     pub fn ledger_count(&self) -> anyhow::Result<u64> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 =
             conn.query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))?;
         Ok(count)
@@ -530,7 +530,7 @@ mod tests {
             s.append_ledger_record(&rec).unwrap();
             assert_eq!(s.ledger_count().unwrap(), 1);
             // 直接插一条损坏 payload（崩溃 / 脏行模拟）
-            let conn = s.conn.lock().unwrap();
+            let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 "INSERT INTO ledger_entries (payload) VALUES ('{not json')",
                 [],

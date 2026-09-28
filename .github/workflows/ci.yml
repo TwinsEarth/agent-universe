@@ -87,7 +87,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='2.6.5') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='2.6.6') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

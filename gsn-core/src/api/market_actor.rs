@@ -377,7 +377,7 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
         MarketCommand::GetAgent { agent_id, reply } => {
             match market.get_agent(&agent_id) {
                 Some(a) => { let _ = reply.send(MarketResponse::ok(serde_json::to_value(a).unwrap())); }
-                None => { let _ = reply.send(MarketResponse::err(format!("agent 不存在: {agent_id}"))); }
+                None => { let _ = reply.send(MarketResponse::err(format!("NOT_FOUND: agent 不存在: {agent_id}"))); }
             }
         }
         MarketCommand::Discover { skill, reply } => {
@@ -415,7 +415,7 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
         MarketCommand::GetTask { task_id, reply } => {
             match market.get_task(&task_id) {
                 Some(t) => { let _ = reply.send(MarketResponse::ok(serde_json::to_value(t).unwrap())); }
-                None => { let _ = reply.send(MarketResponse::err(format!("task 不存在: {task_id}"))); }
+                None => { let _ = reply.send(MarketResponse::err(format!("NOT_FOUND: task 不存在: {task_id}"))); }
             }
         }
         MarketCommand::ListTasks { reply } => {

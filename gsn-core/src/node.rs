@@ -949,7 +949,16 @@ async fn run_api_server(
     println!("✅ HTTP API 监听: http://{}", addr);
 
     loop {
-        let (mut stream, _remote) = listener.accept().await?;
+        // v2.6.6：accept 的瞬时错误（EMFILE/ECONNABORTED 等）记录并退避继续，
+        // 不再一次错误就从 run_daemon 返回 Err、杀掉整个进程。
+        let mut stream = match listener.accept().await {
+            Ok((s, _remote)) => s,
+            Err(e) => {
+                eprintln!("⚠️ accept 错误（已忽略并退避继续）: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let mode = mode.clone();
         let store = store.clone();
         let peer_cmd_tx = peer_cmd_tx.clone();

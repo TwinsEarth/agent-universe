@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.5，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.6.6，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -316,6 +316,7 @@ npm install @twinsearth/agent-universe
 | v2.6.3 | **Settlement Closeout** | **重复注册拒绝 + 投标报价与预算强校验（0/负/超预算/已关闭拒绝）+ Rejected / DuplicateWork 终局可达（返工重提相同结果自动拒绝，付0、退预算、罚没10%质押）** |
 | v2.6.4 | **Consensus Hardening** | **BFT checked 算术（溢出安全）+ 规范签名 Result 化/递归剥离 signature + JS 码点序跨语言键序 + PROTOCOL_VERSION 契约 + 弱公钥拒绝 + Clock 端口（消除 1970 panic）** |
 | v2.6.5 | **Topology Truth** | **route_hops 按真实 lca（去常量 7）+ 边数 N→2N 线性验证 + 房间 BTreeSet 确定性分桶（与插入顺序无关）+ fanin 补上行边 + 协议版本 env! 唯一来源** |
+| v2.6.6 | **HTTP & Storage Hardening** | **persist 锁毒化根除（into_inner）+ accept 容错不退进程 + 写操作强制 POST（405）+ 错误码机器前缀替代中文子串 + url_decode off-by-one** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

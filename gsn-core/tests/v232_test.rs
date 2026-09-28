@@ -133,6 +133,12 @@ fn test_mcp_server_tools_list() {
     server.register_tool(ToolDefinition::new("search".to_string(), "搜索".to_string()));
     server.register_tool(ToolDefinition::new("generate".to_string(), "生成".to_string()));
 
+    // v2.6.8：未 initialize 前受保护方法返回 -32002
+    let pre = McpRequest::new(RequestId::Number(0), McpMethod::ToolsList, json!({}));
+    assert!(!server.handle(&pre).is_success());
+    // 先握手
+    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
+
     let req = McpRequest::new(RequestId::Number(1), McpMethod::ToolsList, json!({}));
     let resp = server.handle(&req);
     assert!(resp.is_success());
@@ -142,13 +148,17 @@ fn test_mcp_server_tools_list() {
 #[test]
 fn test_mcp_server_tools_call_not_found() {
     let mut server = McpServer::new("test".to_string());
+    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
     let req = McpRequest::new(
         RequestId::Number(1),
         McpMethod::ToolsCall,
         json!({ "name": "nonexistent" }),
     );
     let resp = server.handle(&req);
-    assert!(!resp.is_success());
+    // v2.6.8（GAP §8.4）：未知工具走正常 result + isError:true，而非协议错误
+    assert!(resp.is_success());
+    let body = resp.result.unwrap();
+    assert_eq!(body["isError"], serde_json::json!(true));
 }
 
 #[test]
@@ -157,6 +167,7 @@ fn test_mcp_server_prompts() {
     let prompt = PromptDefinition::new("explain".to_string(), "解释概念".to_string());
     let messages = vec![PromptMessage::user("解释 {topic}")];
     server.register_prompt(prompt, messages);
+    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
 
     let list_req = McpRequest::new(RequestId::Number(1), McpMethod::PromptsList, json!({}));
     let list_resp = server.handle(&list_req);

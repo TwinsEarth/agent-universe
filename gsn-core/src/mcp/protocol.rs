@@ -5,12 +5,14 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 请求 ID
+/// 请求 ID（v2.6.8：含 Null，符合 JSON-RPC 规范——解析错误/非法请求回 `"id": null`）
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum RequestId {
     Number(u64),
     String(String),
+    /// 无法解析请求 id 时回传 null（JSON-RPC 2.0 §5.1）
+    Null,
 }
 
 /// MCP 协议版本（MCP 2024-11-05）
@@ -89,6 +91,12 @@ pub enum McpError {
     InternalError(String),
     #[error("tool not found: {0}")]
     ToolNotFound(String),
+    /// v2.6.8：未 initialize 即调用受保护方法（-32002）
+    #[error("server not initialized")]
+    NotInitialized,
+    /// v2.6.8：HTTP MCP 端点未认证 / 令牌错误
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
 }
 
 impl McpError {
@@ -100,6 +108,8 @@ impl McpError {
             McpError::InvalidParams(_) => -32602,
             McpError::InternalError(_) => -32603,
             McpError::ToolNotFound(_) => -32001,
+            McpError::NotInitialized => -32002,
+            McpError::Unauthorized(_) => -32001,
         }
     }
 }

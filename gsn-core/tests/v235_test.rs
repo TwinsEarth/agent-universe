@@ -358,13 +358,13 @@ fn test_mcp_http_initialize_and_tools_list() {
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05"}
         });
-        let r = sse::handle_post(&init.to_string(), &market).await;
+        let r = sse::handle_post(&init.to_string(), &market, None, None).await;
         assert_eq!(r.status, 200);
         assert!(r.body.contains("serverInfo"));
 
         // tools/list
         let list = json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}});
-        let r = sse::handle_post(&list.to_string(), &market).await;
+        let r = sse::handle_post(&list.to_string(), &market, None, None).await;
         assert_eq!(r.status, 200);
         assert!(r.body.contains("market_register_agent"));
     });
@@ -382,11 +382,27 @@ fn test_mcp_http_tools_call() {
                 "arguments":{"account":"http-1","amount":250.0}
             }
         });
-        let r = sse::handle_post(&call.to_string(), &market).await;
+        // v2.6.8：写/动钱工具必须带正确 Bearer 令牌
+        let r = sse::handle_post(
+            &call.to_string(),
+            &market,
+            Some("Bearer secret-tok"),
+            Some("secret-tok"),
+        )
+        .await;
         assert_eq!(r.status, 200);
         // JSON-RPC result 内应含工具文本，且非占位
         assert!(r.body.contains("deposit") || r.body.contains("ok"));
         assert!(!r.body.contains("tool executed"));
+
+        // 未配置令牌时写工具应被拒（默认安全）
+        let denied = sse::handle_post(&call.to_string(), &market, None, None).await;
+        assert_eq!(denied.status, 400);
+        assert!(denied.body.contains("Unauthorized") || denied.body.contains("禁用"));
+
+        // 令牌错误应 401
+        let bad = sse::handle_post(&call.to_string(), &market, Some("Bearer wrong"), Some("secret-tok")).await;
+        assert_eq!(bad.status, 401);
 
         // GET 返回 SSE
         let g = sse::handle_get();
@@ -401,7 +417,7 @@ fn test_mcp_http_notification_returns_202() {
         let market = MarketActorHandle::spawn();
         // notifications/initialized 无 id
         let notif = json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
-        let r = sse::handle_post(&notif.to_string(), &market).await;
+        let r = sse::handle_post(&notif.to_string(), &market, None, None).await;
         assert_eq!(r.status, 202);
     });
 }

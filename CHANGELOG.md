@@ -2,6 +2,17 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.8] - 2026-09-28
+
+### 安全 + 修复：MCP 认证闸门与 LLM 去 panic（GAP §7.5 / §8.3 / §8.4 / §8.5 / §8.8）
+
+- **§8.8 严重**：HTTP MCP 端点此前无认证即挂 `market_deposit`/`arbitrate`/`settle_task` 等动钱工具；新增 `MCP_BEARER_TOKEN` Bearer 闸门，未配置令牌时默认拒绝全部写/动钱工具（安全失败），配错令牌返回 401；
+- §8.3：`RequestId` 增加 `Null`，解析/非法请求回 `"id": null`；
+- §8.4：`tools/call` 未知工具改正常 result + `isError:true`，不再回协议级错误；
+- §8.5：MCP server 增加握手状态机，未 initialize 前除 initialize 外全部返回 `-32002`；`handle_initialize` 读取 `protocolVersion`；
+- `ToolResult.is_error` 序列化改名 camelCase `isError`；
+- §7.5：LLM 五个适配器 `chat()` 不再 `.unwrap()` panic，请求失败/空 choices 友好降级为错误文案。
+
 ## [v2.6.7] - 2026-09-28
 
 ### 修复：记忆层加固（GAP §7.1 / §7.2 / §7.3 / §7.4 / §7.7）

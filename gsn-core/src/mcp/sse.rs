@@ -13,6 +13,7 @@
 use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
 use crate::mcp::protocol::*;
+use crate::mcp::tool::ToolResult;
 use serde_json::{json, Value};
 
 /// MCP HTTP 处理结果
@@ -24,16 +25,48 @@ pub struct McpHttp {
 }
 
 /// 处理 POST /api/v1/mcp（无状态 JSON-RPC）
-pub async fn handle_post(body: &str, market: &MarketActorHandle) -> McpHttp {
+///
+/// v2.6.8（GAP §8.8 严重）：此前不读任何 header/token/origin 就把请求分发到
+/// market_deposit / market_arbitrate / market_settle_task / market_register_agent 等
+/// **动钱工具**，任何能访问端口的人都能提款/罚没。现在：
+/// - `expected_token = Some(t)`：必须带 `Authorization: Bearer <t>`，否则 401；
+/// - `expected_token = None`（未配置令牌）：所有写/动钱工具被拒绝（默认安全），
+///   只放行只读工具。
+pub async fn handle_post(
+    body: &str,
+    market: &MarketActorHandle,
+    auth_header: Option<&str>,
+    expected_token: Option<&str>,
+) -> McpHttp {
+    // ── 认证闸门（先于任何分发）──
+    if let Some(t) = expected_token {
+        let want = format!("Bearer {t}");
+        match auth_header {
+            Some(h) if h.trim() == want => {}
+            _ => {
+                return McpHttp {
+                    status: 401,
+                    status_text: "Unauthorized",
+                    content_type: "application/json".to_string(),
+                    body: serde_json::to_string(&McpResponse::error(
+                        RequestId::Null,
+                        McpError::Unauthorized("invalid or missing bearer token".to_string()),
+                    ))
+                    .unwrap_or_default(),
+                };
+            }
+        }
+    }
+
     let bridge = MarketMcpBridge::new(market.clone());
     let tools = MarketMcpBridge::tool_definitions();
 
-    // 解析 JSON-RPC
+    // 解析 JSON-RPC（v2.6.8：解析失败回 id=null，符合 JSON-RPC 规范 §8.3）
     let raw: Value = match serde_json::from_str(body) {
         Ok(v) => v,
         Err(e) => {
             return jsonrpc_response(McpResponse::error(
-                RequestId::Number(0),
+                RequestId::Null,
                 McpError::ParseError(e.to_string()),
             ));
         }
@@ -53,13 +86,31 @@ pub async fn handle_post(body: &str, market: &MarketActorHandle) -> McpHttp {
         Ok(r) => r,
         Err(e) => {
             return jsonrpc_response(McpResponse::error(
-                RequestId::Number(0),
+                RequestId::Null,
                 McpError::InvalidRequest(e.to_string()),
             ));
         }
     };
 
     let id = req.id.clone();
+
+    // 未配置访问令牌时，写/动钱工具一律拒绝（默认安全失败）
+    if expected_token.is_none() && req.method_enum() == McpMethod::ToolsCall {
+        let name = req
+            .params
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if is_mutating_tool(name) {
+            return jsonrpc_response(McpResponse::error(
+                id,
+                McpError::Unauthorized(
+                    "写/动钱工具被禁用：节点未配置 MCP_BEARER_TOKEN".to_string(),
+                ),
+            ));
+        }
+    }
+
     let response = match req.method_enum() {
         McpMethod::Initialize => {
             let caps = json!({ "tools": { "listChanged": false } });
@@ -71,6 +122,14 @@ pub async fn handle_post(body: &str, market: &MarketActorHandle) -> McpHttp {
         McpMethod::ToolsCall => {
             let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
             let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
+            // v2.6.8（GAP §8.4）：未知工具返回正常 result + isError:true，而非协议级错误。
+            if !is_known_tool(name) {
+                let tr = ToolResult::error(format!("未知工具: {name}"));
+                return jsonrpc_response(McpResponse::success(
+                    id,
+                    serde_json::to_value(tr).unwrap_or(json!({})),
+                ));
+            }
             let tool_result = bridge.call(name, &args).await;
             McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or(json!({})))
         }
@@ -91,6 +150,29 @@ pub async fn handle_post(body: &str, market: &MarketActorHandle) -> McpHttp {
     };
 
     jsonrpc_response(response)
+}
+
+/// 写/动钱工具集合：会改账户余额、质押、任务状态或罚没。
+fn is_mutating_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "market_register_agent"
+            | "market_publish_task"
+            | "market_submit_bid"
+            | "market_match_task"
+            | "market_submit_result"
+            | "market_verify_result"
+            | "market_settle_task"
+            | "market_open_dispute"
+            | "market_arbitrate"
+            | "market_deposit"
+    )
+}
+
+fn is_known_tool(name: &str) -> bool {
+    MarketMcpBridge::tool_definitions()
+        .iter()
+        .any(|t| t.name == name)
 }
 
 /// 处理 GET /api/v1/mcp（SSE 流的首帧说明）

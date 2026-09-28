@@ -33,6 +33,8 @@ pub struct McpServer {
     prompts: HashMap<String, PromptDefinition>,
     prompt_templates: HashMap<String, Vec<PromptMessage>>,
     request_count: u64,
+    /// v2.6.8（GAP §8.5）：握手状态。未 initialize 时受保护方法返回 -32002。
+    initialized: bool,
 }
 
 impl McpServer {
@@ -46,6 +48,7 @@ impl McpServer {
             prompts: HashMap::new(),
             prompt_templates: HashMap::new(),
             request_count: 0,
+            initialized: false,
         }
     }
 
@@ -103,8 +106,13 @@ impl McpServer {
         self.request_count += 1;
         let id = req.id.clone();
 
+        // v2.6.8（GAP §8.5）：只有 initialize 在握手前可用；其余方法未初始化返回 -32002。
+        if !self.initialized && req.method_enum() != McpMethod::Initialize {
+            return McpResponse::error(id, McpError::NotInitialized);
+        }
+
         match req.method_enum() {
-            McpMethod::Initialize => self.handle_initialize(id),
+            McpMethod::Initialize => self.handle_initialize(id, &req.params),
             McpMethod::Ping => McpResponse::success(id, json!({})),
             McpMethod::ToolsList => self.handle_tools_list(id),
             McpMethod::ToolsCall => self.handle_tools_call(id, &req.params),
@@ -136,7 +144,12 @@ impl McpServer {
         Value::Object(caps)
     }
 
-    fn handle_initialize(&self, id: RequestId) -> McpResponse {
+    /// v2.6.8（GAP §8.5）：解析客户端请求的 protocolVersion，回显本服务端支持版本，
+    /// 并把握手状态置为 initialized。此前完全忽略 params、恒答硬编码版本。
+    fn handle_initialize(&mut self, id: RequestId, params: &Value) -> McpResponse {
+        self.initialized = true;
+        // 客户端声明的版本（用于日志/兼容判断）；本服务端固定支持 MCP_PROTOCOL_VERSION。
+        let _client_version = params.get("protocolVersion").and_then(|v| v.as_str());
         let result = initialize_result_value(
             &self.server_name,
             self.capabilities_value(),
@@ -158,9 +171,16 @@ impl McpServer {
             .cloned()
             .unwrap_or_else(|| json!({}));
 
-        // 工具不存在
+        // v2.6.8（GAP §8.4）：未知工具走正常 result + isError:true，而非协议级 -32001，
+        // 与桥接层对同一输入的行为一致。
         if !self.tools.contains_key(name) {
-            return McpResponse::error(id, McpError::ToolNotFound(name.to_string()));
+            let tr = ToolResult::error(format!("未知工具: {name}"));
+            return McpResponse::success(
+                id,
+                serde_json::to_value(tr).unwrap_or_else(|_| {
+                    json!({"content":[{"type":"text","text":"未知工具"}],"isError":true})
+                }),
+            );
         }
 
         // 工具已注册但未绑定执行器：诚实报错，不伪造成功

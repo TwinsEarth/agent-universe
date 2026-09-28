@@ -1005,7 +1005,26 @@ async fn run_api_server(
                 let mcp = if method == "GET" {
                     sse::handle_get()
                 } else if method == "POST" {
-                    sse::handle_post(&body, &market).await
+                    // v2.6.8（GAP §8.8）：提取 Authorization，按 MCP_BEARER_TOKEN 认证。
+                    // 未配置令牌时，sse::handle_post 默认拒绝所有写/动钱工具。
+                    let auth_header = request.lines().find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        if k.trim().eq_ignore_ascii_case("authorization") {
+                            Some(v.trim().to_string())
+                        } else {
+                            None
+                        }
+                    });
+                    let expected_token = std::env::var("MCP_BEARER_TOKEN")
+                        .ok()
+                        .filter(|s| !s.is_empty());
+                    sse::handle_post(
+                        &body,
+                        &market,
+                        auth_header.as_deref(),
+                        expected_token.as_deref(),
+                    )
+                    .await
                 } else {
                     let response = http_response(405, "Method Not Allowed", String::new(), "text/plain");
                     let _ = stream.write_all(response.as_bytes()).await;

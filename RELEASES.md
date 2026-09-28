@@ -49,7 +49,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.4 (Consensus Hardening - BFT checked 算术 + 规范签名 Result 化 + 时钟端口 + 弱公钥拒绝)
                                                         ├── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶)
                                                         ├── v2.6.6 (HTTP & Storage Hardening - 锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀)
-                                                        └── v2.6.7 (Memory Hardening - 真 SHA-256 链存载荷+verify + 真 LRU + 派生质量防污染 + 盲猜死循环) ← 当前
+                                                        ├── v2.6.7 (Memory Hardening - 真 SHA-256 链存载荷+verify + 真 LRU + 派生质量防污染 + 盲猜死循环)
+                                                        └── v2.6.8 (MCP Auth - Bearer 闸门/默认拒绝动钱 + 握手状态机 -32002 + RequestId Null + 未知工具 isError + LLM 去 panic) ← 当前
 ```
 
 ## 大版本详情
@@ -374,6 +375,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 ### v2.6.7 - Memory Hardening（真 SHA-256 链存载荷 + 真 LRU + 派生质量防污染 + 盲猜死循环）
 
 **核心内容**：按 GAP §7.1/§7.2/§7.3/§7.4/§7.7 修三层记忆。**假哈希链**（§7.1）：layered.rs 的 `sha256_hex` 实为 DefaultHasher 16 hex（假名、非密码学、跨工具链不稳），两条链只存摘要丢载荷；改真实 `sha2::Sha256`（64 hex）同时存载荷，新增 `verify_chain()` 重算每环报首个断裂索引，篡改即被定位。**假 LRU**（§7.2）：enhanced.rs 按单调 access_count 淘汰实为 LFU；改 `last_used` 逻辑时钟真 LRU，新测试在 LFU 规则下会失败。**防污染从未执行**（§7.3）：评分 f64 改整数 `score_bps` 消除 NaN panic；shared_memory 删除发布者自报 weight，质量由成败次数派生（成功率×10000）不可谎报，`publish` 低于阈值返回 `BAD_REQUEST:` 拒绝，best_strategy 整数比较。**飞轮诚实标注**（§7.4）：is_spinning 是单调计数闩锁、未接真实拓扑，保留作计数快照并文档明确非已落地机制。**盲猜死循环**（§7.7）：swarm/memory.rs 拒绝采样在 budget>=choices 永不终止，加 break 防护与 choices==0 早退。gsn-core **0.2.67**。全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.7.md](releases/v2.6.7.md)。
+
+### v2.6.8 - MCP Auth & Hardening（Bearer 闸门/默认拒绝动钱 + 握手状态机 + RequestId Null + 未知工具 isError + LLM 去 panic）
+
+**核心内容**：按 GAP §7.5/§8.3/§8.4/§8.5/§8.8 修 MCP 与 LLM。**§8.8 严重无认证动钱**：HTTP `/api/v1/mcp` 此前不读任何 header/token 即分发 `market_deposit`/`arbitrate`/`settle_task`/`register_agent` 等动钱工具；`handle_post` 增加 `auth_header`/`expected_token` 参数，配置 `MCP_BEARER_TOKEN` 后须带 `Authorization: Bearer <token>`（否则 401），**未配置时默认拒绝全部 10 个写/动钱工具**（安全失败），node.rs 提取 Authorization 头传入。**§8.3**：`RequestId` 加 `Null` 变体，解析/非法请求回 `"id":null`。**§8.4**：`tools/call` 未知工具改正常 result + `isError:true`，不再回协议级 -32001。**§8.5**：McpServer 加 `initialized:bool` 握手状态机，未 initialize 前除 initialize 外全部返回 `-32002 NotInitialized`，`handle_initialize` 读取 `protocolVersion`。**§8.7 局部**：`ToolResult.is_error` 序列化改名 camelCase `isError`。**§7.5**：LLM 五个适配器 `chat()` 不再 `unwrap()`/空 choices `[0]` panic，错误与空数组友好降级。gsn-core **0.2.68**。全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.8.md](releases/v2.6.8.md)。
 
 ## 小版本更新日志
 

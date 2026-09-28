@@ -94,7 +94,7 @@ impl ToolDefinition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     pub content: Vec<ToolContent>,
-    #[serde(default)]
+    #[serde(default, rename = "isError")]
     pub is_error: bool,
 }
 

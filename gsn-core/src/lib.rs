@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v2.6.7
+//! Agent Universe gsn-core v2.6.8
 //!
 //! 群体智能核心库 - 智能体宇宙
 //! 

@@ -67,9 +67,20 @@ impl OpenAiAdapter {
             max_tokens: 4096,
             stream: false,
         };
-        let resp = self.client.chat(&req).unwrap();
+        // v2.6.8（GAP §7.5）：client 失败 / choices 为空数组不再 panic，转为错误 answer。
+        let resp = match self.client.chat(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+            }
+        };
+        let answer = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_else(|| "ERROR: empty choices".to_string());
         LlmResult {
-            answer: resp.choices[0].message.content.clone(),
+            answer,
             prompt_tokens: resp.usage.prompt_tokens,
             completion_tokens: resp.usage.completion_tokens,
         }
@@ -106,9 +117,21 @@ impl GeminiAdapter {
             system_instruction: None,
             generation_config: GeGenConfig { temperature: 0.7, top_p: 0.9, max_output_tokens: 4096 },
         };
-        let resp = self.client.generate(&req).unwrap();
+        // v2.6.8（GAP §7.5）：失败 / candidates 空 / parts 空不再 panic。
+        let resp = match self.client.generate(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+            }
+        };
+        let answer = resp
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+            .map(|p| p.text.clone())
+            .unwrap_or_else(|| "ERROR: empty candidates".to_string());
         LlmResult {
-            answer: resp.candidates[0].content.parts[0].text.clone(),
+            answer,
             prompt_tokens: resp.usage_metadata.prompt_token_count,
             completion_tokens: resp.usage_metadata.candidates_token_count,
         }
@@ -144,9 +167,20 @@ impl AnthropicAdapter {
             temperature: 0.7,
             top_p: 1.0,
         };
-        let resp = self.client.messages(&req).unwrap();
+        // v2.6.8（GAP §7.5）：失败 / content 空数组不再 panic。
+        let resp = match self.client.messages(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+            }
+        };
+        let answer = resp
+            .content
+            .first()
+            .map(|c| c.text.clone())
+            .unwrap_or_else(|| "ERROR: empty content".to_string());
         LlmResult {
-            answer: resp.content[0].text.clone(),
+            answer,
             prompt_tokens: resp.usage.input_tokens,
             completion_tokens: resp.usage.output_tokens,
         }
@@ -198,9 +232,16 @@ impl DoubaoAdapter {
             stream: false,
             thinking,
         };
-        let resp = self.client.chat(&req).unwrap();
+        // v2.6.8（GAP §7.5）：失败 / choices 空不再 panic。
+        let resp = match self.client.chat(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+            }
+        };
+        let answer = resp.choices.first().map(|c| c.message.content.clone()).unwrap_or_else(|| "ERROR: empty choices".to_string());
         LlmResult {
-            answer: resp.choices[0].message.content.clone(),
+            answer,
             prompt_tokens: resp.usage.prompt_tokens,
             completion_tokens: resp.usage.completion_tokens,
         }
@@ -240,9 +281,16 @@ impl DomesticAdapter {
             max_tokens: 4096,
             stream: false,
         };
-        let resp = self.client.chat(&req).unwrap();
+        // v2.6.8（GAP §7.5）：失败 / choices 空不再 panic。
+        let resp = match self.client.chat(&req) {
+            Ok(r) => r,
+            Err(e) => {
+                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+            }
+        };
+        let answer = resp.choices.first().map(|c| c.message.content.clone()).unwrap_or_else(|| "ERROR: empty choices".to_string());
         LlmResult {
-            answer: resp.choices[0].message.content.clone(),
+            answer,
             prompt_tokens: resp.usage.prompt_tokens,
             completion_tokens: resp.usage.completion_tokens,
         }

@@ -225,10 +225,24 @@ impl MarketActorHandle {
                 }
                 Err(e) => eprintln!("⚠️ 账本读取失败: {e}"),
             }
-            // load agents / tasks：真实调用点（重启后可见 / 计数）
-            let n_agents = store.load_agents().map(|v| v.len()).unwrap_or(0);
-            let n_tasks = store.load_tasks().map(|v| v.len()).unwrap_or(0);
-            println!("   磁盘载回：{n_agents} agents / {n_tasks} tasks");
+            // v2.7.4: agents / tasks 真正注入内存 market（此前只取 .len() 打日志，
+            // 导致重启后账本/余额恢复但 /agents、/tasks、/stats 全空）。
+            match store.load_agents() {
+                Ok(list) => {
+                    let n = list.len();
+                    market.restore_agents_from_store(list);
+                    println!("✅ agents 已从磁盘恢复：{n} 个");
+                }
+                Err(e) => eprintln!("⚠️ agents 读取失败: {e}"),
+            }
+            match store.load_tasks() {
+                Ok(list) => {
+                    let n = list.len();
+                    market.restore_tasks_from_store(list);
+                    println!("✅ tasks 已从磁盘恢复：{n} 个");
+                }
+                Err(e) => eprintln!("⚠️ tasks 读取失败: {e}"),
+            }
 
             // 已持久化流水水位（启动已有记录不重复 append）
             let mut ledger_water = store.ledger_count().unwrap_or(0) as usize;

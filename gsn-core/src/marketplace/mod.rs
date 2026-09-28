@@ -850,6 +850,87 @@ impl AgentMarket {
             })
             .collect()
     }
+
+    /// v2.7.4: 从磁盘快照恢复 agents 到内存 market（重启后 /agents、/stats 可见）。
+    ///
+    /// 此前 `spawn_with_store` 只取了 `load_agents().len()` 打日志，业务对象并未注入内存，
+    /// 导致重启后账本/余额从 SQLite 正确恢复、但 `/agents`、`/tasks/{id}`、`/stats` 全空。
+    /// 快照未存字段（version/description/modalities/models/endpoint/pricing/sla 等）用安全默认值补齐。
+    pub fn restore_agents_from_store(
+        &mut self,
+        agents: Vec<crate::storage::StoredAgent>,
+    ) {
+        for a in agents {
+            let skills: Vec<String> = a
+                .skills
+                .split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect();
+            let card = MarketAgentCard {
+                agent_id: a.agent_id.clone(),
+                version: "0.0.0-restored".to_string(),
+                name: a.name,
+                description: String::new(),
+                skills: skills.clone(),
+                modalities: vec![],
+                models: vec![],
+                endpoint: String::new(),
+                pricing: Pricing {
+                    model: PricingModel::Subscription,
+                    price: Money::ZERO,
+                    currency: Currency::Credit,
+                },
+                sla: Sla::default(),
+                owner: a.agent_id.clone(),
+                stake: Money::new(a.stake),
+                reputation_score: a.reputation,
+                total_calls: 0,
+                success_rate: 1.0,
+                evidence_grade: EvidenceGrade::Unverified,
+                verified: false,
+                created_at: a.created_at.parse().unwrap_or(0),
+                updated_at: a.created_at.parse().unwrap_or(0),
+            };
+            for sk in &skills {
+                self.skill_index
+                    .entry(sk.clone())
+                    .or_default()
+                    .push(card.agent_id.clone());
+            }
+            self.agents.insert(a.agent_id, card);
+        }
+    }
+
+    /// v2.7.4: 从磁盘快照恢复 tasks 到内存 market。
+    ///
+    /// 快照未存字段（context/done/todo/trace/required_skills/requester/winner_price/deadline）
+    /// 用安全默认值补齐；状态经 `TaskState::from_label` 反解析，坏值回 `Open`。
+    pub fn restore_tasks_from_store(
+        &mut self,
+        tasks: Vec<crate::storage::StoredTask>,
+    ) {
+        for t in tasks {
+            let spec = TaskSpec {
+                task_id: t.task_id,
+                goal: t.goal,
+                context: String::new(),
+                done: vec![],
+                todo: vec!["(restored from disk)".to_string()],
+                trace: vec![],
+                owner: t.owner,
+                budget: Money::new(t.budget),
+                winner_price: None,
+                deadline: 0,
+                required_skills: vec![],
+                verification_policy: VerificationPolicy::None,
+                requester: String::new(),
+                state: TaskState::from_label(&t.state),
+                created_at: t.created_at.parse().unwrap_or(0),
+            };
+            self.tasks.insert(spec.task_id.clone(), spec);
+        }
+    }
 }
 
 impl Default for AgentMarket {

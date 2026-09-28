@@ -18,7 +18,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
-_SDK_VERSION = "2.7.3"
+_SDK_VERSION = "2.7.4"
 
 
 class McpError(RuntimeError):

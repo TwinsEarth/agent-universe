@@ -57,6 +57,29 @@ impl TaskState {
         }
     }
 
+    /// v2.7.4: 从大写 label 反解析状态。
+    ///
+    /// 重启恢复时，磁盘存的是 `label()` 产出的大写字符串；未知/坏值一律回 `Open`，
+    /// 避免坏数据让状态机在恢复阶段 panic 或进入不可达状态。
+    pub fn from_label(label: &str) -> Self {
+        match label.trim().to_uppercase().as_str() {
+            "DRAFT" => TaskState::Draft,
+            "OPEN" => TaskState::Open,
+            "MATCHED" => TaskState::Matched,
+            "RUNNING" => TaskState::Running,
+            "VERIFYING" => TaskState::Verifying,
+            "ACCEPTED" => TaskState::Accepted,
+            "SETTLED" => TaskState::Settled,
+            "REWORK" => TaskState::Rework,
+            "DISPUTED" => TaskState::Disputed,
+            "ARBITRATION" => TaskState::Arbitration,
+            "SLASHED" => TaskState::Slashed,
+            "NO_QUORUM" => TaskState::NoQuorum,
+            "REJECTED" => TaskState::Rejected,
+            _ => TaskState::Open,
+        }
+    }
+
     /// 是否终态
     pub fn is_terminal(&self) -> bool {
         matches!(

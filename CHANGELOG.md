@@ -1,6 +1,16 @@
 # Changelog
 
-本文件记录 Agent Universe 各版本的重要变更。
+"本文件记录 Agent Universe 各版本的重要变更。
+
+## [v2.7.4] - 2026-09-29
+
+### 重启恢复修复：agents/tasks 未注入内存 market
+
+- 修复 Mac 真机 Bug：重启 daemon 后账本/余额/守恒从 SQLite 正确恢复，但 `/agents`、`/tasks/{id}`、`/stats` 全空/0/not_found；
+- 根因：`spawn_with_store` 对 `load_agents()/load_tasks()` 只取 `.len()` 打日志，未把业务对象注入内存 market；
+- 新增 `TaskState::from_label()`（大写 label 反解析，坏值回 Open）；
+- 新增 `restore_agents_from_store()` / `restore_tasks_from_store()`，启动时真正注入内存；
+- 新增持久回归 `tests/v274_test.rs`（3 项）；gsn-core `0.2.74`。
 
 ## [v2.7.3] - 2026-09-29
 

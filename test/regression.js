@@ -3,6 +3,12 @@
 // 把 v1.0.0 ~ v2.5.x 开发过程中踩过、修过的每个 bug / 遗漏固化为断言，
 // 每次发版必跑（test/run-all.sh / run-all.ps1 与 CI 都会执行）。
 // 修任何新 bug，必须先在此追加一条 REG-xxx，再提交修复。
+//
+// v2.6.9（GAP §9.7）诚实标注：本套件 REG-020/021/022/030/031 等用例直接
+// require('../js')，断言跑在 **js/lib/market.js（JS 参考实现）** 上，
+// 而非 Rust 守护进程 gsn-core。JS 与 Rust 在负数存款、重复注册、铸币/托管上
+// 行为不完全一致；因此本套件全绿只证明 JS 参考实现未回归，**不能**当作
+// Rust 守护进程行为的保证。Rust 侧对应不变量见 gsn-core/tests/ 下的账本/守恒测试。
 
 const fs = require('fs');
 const path = require('path');

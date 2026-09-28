@@ -4,8 +4,10 @@
 //! 支持两种模式：
 //! - **POST /api/v1/mcp**（无状态 Streamable HTTP）：每次请求一条 JSON-RPC，
 //!   直接返回一条 JSON-RPC 响应。最简单可靠，适合服务端/远程场景。
-//! - **GET /api/v1/mcp**（SSE 长连接）：建立 text/event-stream，
-//!   用于服务器主动推送（本实现发送初始化事件 + 心跳）。
+//! - **GET /api/v1/mcp**（SSE，v2.6.9 诚实标注，GAP §8.6）：当前 `handle_get`
+//!   只发送一帧 `event: ready` 后即关闭连接，**并非真正的长连接流 / 服务端持续推送**。
+//!   客户端应优先使用 POST 无状态模式；真长连接（事件 id、重连续传、服务端推送）
+//!   尚未实现。
 //!
 //! 远程客户端（Cursor / 自定义 Agent）把 MCP server URL 指向
 //! `http://<node>:4002/api/v1/mcp` 即可。

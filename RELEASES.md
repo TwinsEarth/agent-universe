@@ -50,7 +50,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶)
                                                         ├── v2.6.6 (HTTP & Storage Hardening - 锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀)
                                                         ├── v2.6.7 (Memory Hardening - 真 SHA-256 链存载荷+verify + 真 LRU + 派生质量防污染 + 盲猜死循环)
-                                                        └── v2.6.8 (MCP Auth - Bearer 闸门/默认拒绝动钱 + 握手状态机 -32002 + RequestId Null + 未知工具 isError + LLM 去 panic) ← 当前
+                                                        └── v2.6.8 (MCP Auth - Bearer 闸门/默认拒绝动钱 + 握手状态机 -32002 + RequestId Null + 未知工具 isError + LLM 去 panic)
+                                                              └── v2.6.9 (Doc Honesty - SSE 单帧/probe 静态查表/回归跑 JS 全部诚实标注) ← 当前
 ```
 
 ## 大版本详情

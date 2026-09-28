@@ -289,7 +289,13 @@ impl NetworkRouter {
         false
     }
 
-    /// 健康检查：模拟探测所有端点。
+    /// 健康检查：按静态区域谓词给端点打可达标记。
+    ///
+    /// v2.6.9（GAP §7.6）诚实标注：本方法**不做任何真实 I/O**——它只是对每个
+    /// 端点的 `reachable_from(region)` 静态谓词求值后调 `mark_reachable`，
+    /// 结果反映「按区域规则应当可达」，而非「此刻真的连通」。
+    /// `EndpointHealth::{Failover, BlockedNoProxy}` 暂无真实触发路径；
+    /// 真实连通探测留给调用方注入。
     pub fn probe_all(&mut self) {
         let region = self.current_region;
         let domestic_keys: Vec<&'static str> = self.domestic.endpoints.keys().copied().collect();

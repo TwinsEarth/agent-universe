@@ -240,7 +240,8 @@ mod tests {
     fn nat_detection_and_connect() {
         let mut node = MeshNode::new(test_config("windows", "winpc"), "win01");
         let nat = node.detect_nat();
-        assert_eq!(nat, NatType::PortRestrictedCone);
+        // v2.7.2：占位检测不猜测具体类型，应返回 Unknown（GAP §5.6）
+        assert_eq!(nat, NatType::Unknown);
 
         let state = node.connect_peer("SN-mac");
         assert_eq!(state, ConnectionState::Connected);

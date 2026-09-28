@@ -194,7 +194,8 @@ fn test_benign_node_not_banned() {
 fn test_nat_type_detection() {
     let mut manager = NatTraversalManager::new();
     let nat_type = manager.detect_nat_type();
-    assert!(matches!(nat_type, NatType::PortRestrictedCone));
+    // v2.7.2：占位检测不猜测，应返回 Unknown（GAP §5.6）
+    assert!(matches!(nat_type, NatType::Unknown));
 }
 
 #[test]

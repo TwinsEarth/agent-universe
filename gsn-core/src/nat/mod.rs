@@ -14,6 +14,8 @@ use std::collections::HashMap;
 /// NAT 类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NatType {
+    /// 未知/未探测（v2.7.2：占位检测不猜测具体类型）
+    Unknown,
     /// 完全开放
     OpenInternet,
     /// 全锥型 NAT
@@ -100,8 +102,10 @@ impl NatTraversalManager {
 
     /// 检测 NAT 类型
     pub fn detect_nat_type(&mut self) -> NatType {
-        // 占位：不探测，固定返回；真实 NAT 类型由 libp2p AutoNAT 判定
-        NatType::PortRestrictedCone
+        // 占位：不探测。v2.7.2（GAP §5.6）：不再猜测具体类型，返回 Unknown——
+        // 分类真实 NAT 需要可达的公网 STUN，不可达时不应上报 PortRestrictedCone
+        // 这种看似精确的假测量值。真实分类由 libp2p AutoNAT 判定。
+        NatType::Unknown
     }
 
     /// 建立连接

@@ -2,6 +2,13 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.2] - 2026-09-28
+
+### NAT 占位检测不再猜测类型（GAP §5.6）
+
+- `NatType` 新增 `Unknown` 变体；`detect_nat_type` 返回 Unknown 而非硬编码 PortRestrictedCone；
+- 同步两处固化测试；`MeshTopology.nat_type` 不再暴露假精确测量值。
+
 ## [v2.7.1] - 2026-09-28
 
 ### 安全：stableStringify 拒绝非法/静默错误载荷（GAP §9.1）

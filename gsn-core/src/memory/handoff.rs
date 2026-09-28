@@ -45,7 +45,8 @@ impl TransferBundle {
 /// P12 审计轨迹：哈希链。
 #[derive(Debug, Clone, Default)]
 pub struct TraceLedger {
-    chain: Vec<(String, EvidenceGrade)>,
+    /// 每环：(载荷, 环哈希, 证据分级)。载荷保留以便复现与篡改检测。
+    chain: Vec<(String, String, EvidenceGrade)>,
     prev: String,
 }
 
@@ -54,23 +55,30 @@ impl TraceLedger {
         Self { chain: Vec::new(), prev: "genesis".into() }
     }
 
-    /// 追加一条执行记录；新哈希 = prev + payload。
+    /// 追加一条执行记录；环哈希 = sha256(prev + payload)（v2.6.7 真 SHA-256）。
     pub fn append(&mut self, payload: &str, grade: EvidenceGrade) {
-        let h = format!("{:016x}", {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut s = DefaultHasher::new();
-            format!("{}{}", self.prev, payload).hash(&mut s);
-            s.finish()
-        });
-        self.chain.push((h.clone(), grade));
+        let h = super::layered::sha256_hex(&format!("{}{}", self.prev, payload));
+        self.chain.push((payload.to_string(), h.clone(), grade));
         self.prev = h;
     }
 
     pub fn len(&self) -> usize { self.chain.len() }
     pub fn is_empty(&self) -> bool { self.chain.is_empty() }
     pub fn verified_count(&self) -> usize {
-        self.chain.iter().filter(|(_, g)| *g == EvidenceGrade::Verified).count()
+        self.chain.iter().filter(|(_, _, g)| *g == EvidenceGrade::Verified).count()
+    }
+
+    /// 重算整条链，返回首个断裂环索引；一致则 Ok(())。
+    pub fn verify_chain(&self) -> Result<(), usize> {
+        let mut prev = "genesis".to_string();
+        for (i, (payload, stored, _)) in self.chain.iter().enumerate() {
+            let expect = super::layered::sha256_hex(&format!("{}{}", prev, payload));
+            if expect != *stored {
+                return Err(i);
+            }
+            prev = stored.clone();
+        }
+        Ok(())
     }
 }
 
@@ -105,5 +113,17 @@ mod tests {
         l.append("task2", EvidenceGrade::Unverified);
         assert_eq!(l.len(), 2);
         assert_eq!(l.verified_count(), 1);
+        assert!(l.verify_chain().is_ok());
+    }
+
+    #[test]
+    fn ledger_detects_tampered_payload() {
+        let mut l = TraceLedger::new();
+        l.append("a", EvidenceGrade::Verified);
+        l.append("b", EvidenceGrade::CpuProto);
+        l.append("c", EvidenceGrade::Unverified);
+        // 篡改第 0 环载荷
+        l.chain[0].0 = "A-TAMPERED".to_string();
+        assert_eq!(l.verify_chain(), Err(0));
     }
 }

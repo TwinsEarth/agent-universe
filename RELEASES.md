@@ -48,7 +48,8 @@ v1.0.0 (Genesis)
                                                         ├── v2.6.3 (Settlement Closeout - 重复注册拒绝 + 出价脱钩校验 + Rejected/DuplicateWork 终局可达)
                                                         ├── v2.6.4 (Consensus Hardening - BFT checked 算术 + 规范签名 Result 化 + 时钟端口 + 弱公钥拒绝)
                                                         ├── v2.6.5 (Topology Truth - 分层拓扑确定性重写：真实 lca 跳数 + 边数线性验证 + 房间哈希分桶)
-                                                        └── v2.6.6 (HTTP & Storage Hardening - 锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀) ← 当前
+                                                        ├── v2.6.6 (HTTP & Storage Hardening - 锁毒化根除 + accept 容错 + 写操作 405 + 错误码前缀)
+                                                        └── v2.6.7 (Memory Hardening - 真 SHA-256 链存载荷+verify + 真 LRU + 派生质量防污染 + 盲猜死循环) ← 当前
 ```
 
 ## 大版本详情
@@ -370,6 +371,10 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：按 GAP §6.2–§6.6 修存储/HTTP。**锁毒化**（§6.2）：persist.rs 22 处 `.lock().unwrap()` 改 `unwrap_or_else(|e| e.into_inner())`，持锁 panic 中毒后仍可取内部数据、不再永久杀死存储。**accept 容错**（§6.3）：daemon 接收循环瞬时 accept 错误（EMFILE/ECONNABORTED）记录并退避 100ms 继续，不再一次错误退出整个进程。**写操作强制 POST**（§6.4）：TaskMatch/Settle/Verify/Resume/Reopen/Bids/Results/Arbitrate/Deposit 等改状态端点非 POST 返回 **405**，GET 不再误触发结算/仲裁。**错误码类型化**（§6.5）：分类由机器码前缀 match 决定（`NOT_FOUND:`→404 / `CONFLICT:`→409 / `BAD_REQUEST:`→400 / 其余 422），14 处资源不存在错误加前缀，不再匹配中文字符串「不存在」。**url_decode**（§6.6）：off-by-one 修正，末尾 `%41` 与多字节 UTF-8（`%E4%B8%AD`=中）正确解码。gsn-core **0.2.66**。新增 4 项 rest 测试，全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.6.md](releases/v2.6.6.md)。
 
+### v2.6.7 - Memory Hardening（真 SHA-256 链存载荷 + 真 LRU + 派生质量防污染 + 盲猜死循环）
+
+**核心内容**：按 GAP §7.1/§7.2/§7.3/§7.4/§7.7 修三层记忆。**假哈希链**（§7.1）：layered.rs 的 `sha256_hex` 实为 DefaultHasher 16 hex（假名、非密码学、跨工具链不稳），两条链只存摘要丢载荷；改真实 `sha2::Sha256`（64 hex）同时存载荷，新增 `verify_chain()` 重算每环报首个断裂索引，篡改即被定位。**假 LRU**（§7.2）：enhanced.rs 按单调 access_count 淘汰实为 LFU；改 `last_used` 逻辑时钟真 LRU，新测试在 LFU 规则下会失败。**防污染从未执行**（§7.3）：评分 f64 改整数 `score_bps` 消除 NaN panic；shared_memory 删除发布者自报 weight，质量由成败次数派生（成功率×10000）不可谎报，`publish` 低于阈值返回 `BAD_REQUEST:` 拒绝，best_strategy 整数比较。**飞轮诚实标注**（§7.4）：is_spinning 是单调计数闩锁、未接真实拓扑，保留作计数快照并文档明确非已落地机制。**盲猜死循环**（§7.7）：swarm/memory.rs 拒绝采样在 budget>=choices 永不终止，加 break 防护与 choices==0 早退。gsn-core **0.2.67**。全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.7.md](releases/v2.6.7.md)。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6
@@ -439,6 +444,7 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - ✅ **共识/身份签名加固：BFT checked 算术 + 规范签名 Result 化/递归剥离 + JS 码点序 + PROTOCOL_VERSION 契约 + 弱公钥拒绝 + 时钟端口（消除 1970 panic）**（v2.6.4）
 - ✅ **分层拓扑真相化：route_hops 按真实 lca（去常量7）+ 边数 N→2N 线性验证 + 房间 BTreeSet 确定性分桶（与插入顺序无关）+ 协议版本 env! 唯一来源**（v2.6.5）
 - ✅ **存储/HTTP 加固：persist 锁毒化根除（into_inner）+ accept 瞬时错误容错不退进程 + 写操作强制 POST（405）+ 错误码机器前缀替代中文子串分类 + url_decode off-by-one**（v2.6.6）
+- ✅ **记忆层加固：真 SHA-256 哈希链存载荷+verify_chain 篡改定位 + 真 LRU（last_used 时钟）替代假 LFU + 派生质量防污染（成败计数/整数 bps，拒绝低质）+ 盲猜死循环 break 防护**（v2.6.7）
 
 ### 技术栈
 

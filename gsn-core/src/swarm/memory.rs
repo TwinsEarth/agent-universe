@@ -154,12 +154,23 @@ fn ratio(num: u64, den: u64) -> f64 {
 ///
 /// `rng` 由调用方按 (agent, scene) 构造，保证两组同 (agent, scene) 的盲猜序列一致。
 fn blind_attempt(rng: &mut Rng, correct: u32, choices: u32, budget: u32) -> (bool, bool, u32) {
+    if choices == 0 {
+        return (false, false, 0);
+    }
     let mut tried: Vec<u32> = Vec::with_capacity(budget as usize);
     for step in 0..budget {
         // 无放回抽样：拒绝已猜过的选项。
         let mut pick = rng.below(choices);
         while tried.contains(&pick) {
             pick = rng.below(choices);
+            // v2.6.7：budget >= choices 时拒绝采样会永不终止（所有选项都已试过），
+            // 此时跳出死循环；穷举本应命中 correct，未命中属防御分支。
+            if tried.len() as u32 >= choices {
+                break;
+            }
+        }
+        if tried.contains(&pick) {
+            return (false, false, budget);
         }
         tried.push(pick);
         if pick == correct {

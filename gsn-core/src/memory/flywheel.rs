@@ -4,6 +4,11 @@
 //! ② 简单个体 + 复杂网络 → 结构决定增长曲线形状
 //! ③ 三层记忆共享 → 每次执行都产生经验，经验反馈优化结构
 //! ④ 回到①：协同产生的新数据 → 更新记忆 → 优化结构 → 再协同
+//!
+//! v2.6.7 诚实边界说明：本结构是**计数器快照**，不是已接线的因果闭环。
+//! `is_spinning()` 仅判断四个单调计数是否都已发生；`optimize_structure()` 只递增计数，
+//! 并不真正调整 `LayeredTopology`/`EnhancedMemory`/`AgentMemory`。
+//! 真实的「经验→结构」反馈链路尚未在本 crate 实现，请勿把本谓词当作机制已落地的证据。
 
 #[derive(Debug, Clone, Default)]
 pub struct Flywheel {

@@ -2,6 +2,14 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.3] - 2026-09-29
+
+### 实机部署修复：发布缺字段 422 与认证验收后证据不升级
+
+- `TaskSpec.state` 加 `#[serde(default = "default_task_state")]`，缺省即 Open，修复缺 state 即 422、传了又被覆盖的矛盾；
+- 认证式 BFT 委员会判定 Stop 后，将不可信结果证据提升为 `Verified`，消除「验收通过却无法结算」死路；非认证 `verify_result` 不提升；
+- 新增持久回归 `tests/v273_test.rs`（2 项）；gsn-core `0.2.73`。
+
 ## [v2.7.2] - 2026-09-28
 
 ### NAT 占位检测不再猜测类型（GAP §5.6）

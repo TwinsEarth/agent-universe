@@ -174,9 +174,15 @@ pub struct TaskSpec {
     /// 发布者
     pub requester: String,
     /// 当前状态
+    #[serde(default = "default_task_state")]
     pub state: TaskState,
     /// 创建时间
     pub created_at: u64,
+}
+
+/// state 字段的反序列化默认值：发布任务缺省 state 时视为已发布（Open）。
+fn default_task_state() -> TaskState {
+    TaskState::Open
 }
 
 impl TaskSpec {

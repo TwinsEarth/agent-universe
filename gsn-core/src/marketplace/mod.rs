@@ -456,6 +456,17 @@ impl AgentMarket {
         }
         let decision = committee.tally();
 
+        // 证据升级（仅认证式 BFT 验收通过时）：Unverified 结果经固定委员集
+        // 签名投票判定 Stop 后，将其证据等级提升为 Verified，使其满足
+        // settle_task 的可信闸门；非认证 verify_result 路径不做此提升。
+        if matches!(decision, QaDecision::Stop) {
+            if let Some(env) = self.results.get_mut(task_id) {
+                if !env.evidence_grade.is_trustworthy() {
+                    env.evidence_grade = EvidenceGrade::Verified;
+                }
+            }
+        }
+
         let task = self
             .tasks
             .get_mut(task_id)

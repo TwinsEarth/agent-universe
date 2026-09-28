@@ -54,7 +54,8 @@ v1.0.0 (Genesis)
                                                               └── v2.6.9 (Doc Honesty - SSE 单帧/probe 静态查表/回归跑 JS 全部诚实标注)
                                                                     └── v2.7.0 (Client Release - 首次全平台客户端分发大版本)
                                                                           └── v2.7.1 (stableStringify 拒非法/静默载荷 - GAP §9.1)
-                                                                                └── v2.7.2 (NAT 占位检测返 Unknown 不猜测 - GAP §5.6) ← 当前
+                                                                                └── v2.7.2 (NAT 占位检测返 Unknown 不猜测 - GAP §5.6)
+                                                                                      └── v2.7.3 (实机部署修复 - 发布缺字段/认证验收证据升级) ← 当前
 ```
 
 ## 大版本详情

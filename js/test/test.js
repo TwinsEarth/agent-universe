@@ -43,8 +43,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 2.6.3', () => {
-  assert.strictEqual(version, '2.6.3');
+test('版本号为 2.6.4', () => {
+  assert.strictEqual(version, '2.6.4');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -415,6 +415,19 @@ test('v2.6.0 policy=None 提交即验收并豁免证据', () => {
   const r = market.settle('task-1');
   assert.strictEqual(r.reason, 'settled');
   assert.strictEqual(r.paid, 40);
+});
+
+// 16. v2.6.4 canonical 键序按 Unicode 码点序（GAP §4.4）
+test('v2.6.4 canonical 键序按码点序，BMP私用区与astral分歧被修复', () => {
+  const { stableStringify } = require('../lib/aca');
+  const bmp = ''; // U+E000，码点 0xE000
+  const astral = '😀'; // U+1F600，码点 0x1F600
+  // 码点序：0xE000 < 0x1F600 → bmp 在前。
+  // JS 默认 UTF-16 码元序：astral 高半 0xD83D < bmp 0xE000 → 会给出相反顺序。
+  const s1 = stableStringify({ [astral]: 1, [bmp]: 2 });
+  const s2 = stableStringify({ [bmp]: 2, [astral]: 1 });
+  assert.strictEqual(s1, s2, '不同插入顺序应产出同一紧凑 JSON');
+  assert.strictEqual(s1, '{"":2,"😀":1}', '键序必须是码点序（bmp 在前）');
 });
 
 console.log(`\n${passed} 项测试通过`);

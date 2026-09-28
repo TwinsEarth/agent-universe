@@ -2,6 +2,23 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.6.4] - 2026-09-28
+
+### 修复：共识 / 身份签名加固（GAP §3.3 / §3.6 / §4.2–§4.9）
+
+- **BFT 委员会算术安全（§3.3）**：`min_n = 3f+1` 与 `quorum` 改 checked，溢出即 Err/安全降级，不再普通乘法溢出。
+- **贡献验证带签名身份（§3.6）**：新增 `verify_contribution_signed`（验签覆盖 `hash||verifier_did`、禁自验、去重、饱和计数），杜绝重复投票凑数与自验；旧方法同步硬化。
+- **规范签名 Result 化 + 递归剥离（§4.2/§4.3）**：`canonical_object` 要求根为对象、`strip_signatures` 任意深度递归剥离；`sign_hex/verify_hex/canonical_payload` 全改 `Result`，不可序列化对象不再静默签空字节。
+- **跨语言键序码点化（§4.4）**：JS 排序器从 UTF-16 码元序改为 Unicode 码点序，新增 astral 平面键序向量钉住三端一致。
+- **规范字节契约（§4.5）**：引入 `PROTOCOL_VERSION = "nau/1"`，签名覆盖规范形式，改规范字节必须 bump 版本；重放由 nonce+时间戳承担。
+- **弱公钥拒绝（§4.6）**：`is_weak_pubkey` 拒绝长度错 / 全零 / 全 0xFF / 全相同公钥，保留 8 字节指纹兼容上游。
+- **时钟端口注入（§4.8）**：新建 `aca::clock`（`SystemClock` 饱和不 panic + `ManualClock` 确定性），消除八处早于 1970 即 panic 的路径。
+- **常量时间比较文档（§4.9）**：明确公开摘要 `==` 不构成安全边界。
+
+### 验证
+
+- Rust 全量 **146** 单元 + 全部集成 **0 failed / 0 ignored**；JS SDK **20** passed；clippy `-D warnings` 清零；check-version 通过（2.6.4 / 0.2.64）；上游跨语言签名向量逐字节命中保持。
+
 ## [v2.6.3] - 2026-09-28
 
 ### 修复：经济结算收尾——重复注册拒绝、出价脱钩校验、Rejected / DuplicateWork 可达（GAP §2.6/§2.7/§2.8）

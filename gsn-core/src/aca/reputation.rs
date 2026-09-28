@@ -47,10 +47,7 @@ pub struct MultiReputation {
 
 impl MultiReputation {
     pub fn new(did: String) -> Self {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::aca::clock::now_secs();
 
         let mut scores = HashMap::new();
         for dim in ReputationDimension::all() {
@@ -78,10 +75,7 @@ impl MultiReputation {
     /// 获取某维度分数（含时间衰减）
     pub fn get(&self, dim: ReputationDimension) -> f64 {
         let raw = self.scores.get(&dim).copied().unwrap_or(5000.0);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::aca::clock::now_secs();
         let elapsed = now.saturating_sub(self.last_updated);
         let decay_factor = 0.5f64.powf(elapsed as f64 / self.half_life_secs as f64);
         raw * decay_factor
@@ -92,10 +86,7 @@ impl MultiReputation {
     /// 在 record_success / record_failure 之前调用，保证加减分基于
     /// "已衰减到当前时刻" 的分数，而不是未衰减的历史 raw 值。
     fn apply_decay(&mut self) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::aca::clock::now_secs();
         let elapsed = now.saturating_sub(self.last_updated);
         if elapsed > 0 {
             let factor = 0.5f64.powf(elapsed as f64 / self.half_life_secs as f64);

@@ -33,7 +33,19 @@ function stableStringify(value) {
   if (Array.isArray(value)) {
     return '[' + value.map(stableStringify).join(',') + ']';
   }
-  const keys = Object.keys(value).sort();
+  // v2.6.4（GAP §4.4）：按 Unicode 码点序排序，而非 JS 默认的 UTF-16 码元序。
+  // 否则含 astral（补充平面，如 emoji）键名时，JS 与 Rust BTreeMap 的键序分歧，
+  // 三端 canonical 载荷不再逐字节一致。
+  const keys = Object.keys(value).sort((a, b) => {
+    const ca = [...a];
+    const cb = [...b];
+    const n = Math.min(ca.length, cb.length);
+    for (let i = 0; i < n; i++) {
+      const diff = ca[i].codePointAt(0) - cb[i].codePointAt(0);
+      if (diff !== 0) return diff;
+    }
+    return ca.length - cb.length;
+  });
   return (
     '{' +
     keys
@@ -129,7 +141,7 @@ function buildManifest(identity, name, capabilities, opts = {}) {
   const manifest = {
     did: identity.did,
     name,
-    version: opts.version || '2.6.3',
+    version: opts.version || '2.6.4',
     capabilities: [...capabilities],
     endpoints: opts.endpoints || [],
     hardware: {

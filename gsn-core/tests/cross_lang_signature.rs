@@ -46,15 +46,15 @@ fn cross_language_identity_and_signature() {
         "stake": 100,
         "signature": ""
     });
-    assert_eq!(canonical_payload(&obj), UPSTREAM_PAYLOAD.as_bytes());
+    assert_eq!(canonical_payload(&obj).unwrap(), UPSTREAM_PAYLOAD.as_bytes());
 
     // Ed25519 确定性 + canonical 一致 → Rust 签名逐字节命中上游签名
     let signer = Ed25519Signer::new(&keypair);
-    let rust_sig = sign_hex(&obj, &signer);
+    let rust_sig = sign_hex(&obj, &signer).unwrap();
     assert_eq!(rust_sig, UPSTREAM_SIG, "Rust 签名应逐字节命中上游签名");
 
     // Rust 验证上游产生的签名
-    assert!(verify_hex(&obj, UPSTREAM_SIG, pubkey));
+    assert!(verify_hex(&obj, UPSTREAM_SIG, pubkey).unwrap());
 
     // 篡改 name 后，原签名验证失败
     let tampered = json!({
@@ -64,7 +64,7 @@ fn cross_language_identity_and_signature() {
         "stake": 100,
         "signature": UPSTREAM_SIG
     });
-    assert!(!verify_hex(&tampered, UPSTREAM_SIG, pubkey));
+    assert!(!verify_hex(&tampered, UPSTREAM_SIG, pubkey).unwrap());
 }
 
 #[test]
@@ -84,6 +84,6 @@ fn new_nau_identity_signature_roundtrip() {
         "signature": ""
     });
     let signer = Ed25519Signer::new(&keypair);
-    let sig = sign_hex(&obj, &signer);
-    assert!(verify_hex(&obj, &sig, pubkey));
+    let sig = sign_hex(&obj, &signer).unwrap();
+    assert!(verify_hex(&obj, &sig, pubkey).unwrap());
 }

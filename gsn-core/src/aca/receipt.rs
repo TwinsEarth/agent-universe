@@ -71,10 +71,7 @@ impl Receipt {
             metering: ResourceMetering::default(),
             tee_quote: None,
             zk_proof: None,
-            completed_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            completed_at: crate::aca::clock::now_secs(),
             signature: String::new(),
         }
     }
@@ -98,6 +95,10 @@ impl Receipt {
     }
 
     /// 验证结果哈希
+    ///
+    /// 注意（GAP §4.9）：这里比较的是**公开结果摘要**，用 `==` 非常量时间可接受；
+    /// 但**不得**把本函数或这类辅助比较复用到 MAC / 密钥 / HMAC 等秘密边界——
+    /// 秘密比较必须走常量时间。比较公开摘要不构成安全边界假设。
     pub fn verify_result(&self, result: &[u8]) -> bool {
         let mut hasher = Sha256::new();
         hasher.update(result);
@@ -109,18 +110,24 @@ impl Receipt {
         self.status == ReceiptStatus::Disputed
     }
 
-    /// 规范待签名载荷
-    pub fn signing_payload(&self) -> Vec<u8> {
+    /// 规范待签名载荷（v2.6.4：返回 Result，序列化失败不签 null）
+    pub fn signing_payload(&self) -> Result<Vec<u8>, String> {
         canonical_payload(self)
     }
 
-    /// 用执行方密钥对收据签名
+    /// 用执行方密钥对收据签名（便利方法：失败留空签名，verify 必拒绝）
     pub fn sign(&mut self, signer: &Ed25519Signer) {
-        self.signature = sign_hex(self, signer);
+        self.signature = sign_hex(self, signer).unwrap_or_default();
     }
 
-    /// 用执行方公钥验证收据签名
+    /// 显式签名：失败返回错误（GAP §4.2）
+    pub fn try_sign(&mut self, signer: &Ed25519Signer) -> Result<(), String> {
+        self.signature = sign_hex(self, signer)?;
+        Ok(())
+    }
+
+    /// 用执行方公钥验证收据签名（任何错误 → false）
     pub fn verify(&self, pubkey: &[u8]) -> bool {
-        verify_hex(self, &self.signature, pubkey)
+        verify_hex(self, &self.signature, pubkey).unwrap_or(false)
     }
 }

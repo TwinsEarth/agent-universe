@@ -67,6 +67,29 @@ impl Did {
     }
 }
 
+/// 判断公钥是否为弱公钥（GAP §4.6）。
+///
+/// 拒绝：长度不是 32 字节、全零、全 0xFF、或 32 字节完全相同的平凡公钥。
+/// Ed25519 低阶点由签名库在验签时另行负责；这里只拦截明显退化的公钥，
+/// 避免全零 / 平凡密钥被注册成"有效身份"。
+///
+/// 注意：本地派生指纹 [`Did::from_public_key`] 不受此谓词影响（保持三端 8 字节指纹兼容）；
+/// 铸造 / 注册外部身份时应先调用本函数并拒绝弱公钥。
+pub fn is_weak_pubkey(pubkey: &[u8]) -> bool {
+    if pubkey.len() != 32 {
+        return true;
+    }
+    if pubkey.iter().all(|&b| b == 0) {
+        return true;
+    }
+    if pubkey.iter().all(|&b| b == 0xff) {
+        return true;
+    }
+    // 32 字节全部相同（[x;32]），显然不是随机密钥
+    let first = pubkey[0];
+    pubkey.iter().all(|&b| b == first)
+}
+
 impl std::fmt::Display for Did {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
@@ -108,5 +131,25 @@ mod tests {
         assert!(Did::parse("naddaip").is_err());
         assert!(Did::parse("did:aip:").is_err());
         assert!(Did::parse("did:aip").is_err());
+    }
+
+    #[test]
+    fn weak_pubkeys_rejected() {
+        assert!(is_weak_pubkey(&[0u8; 32])); // 全零
+        assert!(is_weak_pubkey(&[0xffu8; 32])); // 全 0xFF
+        assert!(is_weak_pubkey(&[1u8; 32])); // 全相同
+        assert!(is_weak_pubkey(&[])); // 空
+        assert!(is_weak_pubkey(&[1u8; 16])); // 长度不对
+    }
+
+    #[test]
+    fn realistic_pubkey_not_weak() {
+        // cross_lang 测试使用的上游真实公钥：不能被误判弱
+        let pk: [u8; 32] = [
+            0x8a, 0x88, 0xe3, 0xdd, 0x74, 0x09, 0xf1, 0x95, 0xfd, 0x52, 0xdb, 0x2d, 0x3c, 0xba,
+            0x5d, 0x72, 0xca, 0x67, 0x09, 0xbf, 0x1d, 0x94, 0x12, 0x1b, 0xf3, 0x74, 0x88, 0x01,
+            0xb4, 0x0f, 0x6f, 0x5c,
+        ];
+        assert!(!is_weak_pubkey(&pk));
     }
 }

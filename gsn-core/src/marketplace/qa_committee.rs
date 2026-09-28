@@ -130,11 +130,15 @@ impl QaCommittee {
     ///
     /// 要求 n ≥ 3f+1
     pub fn new(n: u32, f: u32) -> Result<Self, String> {
-        if n < 3 * f + 1 {
+        // checked 运算：f 极大时 debug panic / release 回绕会构造出护栏失效的荒谬委员会（GAP §3.3）
+        let min_n = f
+            .checked_mul(3)
+            .and_then(|x| x.checked_add(1))
+            .ok_or_else(|| format!("f={f} 过大：3f+1 溢出 u32，拒绝构造委员会"))?;
+        if n < min_n {
             return Err(format!(
-                "BFT-lite 要求 n ≥ 3f+1，当前 n={}, f={}, 需要 n≥{}",
-                n, f,
-                3 * f + 1
+                "BFT-lite 要求 n ≥ 3f+1，当前 n={}, f={}, 需要 n≥{min_n}",
+                n, f
             ));
         }
         Ok(Self {
@@ -287,7 +291,7 @@ impl QaCommittee {
             .filter(|m| m.vote == QaVote::Silent)
             .count() as u32;
 
-        let quorum = 2 * self.f + 1;
+        let quorum = self.quorum();
 
         // 沉默 > f → 无共识
         if silent_count > self.f {
@@ -330,7 +334,11 @@ impl QaCommittee {
     }
 
     pub fn quorum(&self) -> u32 {
-        2 * self.f + 1
+        // new 已校验 3f+1 不溢出，故 2f+1 必不溢出；checked 仅作防御，溢出时安全降级为 MAX（不可达法定人数）
+        self.f
+            .checked_mul(2)
+            .and_then(|x| x.checked_add(1))
+            .unwrap_or(u32::MAX)
     }
 
     /// 当前轮次 / 视图

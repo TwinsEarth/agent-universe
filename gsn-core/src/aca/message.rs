@@ -62,10 +62,7 @@ impl AcaMessage {
             from_did,
             to_did,
             payload,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            timestamp: crate::aca::clock::now_secs(),
             signature: String::new(),
         }
     }
@@ -108,18 +105,24 @@ impl AcaMessage {
         self.to_did == "*"
     }
 
-    /// 规范待签名载荷
-    pub fn signing_payload(&self) -> Vec<u8> {
+    /// 规范待签名载荷（v2.6.4：返回 Result，序列化失败不签 null）
+    pub fn signing_payload(&self) -> Result<Vec<u8>, String> {
         canonical_payload(self)
     }
 
-    /// 用发送者密钥对消息签名
+    /// 用发送者密钥对消息签名（便利方法：失败时留空签名，verify 必拒绝，不会签 null）
     pub fn sign(&mut self, signer: &Ed25519Signer) {
-        self.signature = sign_hex(self, signer);
+        self.signature = sign_hex(self, signer).unwrap_or_default();
     }
 
-    /// 用发送者公钥验证消息签名
+    /// 显式签名：载荷构造或签名失败时返回错误（GAP §4.2）
+    pub fn try_sign(&mut self, signer: &Ed25519Signer) -> Result<(), String> {
+        self.signature = sign_hex(self, signer)?;
+        Ok(())
+    }
+
+    /// 用发送者公钥验证消息签名（任何错误 → false）
     pub fn verify(&self, pubkey: &[u8]) -> bool {
-        verify_hex(self, &self.signature, pubkey)
+        verify_hex(self, &self.signature, pubkey).unwrap_or(false)
     }
 }

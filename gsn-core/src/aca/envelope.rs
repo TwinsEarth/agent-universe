@@ -75,10 +75,7 @@ impl TaskEnvelope {
             timeout_secs: 300,
             priority: TaskPriority::Normal,
             mcp_tool: None,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
+            created_at: crate::aca::clock::now_secs(),
         }
     }
 

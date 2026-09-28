@@ -1,15 +1,15 @@
 # Agent Universe Client
 
-v2.6.9 跨平台客户端。
+v2.7.0 跨平台客户端。
 
 ## 平台支持
 
 | 平台 | 安装包 | 状态 |
 |------|--------|------|
-| macOS | `macos/Agent Universe_2.6.9_aarch64.dmg` | ✅ |
-| Windows | `windows/Agent Universe_2.6.9_x64_en-US.msi` | ✅ |
+| macOS | `macos/Agent Universe_2.7.0_aarch64.dmg` | ✅ |
+| Windows | `windows/Agent Universe_2.7.0_x64_en-US.msi` | ✅ |
 | Android | `android/app-universal-release-unsigned.apk` | ✅ |
-| Linux | `linux/gsn-daemon-linux-x64-v2.6.9.tar.gz` | ✅ |
+| Linux | `linux/gsn-daemon-linux-x64-v2.7.0.tar.gz` | ✅ |
 | iOS | 见 `ios/README.md` | ⚠️ 需 Apple 证书 |
 
 ## 源码

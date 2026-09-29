@@ -10,6 +10,7 @@ pub mod resource;
 pub mod prompt;
 pub mod server;
 pub mod market_tools;
+pub mod sandbox_tools;
 pub mod stdio;
 pub mod sse;
 

@@ -7,16 +7,27 @@
 
 use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
+use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
 use crate::mcp::tool::ToolDefinition;
+use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// 运行 stdio MCP 服务器（阻塞直到 stdin 关闭）
 pub async fn run_stdio() -> anyhow::Result<()> {
     let market = MarketActorHandle::spawn();
     let bridge = MarketMcpBridge::new(market.clone());
-    let tools = MarketMcpBridge::tool_definitions();
+    let sb_dir = crate::sandbox::default_sandbox_dir(&crate::node::default_data_dir());
+    let sandbox_mgr = Arc::new(Mutex::new(SandboxManager::new(
+        sb_dir,
+        crate::sandbox::config::SandboxConfig::default(),
+        0,
+    )));
+    let sb_bridge = SandboxMcpBridge::new(sandbox_mgr.clone());
+    let mut tools = MarketMcpBridge::tool_definitions();
+    tools.extend(SandboxMcpBridge::tool_definitions());
 
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
@@ -74,7 +85,11 @@ pub async fn run_stdio() -> anyhow::Result<()> {
             McpMethod::ToolsCall => {
                 let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
-                let tool_result = bridge.call(name, &args).await;
+                let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
+                    sb_bridge.call(name, &args).await
+                } else {
+                    bridge.call(name, &args).await
+                };
                 McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or(json!({})))
             }
             McpMethod::ResourcesList => McpResponse::success(id, json!({"resources": []})),

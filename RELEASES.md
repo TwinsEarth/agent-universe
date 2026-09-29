@@ -61,7 +61,8 @@ v1.0.0 (Genesis)
                                                                                                         └── v2.7.6 (Agent Sandbox 核心架构)
                                                                                                               └── v2.7.7 (进程级隔离运行时)
                                                                                                                     └── v2.7.8 (生命周期管理与弹性供给)
-                                                                                                                          └── v2.7.9 (安全边界) ← 当前
+                                                                                                                          └── v2.7.9 (安全边界)
+                                                                                                                                └── v2.8.0 (沙箱集成核心链路 - E2B/K8s API + 7 个 MCP 工具) ← 当前
 ```
 
 ## 大版本详情
@@ -390,6 +391,16 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 ### v2.6.8 - MCP Auth & Hardening（Bearer 闸门/默认拒绝动钱 + 握手状态机 + RequestId Null + 未知工具 isError + LLM 去 panic）
 
 **核心内容**：按 GAP §7.5/§8.3/§8.4/§8.5/§8.8 修 MCP 与 LLM。**§8.8 严重无认证动钱**：HTTP `/api/v1/mcp` 此前不读任何 header/token 即分发 `market_deposit`/`arbitrate`/`settle_task`/`register_agent` 等动钱工具；`handle_post` 增加 `auth_header`/`expected_token` 参数，配置 `MCP_BEARER_TOKEN` 后须带 `Authorization: Bearer <token>`（否则 401），**未配置时默认拒绝全部 10 个写/动钱工具**（安全失败），node.rs 提取 Authorization 头传入。**§8.3**：`RequestId` 加 `Null` 变体，解析/非法请求回 `"id":null`。**§8.4**：`tools/call` 未知工具改正常 result + `isError:true`，不再回协议级 -32001。**§8.5**：McpServer 加 `initialized:bool` 握手状态机，未 initialize 前除 initialize 外全部返回 `-32002 NotInitialized`，`handle_initialize` 读取 `protocolVersion`。**§8.7 局部**：`ToolResult.is_error` 序列化改名 camelCase `isError`。**§7.5**：LLM 五个适配器 `chat()` 不再 `unwrap()`/空 choices `[0]` panic，错误与空数组友好降级。gsn-core **0.2.68**。全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.8.md](releases/v2.6.8.md)。
+
+### v2.8.0 - 沙箱集成核心链路（大版本，gsn-core 0.2.80）
+
+**核心内容**：把 v2.7.6–v2.7.9 的沙箱核心/进程运行时/生命周期/安全边界集成进 daemon 核心执行链路。
+
+- **REST / E2B 兼容（`sandbox/api.rs`）**：纯函数 `handle_api(method, path, body, &mut SandboxManager)`，与 `rest::route` 风格一致、无 I/O 可单测；端点 `POST /api/v1/sandboxes`（201）、`GET`、`GET/{id}`、`POST/{id}/exec`（Paused 自动 wake）、`pause`/`resume`、`DELETE`；E2B 别名 `/v1/sandboxes`、`/v1/sandboxes/{id}/commands`、`/run`；错误码 404/403/400/429/422/500。
+- **node.rs 接入**：`run_api_server` 增加 `Arc<Mutex<SandboxManager>>`，loop 内经 `spawn_blocking` 取锁处理（不阻塞异步运行时）。
+- **MCP 工具（`mcp/sandbox_tools.rs`，7 个）**：`sandbox_create/list/get/run_code/pause/resume/destroy`，复用同一处理器（单一来源）；sse/stdio 双路径接入；mutating 工具无 token 默认拒绝。公共构造 `tool()`/`ParamBuilder` 上移 `mcp/tool.rs`。
+- **Kubernetes API（`sandbox/k8s.rs`）**：生成 `AgentSandbox` CRD 清单 + 示例 + reconcile 步骤，可 `kubectl apply`；当前节点无 K8s，仅生成清单、诚实标注。
+- **验证**：tests/v280_test 5 项；clippy 零警告；全量 Rust、JS 21、回归 14 全绿。详见 [releases/v2.8.0.md](releases/v2.8.0.md)。
 
 ## 小版本更新日志
 

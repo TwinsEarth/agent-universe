@@ -4,6 +4,7 @@
 //! `gsn daemon` 子命令复用，避免逻辑重复。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::sandbox::SandboxManager;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::storage::{PersistentStore, StoredAgent, StoredRelay};
@@ -951,6 +952,7 @@ async fn run_api_server(
     store: Arc<PersistentStore>,
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
+    sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
 ) -> anyhow::Result<()> {
     use crate::api::rest;
     use crate::mcp::sse;
@@ -975,6 +977,7 @@ async fn run_api_server(
         let store = store.clone();
         let peer_cmd_tx = peer_cmd_tx.clone();
         let market = market.clone();
+        let sandbox_mgr = sandbox_mgr.clone();
 
         tokio::spawn(async move {
             // 读取完整请求
@@ -1033,6 +1036,7 @@ async fn run_api_server(
                     sse::handle_post(
                         &body,
                         &market,
+                        &sandbox_mgr,
                         auth_header.as_deref(),
                         expected_token.as_deref(),
                     )
@@ -1058,6 +1062,45 @@ async fn run_api_server(
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
+                return;
+            }
+
+            // ───── Agent Sandbox 端点（v2.8.0，独立分流） ─────
+            if crate::sandbox::is_sandbox_route(path_part) {
+                let mgr = sandbox_mgr.clone();
+                let method_c = method.clone();
+                let path_c = raw_path.clone();
+                let body_c = body.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut guard = mgr.lock().unwrap();
+                    crate::sandbox::handle_sandbox_api(
+                        &method_c, &path_c, &body_c, &mut guard,
+                    )
+                })
+                .await;
+                let (status, payload) = match result {
+                    Ok(x) => x,
+                    Err(_) => (500, serde_json::json!({ "error": "sandbox 任务异常" })),
+                };
+                let status_text = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    400 => "Bad Request",
+                    403 => "Forbidden",
+                    404 => "Not Found",
+                    422 => "Unprocessable Entity",
+                    429 => "Too Many Requests",
+                    _ => "Internal Server Error",
+                };
+                let resp = http_response(
+                    status,
+                    status_text,
+                    payload.to_string(),
+                    "application/json",
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (sandbox {})", method, path_part, status);
                 return;
             }
 
@@ -1258,11 +1301,20 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
 
     let market = MarketActorHandle::spawn_with_store(store.clone());
     println!("✅ Agent Market actor 已启动（账本持久化，重启可恢复）");
+
+    // v2.8.0：Agent Sandbox 管理器（沙箱目录在 data-dir 下）
+    let sb_dir = crate::sandbox::default_sandbox_dir(&args.data_dir);
+    let sandbox_mgr = Arc::new(std::sync::Mutex::new(SandboxManager::new(
+        sb_dir,
+        crate::sandbox::config::SandboxConfig::default(),
+        0,
+    )));
+    println!("✅ Agent Sandbox manager 已启动（/api/v1/sandboxes）");
     println!("✅ gsn-daemon 启动完成");
 
     run_api_server(
         args.listen.clone(), args.api_port, args.mode.clone(),
-        args.port, Instant::now(), store, peer_cmd_tx, market,
+        args.port, Instant::now(), store, peer_cmd_tx, market, sandbox_mgr,
     )
     .await?;
 

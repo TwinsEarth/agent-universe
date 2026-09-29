@@ -90,6 +90,33 @@ impl ToolDefinition {
     }
 }
 
+/// 构造工具定义的便捷函数（公共，供各 MCP 桥接复用）
+pub fn tool(name: &str, description: &str) -> ToolDefinition {
+    ToolDefinition::new(name.to_string(), description.to_string())
+}
+
+/// 参数链式构造扩展（公共）
+pub trait ParamBuilder {
+    fn param(self, name: &str, ty: &str, desc: &str, required: bool) -> Self;
+}
+
+impl ParamBuilder for ToolDefinition {
+    fn param(mut self, name: &str, ty: &str, desc: &str, required: bool) -> Self {
+        let schema = if ty == "object" {
+            serde_json::json!({ "type": "object", "description": desc })
+        } else if ty == "array" {
+            serde_json::json!({ "type": "array", "description": desc })
+        } else {
+            serde_json::json!({ "type": ty, "description": desc })
+        };
+        self.input_schema.properties.insert(name.to_string(), schema);
+        if required {
+            self.input_schema.required.push(name.to_string());
+        }
+        self
+    }
+}
+
 /// 工具调用结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {

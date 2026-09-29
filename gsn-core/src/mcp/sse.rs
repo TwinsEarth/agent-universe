@@ -14,9 +14,12 @@
 
 use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
+use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
 use crate::mcp::tool::ToolResult;
+use crate::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 /// MCP HTTP 处理结果
 pub struct McpHttp {
@@ -37,6 +40,7 @@ pub struct McpHttp {
 pub async fn handle_post(
     body: &str,
     market: &MarketActorHandle,
+    sandbox_mgr: &Arc<Mutex<SandboxManager>>,
     auth_header: Option<&str>,
     expected_token: Option<&str>,
 ) -> McpHttp {
@@ -61,7 +65,9 @@ pub async fn handle_post(
     }
 
     let bridge = MarketMcpBridge::new(market.clone());
-    let tools = MarketMcpBridge::tool_definitions();
+    let sb_bridge = SandboxMcpBridge::new(sandbox_mgr.clone());
+    let mut tools = MarketMcpBridge::tool_definitions();
+    tools.extend(SandboxMcpBridge::tool_definitions());
 
     // 解析 JSON-RPC（v2.6.8：解析失败回 id=null，符合 JSON-RPC 规范 §8.3）
     let raw: Value = match serde_json::from_str(body) {
@@ -132,7 +138,11 @@ pub async fn handle_post(
                     serde_json::to_value(tr).unwrap_or(json!({})),
                 ));
             }
-            let tool_result = bridge.call(name, &args).await;
+            let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
+                sb_bridge.call(name, &args).await
+            } else {
+                bridge.call(name, &args).await
+            };
             McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or(json!({})))
         }
         McpMethod::ResourcesList => McpResponse::success(id, json!({"resources": []})),
@@ -168,13 +178,17 @@ fn is_mutating_tool(name: &str) -> bool {
             | "market_open_dispute"
             | "market_arbitrate"
             | "market_deposit"
+            | "sandbox_create"
+            | "sandbox_destroy"
+            | "sandbox_pause"
+            | "sandbox_resume"
+            | "sandbox_run_code"
     )
 }
 
 fn is_known_tool(name: &str) -> bool {
-    MarketMcpBridge::tool_definitions()
-        .iter()
-        .any(|t| t.name == name)
+    MarketMcpBridge::tool_definitions().iter().any(|t| t.name == name)
+        || SandboxMcpBridge::tool_definitions().iter().any(|t| t.name == name)
 }
 
 /// 处理 GET /api/v1/mcp（SSE 流的首帧说明）
@@ -182,7 +196,8 @@ fn is_known_tool(name: &str) -> bool {
 /// 完整 SSE 长连接需要服务器保持连接；在无状态响应中返回一个 event-stream
 /// 的初始化帧，告知客户端工具数量与改用 POST 的无状态端点。
 pub fn handle_get() -> McpHttp {
-    let tools = MarketMcpBridge::tool_definitions();
+    let mut tools = MarketMcpBridge::tool_definitions();
+    tools.extend(SandboxMcpBridge::tool_definitions());
     // SSE 格式：event: xxx\ndata: yyy\n\n
     let init_data = serde_json::json!({
         "transport": "streamable-http",

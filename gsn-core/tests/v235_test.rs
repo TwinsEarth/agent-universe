@@ -11,7 +11,20 @@ use gsn_core::api::market_actor::MarketActorHandle;
 use gsn_core::api::rest::{route, NodeInfo};
 use gsn_core::mcp::market_tools::MarketMcpBridge;
 use gsn_core::mcp::sse;
+use gsn_core::sandbox::config::SandboxConfig;
+use gsn_core::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
+
+/// 测试用沙箱管理器（MCP handle_post 现需此参数）
+fn sandbox_mgr() -> Arc<Mutex<SandboxManager>> {
+    let dir = std::env::temp_dir().join("au-v235-mcp-sb");
+    Arc::new(Mutex::new(SandboxManager::new(
+        dir,
+        SandboxConfig::default(),
+        0,
+    )))
+}
 
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -358,15 +371,17 @@ fn test_mcp_http_initialize_and_tools_list() {
             "jsonrpc":"2.0","id":1,"method":"initialize",
             "params":{"protocolVersion":"2024-11-05"}
         });
-        let r = sse::handle_post(&init.to_string(), &market, None, None).await;
+        let sb = sandbox_mgr();
+        let r = sse::handle_post(&init.to_string(), &market, &sb, None, None).await;
         assert_eq!(r.status, 200);
         assert!(r.body.contains("serverInfo"));
 
         // tools/list
         let list = json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}});
-        let r = sse::handle_post(&list.to_string(), &market, None, None).await;
+        let r = sse::handle_post(&list.to_string(), &market, &sb, None, None).await;
         assert_eq!(r.status, 200);
         assert!(r.body.contains("market_register_agent"));
+        assert!(r.body.contains("sandbox_create"));
     });
 }
 
@@ -374,6 +389,7 @@ fn test_mcp_http_initialize_and_tools_list() {
 fn test_mcp_http_tools_call() {
     rt().block_on(async {
         let market = MarketActorHandle::spawn();
+        let sb = sandbox_mgr();
 
         let call = json!({
             "jsonrpc":"2.0","id":3,"method":"tools/call",
@@ -386,6 +402,7 @@ fn test_mcp_http_tools_call() {
         let r = sse::handle_post(
             &call.to_string(),
             &market,
+            &sb,
             Some("Bearer secret-tok"),
             Some("secret-tok"),
         )
@@ -396,12 +413,12 @@ fn test_mcp_http_tools_call() {
         assert!(!r.body.contains("tool executed"));
 
         // 未配置令牌时写工具应被拒（默认安全）
-        let denied = sse::handle_post(&call.to_string(), &market, None, None).await;
+        let denied = sse::handle_post(&call.to_string(), &market, &sb, None, None).await;
         assert_eq!(denied.status, 400);
         assert!(denied.body.contains("Unauthorized") || denied.body.contains("禁用"));
 
         // 令牌错误应 401
-        let bad = sse::handle_post(&call.to_string(), &market, Some("Bearer wrong"), Some("secret-tok")).await;
+        let bad = sse::handle_post(&call.to_string(), &market, &sb, Some("Bearer wrong"), Some("secret-tok")).await;
         assert_eq!(bad.status, 401);
 
         // GET 返回 SSE
@@ -416,8 +433,9 @@ fn test_mcp_http_notification_returns_202() {
     rt().block_on(async {
         let market = MarketActorHandle::spawn();
         // notifications/initialized 无 id
+        let sb = sandbox_mgr();
         let notif = json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});
-        let r = sse::handle_post(&notif.to_string(), &market, None, None).await;
+        let r = sse::handle_post(&notif.to_string(), &market, &sb, None, None).await;
         assert_eq!(r.status, 202);
     });
 }

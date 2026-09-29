@@ -8,7 +8,7 @@
 
 use crate::api::market_actor::{MarketActorHandle, MarketResponse};
 use crate::mcp::tool::*;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 /// 市场 MCP 桥接
 pub struct MarketMcpBridge {
@@ -150,30 +150,6 @@ impl MarketMcpBridge {
     }
 }
 
-/// 构造工具定义的辅助
-fn tool(name: &str, description: &str) -> ToolDefinition {
-    ToolDefinition::new(name.to_string(), description.to_string())
-}
 
-/// 参数构造辅助（trait 扩展，链式）
-trait ParamBuilder {
-    fn param(self, name: &str, ty: &str, desc: &str, required: bool) -> Self;
-}
-
-impl ParamBuilder for ToolDefinition {
-    fn param(mut self, name: &str, ty: &str, desc: &str, required: bool) -> Self {
-        // object/array 类型在 schema 里补充对应结构
-        let schema = if ty == "object" {
-            json!({"type": "object", "description": desc})
-        } else if ty == "array" {
-            json!({"type": "array", "description": desc})
-        } else {
-            json!({"type": ty, "description": desc})
-        };
-        self.input_schema.properties.insert(name.to_string(), schema);
-        if required {
-            self.input_schema.required.push(name.to_string());
-        }
-        self
-    }
-}
+// 构造工具定义与参数链式构造的 tool() / ParamBuilder 已上移到
+// mcp::tool（公共），通过顶部 `use crate::mcp::tool::*` 引入。

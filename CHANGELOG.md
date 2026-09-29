@@ -2,6 +2,20 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.8.0] - 2026-09-29
+
+### Agent Sandbox 集成核心链路（大版本）
+
+- 新增 `sandbox/api.rs`：REST + E2B 兼容纯函数处理器 `handle_api`；
+  端点 /api/v1/sandboxes（创建/list/get/exec/pause/resume/destroy）；
+  E2B 别名 /v1/sandboxes、/commands；错误码 404/403/400/429/422/500；
+- node.rs 经 `spawn_blocking` 独立分流接入 SandboxManager（不阻塞异步运行时）；
+- 新增 `mcp/sandbox_tools.rs`：7 个沙箱 MCP 工具（create/list/get/run_code/pause/resume/destroy）；
+  sse/stdio 双路径接入；mutating 工具无 token 默认拒绝；
+  公共构造 tool()/ParamBuilder 上移 mcp/tool.rs；
+- 新增 `sandbox/k8s.rs`：AgentSandbox CRD 清单 + 示例 + reconcile 步骤（可 kubectl apply）；
+- v280 测试 5 项全过；clippy 零警告；全量 Rust、JS 21、回归 14 全绿。
+
 ## [v2.7.9] - 2026-09-29
 
 ### Agent Sandbox 安全边界

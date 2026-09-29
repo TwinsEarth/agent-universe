@@ -317,6 +317,22 @@ npm install @twinsearth/agent-universe
 | v2.6.4 | **Consensus Hardening** | **BFT checked 算术（溢出安全）+ 规范签名 Result 化/递归剥离 signature + JS 码点序跨语言键序 + PROTOCOL_VERSION 契约 + 弱公钥拒绝 + Clock 端口（消除 1970 panic）** |
 | v2.6.5 | **Topology Truth** | **route_hops 按真实 lca（去常量 7）+ 边数 N→2N 线性验证 + 房间 BTreeSet 确定性分桶（与插入顺序无关）+ fanin 补上行边 + 协议版本 env! 唯一来源** |
 | v2.6.6 | **HTTP & Storage Hardening** | **persist 锁毒化根除（into_inner）+ accept 容错不退进程 + 写操作强制 POST（405）+ 错误码机器前缀替代中文子串 + url_decode off-by-one** |
+| v2.6.7 | **Memory Hardening** | **真 SHA-256 链存载荷（+verify_chain 定位首个断裂）+ 真 LRU（last_used 逻辑时钟）+ 派生质量防污染（成功率×10000，删除自报 weight）+ 盲猜死循环 break** |
+| v2.6.8 | **MCP Auth** | **Bearer 闸门（未配置默认拒绝全部动钱工具）+ MCP 握手状态机 + RequestId Null + 未知工具 isError + LLM 五适配器去 panic** |
+| v2.6.9 | **Doc Honesty** | **文档/测试一致性：SSE 假流/假网络分区/回归套件误导标注诚实化，停止过度承诺** |
+| v2.7.0 | **Client Release** | **首次全平台客户端分发大版本（macOS/Windows/Linux），每 9 小版本后的大版本才重建一次客户端** |
+| v2.7.1 | **stableStringify** | **undefined 键省略/BigInt·Date 显式 TypeError，杜绝静默非法载荷签名** |
+| v2.7.2 | **Nat Honesty** | **NAT 占位检测返 Unknown 不再猜 PortRestrictedCone，真实分类交 AutoNAT** |
+| v2.7.3 | **Deploy Fixes** | **发布缺 state 字段 422（serde default）+ 认证验收后证据自动升 Verified（打通结算死路）** |
+| v2.7.4 | **Restart Restore** | **重启后 agents/tasks 注入内存 market（此前只 load 不注入，HTTP 全空）** |
+| v2.7.5 | **DCUtR + Relay Pool** | **relay 直连打洞升级跟踪 + 多 relay 多通道同时在线，失效自动切换** |
+| v2.7.6 | **Sandbox Core** | **Agent Sandbox 核心架构：IsolationLevel/ResourceLimits/NetworkPolicy/FilesystemPolicy 类型与安全默认** |
+| v2.7.7 | **Process Runtime** | **进程级隔离运行时（不依赖 Docker/KVM）：独立临时目录 + env_clear + ulimit + 超时强杀** |
+| v2.7.8 | **Sandbox Lifecycle** | **SandboxManager：预热池 + 休眠唤醒 + Checkpoint/Fork/Reset + evict_idle** |
+| v2.7.9 | **Sandbox Security** | **NetworkGuard 白名单 + AuditLog append-only + PermissionChecker scope 校验** |
+| v2.8.0 | **Sandbox Integration** | **沙箱接入 daemon 主链路：REST/E2B 兼容 API + 7 个 MCP 工具 + K8s CRD 清单** |
+| v2.8.1 | **Windows Exec** | **Windows 直接 spawn 解释器（去 bash/python3 硬编码），print(1+1) 在 Windows 真机 200** |
+| v2.8.2 | **Rust-native Timeout** | **超时改 Rust 原生 spawn+读线程+try_wait kill（去外部 timeout/gtimeout），macOS CI 变绿** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

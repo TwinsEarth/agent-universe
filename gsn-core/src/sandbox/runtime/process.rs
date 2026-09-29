@@ -175,7 +175,10 @@ impl super::super::Sandbox for ProcessSandbox {
         self.id = id;
         self.apply(LifecycleAction::Create)?;
 
-        let base = std::env::temp_dir();
+        let base = cfg
+            .work_dir_base
+            .clone()
+            .unwrap_or_else(std::env::temp_dir);
         let dir = base.join(format!("au-sandbox-{}", self.id));
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError::Internal(e.to_string()))?;
         // 写入初始文件

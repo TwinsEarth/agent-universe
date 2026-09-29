@@ -2,6 +2,17 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.8] - 2026-09-29
+
+### Agent Sandbox 生命周期管理与弹性供给
+
+- 新增 `sandbox/manager.rs`：SandboxManager；
+- 预热池（warm pool）、acquire/release、休眠唤醒 wake；
+- checkpoint 工作目录快照、fork_from 状态复用（活沙箱或 checkpoint）；
+- evict_idle 回收休眠沙箱并补预热、shutdown 清理；
+- SandboxConfig 新增 work_dir_base，统一沙箱目录；
+- v278 测试 13 项全过。
+
 ## [v2.7.7] - 2026-09-29
 
 ### Agent Sandbox 进程级隔离运行时

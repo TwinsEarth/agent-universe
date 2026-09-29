@@ -5,6 +5,7 @@
 //! 调用方需要放开某项能力时必须显式声明，不能依赖宽松默认值。
 
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// 隔离级别（如实标注，不得静默升级/降级）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,6 +128,8 @@ pub struct SandboxConfig {
     pub allow_shell: bool,
     /// 环境变量（白名单；不继承宿主环境，长期密钥不得进入）
     pub env: Vec<(String, String)>,
+    /// 沙箱工作目录的父目录（None = 系统临时目录）。管理器统一编排时指定。
+    pub work_dir_base: Option<PathBuf>,
 }
 
 impl Default for SandboxConfig {
@@ -141,6 +144,7 @@ impl Default for SandboxConfig {
             initial_files: Vec::new(),
             allow_shell: false,
             env: Vec::new(),
+            work_dir_base: None,
         }
     }
 }

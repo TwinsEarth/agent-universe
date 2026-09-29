@@ -2,6 +2,17 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.7] - 2026-09-29
+
+### Agent Sandbox 进程级隔离运行时
+
+- 新增 `sandbox/runtime/process.rs`：`ProcessSandbox` 实现 Sandbox trait；
+- 独立临时目录、safe_join 拒绝对路径/`..` 逃逸、env_clear 不继承宿主环境；
+- timeout 强杀 + ulimit 进程/句柄上限；白名单解释器，shell 需显式 allow_shell；
+- run_code(CodeLanguage, code) 支持 Python/JavaScript；write_file/read_file 沙箱间隔离；
+- 修复默认 max_processes 64 导致 node V8 worker 线程 abort，提升到 512；
+- v277 测试 17 项全过（含超时强杀、路径逃逸、文件隔离）。
+
 ## [v2.7.6] - 2026-09-29
 
 ### Agent Sandbox 核心架构（大版本重构第一步）

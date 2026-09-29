@@ -43,6 +43,8 @@ pub mod state;
 pub mod docker;
 pub mod firecracker;
 
+pub mod runtime;
+
 // 兼容旧导出（v2.4.0 名称），逐步迁移到 config:: 命名空间
 pub use config::IsolationLevel;
 pub use error::SandboxError;

@@ -60,7 +60,9 @@ impl Default for ResourceLimits {
             cpu_millis: 1000,
             mem_mb: 256,
             disk_mb: 128,
-            max_processes: 64,
+            // 现代运行时（V8/node 等）启动即需 worker 线程，64 会 abort；
+            // 512 覆盖解释器自身线程，仍限制子进程无限扩张
+            max_processes: 512,
             max_open_files: 256,
             timeout_ms: 30_000,
         }

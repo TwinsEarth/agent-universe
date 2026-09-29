@@ -40,6 +40,14 @@ pub struct StoredTask {
     pub owner: Option<String>,
     pub budget: i64,
     pub created_at: String,
+    /// v2.8.4: 中标价（GAP §3.2，恢复不再为 None 导致按满额预算支付）
+    pub winner_price: Option<i64>,
+    /// v2.8.4: 验证策略 JSON（GAP §3.2，恢复不再硬编码 None 豁免证据闸门）
+    pub verification_policy: String,
+    /// v2.8.4: 发布者
+    pub requester: String,
+    /// v2.8.4: 截止时间（Unix 毫秒）
+    pub deadline: i64,
 }
 
 /// v2.5.5: 持久化的 Relay 节点记录
@@ -93,7 +101,29 @@ impl PersistentStore {
                 state      TEXT NOT NULL,
                 owner      TEXT,
                 budget     INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                winner_price      INTEGER,
+                verification_policy TEXT NOT NULL DEFAULT '',
+                requester  TEXT NOT NULL DEFAULT '',
+                deadline   INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- v2.8.4: 结果信封（GAP §3.2，已验收未结算任务重启后可结算）
+            CREATE TABLE IF NOT EXISTS result_envelopes (
+                task_id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL
+            );
+
+            -- v2.8.4: 信誉（GAP §3.2，重启后信誉不丢失）
+            CREATE TABLE IF NOT EXISTS reputations (
+                agent_id TEXT PRIMARY KEY,
+                payload  TEXT NOT NULL
+            );
+
+            -- v2.8.4: 质押（GAP §3.2，重启后质押资金仍可出价/罚没）
+            CREATE TABLE IF NOT EXISTS stakes (
+                agent_id TEXT PRIMARY KEY,
+                payload  TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS kv_meta (
@@ -128,6 +158,9 @@ impl PersistentStore {
 
         // v2.8.3: 旧库迁移（补哈希链列并重算存量行），幂等
         migrate_ledger_chain(&conn)?;
+
+        // v2.8.4: 旧库迁移（tasks 补 winner_price/verification_policy/requester/deadline 列），幂等
+        migrate_tasks_v284(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -184,13 +217,18 @@ impl PersistentStore {
     pub fn upsert_task(&self, task: &StoredTask) -> anyhow::Result<()> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
-            "INSERT INTO tasks (task_id, goal, state, owner, budget, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO tasks (task_id, goal, state, owner, budget, created_at,
+                                winner_price, verification_policy, requester, deadline)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(task_id) DO UPDATE SET
                 goal = excluded.goal,
                 state = excluded.state,
                 owner = excluded.owner,
-                budget = excluded.budget",
+                budget = excluded.budget,
+                winner_price = excluded.winner_price,
+                verification_policy = excluded.verification_policy,
+                requester = excluded.requester,
+                deadline = excluded.deadline",
             params![
                 task.task_id,
                 task.goal,
@@ -198,6 +236,10 @@ impl PersistentStore {
                 task.owner,
                 task.budget,
                 task.created_at,
+                task.winner_price,
+                task.verification_policy,
+                task.requester,
+                task.deadline,
             ],
         )?;
         Ok(())
@@ -207,7 +249,8 @@ impl PersistentStore {
     pub fn load_tasks(&self) -> anyhow::Result<Vec<StoredTask>> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = conn.prepare(
-            "SELECT task_id, goal, state, owner, budget, created_at FROM tasks",
+            "SELECT task_id, goal, state, owner, budget, created_at,
+                    winner_price, verification_policy, requester, deadline FROM tasks",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredTask {
@@ -217,6 +260,10 @@ impl PersistentStore {
                 owner: row.get(3)?,
                 budget: row.get(4)?,
                 created_at: row.get(5)?,
+                winner_price: row.get(6)?,
+                verification_policy: row.get(7)?,
+                requester: row.get(8)?,
+                deadline: row.get(9)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -246,6 +293,43 @@ impl PersistentStore {
             return Ok(Some(r?));
         }
         Ok(None)
+    }
+
+    /// v2.8.4: 写入 JSON 行（结果信封/信誉/质押通用，GAP §3.2）。
+    /// table/id_col 仅由代码内固定常量传入（非用户输入）。
+    pub fn put_json_row(
+        &self,
+        table: &str,
+        id_col: &str,
+        id: &str,
+        payload: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let sql = format!(
+            "INSERT INTO {table} ({id_col}, payload) VALUES (?1, ?2)
+             ON CONFLICT({id_col}) DO UPDATE SET payload = excluded.payload"
+        );
+        conn.execute(&sql, params![id, payload])?;
+        Ok(())
+    }
+
+    /// v2.8.4: 读取全部 JSON 行（id, payload）。
+    pub fn load_json_rows(
+        &self,
+        table: &str,
+        id_col: &str,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let sql = format!("SELECT {id_col}, payload FROM {table}");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     /// Agent 总数
@@ -584,6 +668,31 @@ fn migrate_ledger_chain(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v2.8.4: 旧库迁移——tasks 补 winner_price/verification_policy/requester/deadline 列（GAP §3.2）。幂等。
+fn migrate_tasks_v284(conn: &Connection) -> anyhow::Result<()> {
+    let has_policy = {
+        let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for c in cols {
+            if c? == "verification_policy" {
+                found = true;
+            }
+        }
+        found
+    };
+    if has_policy {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE tasks ADD COLUMN winner_price INTEGER;
+         ALTER TABLE tasks ADD COLUMN verification_policy TEXT NOT NULL DEFAULT '';
+         ALTER TABLE tasks ADD COLUMN requester TEXT NOT NULL DEFAULT '';
+         ALTER TABLE tasks ADD COLUMN deadline INTEGER NOT NULL DEFAULT 0;",
+    )?;
+    Ok(())
+}
+
 /// 行映射：relay
 fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
     Ok(StoredRelay {
@@ -632,6 +741,10 @@ mod tests {
             owner: Some("owner".into()),
             budget: 200,
             created_at: "10".into(),
+            winner_price: Some(150),
+            verification_policy: r#"{"BftLite":{"n":3,"f":1}}"#.into(),
+            requester: "req".into(),
+            deadline: 1000,
         }
     }
 
@@ -656,6 +769,11 @@ mod tests {
         assert_eq!(tasks[0].state, "Open");
         assert_eq!(tasks[0].owner.as_deref(), Some("owner"));
         assert_eq!(tasks[0].budget, 200);
+        // v2.8.4: 证据闸门/结算字段往返（GAP §3.2，重启后不回 None）
+        assert_eq!(tasks[0].winner_price, Some(150));
+        assert_eq!(tasks[0].requester, "req");
+        assert_eq!(tasks[0].deadline, 1000);
+        assert!(tasks[0].verification_policy.contains("BftLite"));
     }
 
     #[test]

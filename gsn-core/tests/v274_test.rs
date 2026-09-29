@@ -12,7 +12,7 @@
 //!
 //! 本测试不依赖网络端口：直接构造 `AgentMarket` 与 `StoredAgent/StoredTask`。
 
-use gsn_core::marketplace::{AgentMarket, TaskState};
+use gsn_core::marketplace::{AgentMarket, TaskState, VerificationPolicy};
 use gsn_core::storage::{StoredAgent, StoredTask};
 
 /// ① `label()` 与 `from_label()` 双向往返一致；未知/坏值一律回 `Open`。
@@ -59,6 +59,10 @@ fn test_restore_tasks_from_store_visible() {
             owner: Some("worker-1".to_string()),
             budget: 5000,
             created_at: "1700000000000".to_string(),
+            winner_price: Some(4200),
+            verification_policy: r#"{"BftLite":{"n":3,"f":1}}"#.to_string(),
+            requester: "requester-1".to_string(),
+            deadline: 1800000000000,
         },
         StoredTask {
             task_id: "task-restore-2".to_string(),
@@ -67,6 +71,10 @@ fn test_restore_tasks_from_store_visible() {
             owner: None,
             budget: 3000,
             created_at: "1700000001000".to_string(),
+            winner_price: None,
+            verification_policy: r#""None""#.to_string(),
+            requester: String::new(),
+            deadline: 0,
         },
     ];
     market.restore_tasks_from_store(stored);
@@ -75,8 +83,17 @@ fn test_restore_tasks_from_store_visible() {
     let t1 = market.get_task("task-restore-1").expect("task-restore-1 应在内存");
     assert_eq!(t1.state, TaskState::Settled, "SETTLED 应被正确反解析");
     assert_eq!(t1.owner.as_deref(), Some("worker-1"));
+    // v2.8.4: 恢复不放宽证据闸门（GAP §3.2），BftLite 不回 None
+    assert!(
+        matches!(t1.verification_policy, VerificationPolicy::BftLite { n: 3, f: 1 }),
+        "BftLite 策略应正确恢复，实际 {:?}",
+        t1.verification_policy
+    );
+    assert_eq!(t1.winner_price.map(|m| m.as_i64()), Some(4200));
+    assert_eq!(t1.requester, "requester-1");
     let t2 = market.get_task("task-restore-2").expect("task-restore-2 应在内存");
     assert_eq!(t2.state, TaskState::Open);
+    assert!(matches!(t2.verification_policy, VerificationPolicy::None));
 }
 
 /// ③ 恢复 agents：磁盘快照的 agent 应注入内存，stake/reputation 正确还原。

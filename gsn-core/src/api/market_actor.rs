@@ -269,6 +269,20 @@ impl MarketActorHandle {
                 Err(e) => eprintln!("⚠️ tasks 读取失败: {e}"),
             }
 
+            // v2.8.4: 启动恢复结果信封/信誉/质押（GAP §3.2，重启后证据闸门不放宽、
+            // 已验收未结算任务可结算、质押资金仍可出价/罚没）。
+            match store.load_json_rows("result_envelopes", "task_id") {
+                Ok(rows) => market.restore_results_from_store(rows),
+                Err(e) => eprintln!("⚠️ 结果信封读取失败: {e}"),
+            }
+            let rep_rows = store
+                .load_json_rows("reputations", "agent_id")
+                .unwrap_or_default();
+            let stake_rows = store
+                .load_json_rows("stakes", "agent_id")
+                .unwrap_or_default();
+            market.restore_reputation_state_from_store(rep_rows, stake_rows);
+
             // v2.8.3: 水位 = 成功恢复的逻辑记录数（GAP §3.6，不再用物理 COUNT，
             // 物理行数含损坏行会导致水位超前、账本空洞）。
             let mut ledger_water = restored;
@@ -293,6 +307,16 @@ impl MarketActorHandle {
                 }
                 for t in market.snapshot_tasks_for_store() {
                     let _ = store.upsert_task(&t);
+                }
+                // v2.8.4: 结果信封/信誉/质押快照（GAP §3.2，幂等覆盖）。
+                for (id, payload) in market.snapshot_results_for_store() {
+                    let _ = store.put_json_row("result_envelopes", "task_id", &id, &payload);
+                }
+                for (id, payload) in market.snapshot_reputations_for_store() {
+                    let _ = store.put_json_row("reputations", "agent_id", &id, &payload);
+                }
+                for (id, payload) in market.snapshot_stakes_for_store() {
+                    let _ = store.put_json_row("stakes", "agent_id", &id, &payload);
                 }
             }
         });

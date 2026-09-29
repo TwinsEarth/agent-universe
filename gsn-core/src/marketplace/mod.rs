@@ -242,6 +242,16 @@ impl AgentMarket {
         self.tasks.get(task_id)
     }
 
+    /// v2.8.4: 读取任务结果信封（GAP §3.2，验证结果信封重启后存活）。
+    pub fn get_result(&self, task_id: &str) -> Option<&ResultEnvelope> {
+        self.results.get(task_id)
+    }
+
+    /// v2.8.4: 资格查询（GAP §3.2，验证质押恢复后仍满足资格）。
+    pub fn is_eligible(&self, agent_id: &str, min_reputation: f64) -> bool {
+        self.reputation_mgr.is_eligible(agent_id, min_reputation)
+    }
+
     // ===== F3: 发现与匹配 =====
 
     /// 按技能发现 Agent
@@ -847,8 +857,34 @@ impl AgentMarket {
                 owner: t.owner.clone(),
                 budget: t.budget.as_i64(),
                 created_at: t.created_at.to_string(),
+                // v2.8.4: 证据闸门/结算字段（GAP §3.2，不再恢复为 None 豁免/满额）
+                winner_price: t.winner_price.map(|m| m.as_i64()),
+                verification_policy: serde_json::to_string(&t.verification_policy)
+                    .unwrap_or_default(),
+                requester: t.requester.clone(),
+                deadline: t.deadline as i64,
             })
             .collect()
+    }
+
+    /// v2.8.4: 快照全部结果信封（GAP §3.2，已验收未结算任务重启后可结算）。
+    pub fn snapshot_results_for_store(&self) -> Vec<(String, String)> {
+        self.results
+            .iter()
+            .filter_map(|(id, env)| {
+                serde_json::to_string(env).ok().map(|payload| (id.clone(), payload))
+            })
+            .collect()
+    }
+
+    /// v2.8.4: 快照全部信誉（GAP §3.2）。
+    pub fn snapshot_reputations_for_store(&self) -> Vec<(String, String)> {
+        self.reputation_mgr.export_reputations()
+    }
+
+    /// v2.8.4: 快照全部质押（GAP §3.2）。
+    pub fn snapshot_stakes_for_store(&self) -> Vec<(String, String)> {
+        self.reputation_mgr.export_stakes()
     }
 
     /// v2.7.4: 从磁盘快照恢复 agents 到内存 market（重启后 /agents、/stats 可见）。
@@ -911,6 +947,25 @@ impl AgentMarket {
         tasks: Vec<crate::storage::StoredTask>,
     ) {
         for t in tasks {
+            // v2.8.4: 恢复验证策略（GAP §3.2）。新持久化的 None 也会序列化为
+            // "None" 并正确解析回 None（用户真实意图）；仅遗留空/坏值回 None 并显式警告。
+            let policy = match serde_json::from_str::<VerificationPolicy>(&t.verification_policy) {
+                Ok(p) => p,
+                Err(_) => {
+                    if !t.verification_policy.is_empty() {
+                        eprintln!(
+                            "⚠️ 任务 {} 验证策略持久化损坏，回退 None（豁免闸门，请人工核查）",
+                            t.task_id
+                        );
+                    } else {
+                        eprintln!(
+                            "⚠️ 任务 {} 为 v2.8.4 之前遗留数据、未持久化验证策略，回退 None（请人工核查）",
+                            t.task_id
+                        );
+                    }
+                    VerificationPolicy::None
+                }
+            };
             let spec = TaskSpec {
                 task_id: t.task_id,
                 goal: t.goal,
@@ -920,16 +975,43 @@ impl AgentMarket {
                 trace: vec![],
                 owner: t.owner,
                 budget: Money::new(t.budget),
-                winner_price: None,
-                deadline: 0,
+                winner_price: t.winner_price.map(Money::new),
+                deadline: t.deadline.max(0) as u64,
                 required_skills: vec![],
-                verification_policy: VerificationPolicy::None,
-                requester: String::new(),
+                verification_policy: policy,
+                requester: t.requester,
                 state: TaskState::from_label(&t.state),
                 created_at: t.created_at.parse().unwrap_or(0),
             };
             self.tasks.insert(spec.task_id.clone(), spec);
         }
+    }
+
+    /// v2.8.4: 从磁盘恢复结果信封（GAP §3.2，已验收未结算任务重启后可结算）。
+    pub fn restore_results_from_store(&mut self, rows: Vec<(String, String)>) {
+        let mut n = 0usize;
+        for (id, payload) in rows {
+            if let Ok(env) = serde_json::from_str::<ResultEnvelope>(&payload) {
+                self.results.insert(id, env);
+                n += 1;
+            } else {
+                eprintln!("⚠️ 结果信封持久化损坏已跳过：{id}");
+            }
+        }
+        if n > 0 {
+            println!("✅ 结果信封已从磁盘恢复：{n} 个");
+        }
+    }
+
+    /// v2.8.4: 从磁盘恢复信誉与质押（GAP §3.2，重启后仍可出价/罚没）。
+    pub fn restore_reputation_state_from_store(
+        &mut self,
+        reputations: Vec<(String, String)>,
+        stakes: Vec<(String, String)>,
+    ) {
+        self.reputation_mgr
+            .import_reputations(reputations);
+        self.reputation_mgr.import_stakes(stakes);
     }
 }
 

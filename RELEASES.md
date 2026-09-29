@@ -65,7 +65,8 @@ v1.0.0 (Genesis)
                                                                                                                                 └── v2.8.0 (沙箱集成核心链路 - E2B/K8s API + 7 个 MCP 工具)
                                                                                                                                       ├── v2.8.1 (Windows exec 修复 - 去 bash/python3 硬编码，直接 spawn)
                                                                                                                                       └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时)
-                                                                                                                                            └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6) ← 当前
+                                                                                                                                            └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6)
+                                                                                                                                                  └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2) ← 当前
 ```
 
 ## 大版本详情
@@ -474,6 +475,15 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **水位/吞错/恢复（§3.6）**：新增 `load_ledger_records_checked()` 返回 `{records, corrupt}`，坏行显式报告不静默跳过；初始水位 = 成功恢复的逻辑记录数（不再用物理 COUNT）；写后逐条 append，成功才推进水位、失败 eprintln 下轮重试。
 - **边界**：只声称 **tamper-evident**（能重写整份文件者仍可重算整链并更新锚定），非 tamper-proof。
 - **验证**：新增 4 个对抗测试（payload 篡改→Err(1)、head 锚定篡改→Err(MAX)、append 链重开一致、坏行进 corrupt）；`cargo test --lib` 167 passed，集成 251 passed，0 failed。
+
+### v2.8.4 - 重启恢复证据闸门（gsn-core 0.2.84）
+
+**核心问题**：《v2.8.2 增量审计》§3.2【critical】——`restore_tasks_from_store` 对快照未存字段用安全默认值硬编码（`verification_policy: None` 豁免结算闸门、`winner_price: None` 按满额预算支付），使“重启守护进程”本身成为绕过路径；结果信封、信誉、质押从不落盘。
+
+- **任务快照补齐结算字段**：`StoredTask` 加 `winner_price`/`verification_policy`/`requester`/`deadline` 4 字段；旧库 `migrate_tasks_v284()` 幂等加列；恢复时策略三分支（解析成功用值，损坏/遗留回 None 并 `eprintln!` 人工核查，不再静默），`winner_price` 缺失不再满额兜底。
+- **结果信封落盘**：新增 `result_envelopes` 表与 `snapshot/restore_results`，公共 `get_result()`；已验收未结算任务重启后可结算。
+- **信誉/质押落盘**：新增 `reputations`/`stakes` 两表；`ReputationManager` 增 export/import；公共 `is_eligible()`；重启后仍可出价、罚没路径不再是死的。
+- **验证**：新增 `tests/v284_test.rs` 的“关闭再打开”对抗测试（策略不回 None、winner_price=4000、结果信封存活、质押恢复仍合格）；临时回退旧行为该测试如期失败（证明有效）；`cargo test --lib` 167 passed，集成 252 passed，clippy 无 warning，0 failed。
 
 ## 小版本更新日志
 

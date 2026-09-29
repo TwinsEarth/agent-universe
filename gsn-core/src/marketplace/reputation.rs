@@ -229,4 +229,56 @@ impl ReputationManager {
             .unwrap()
             .as_secs()
     }
+
+    /// v2.8.4: 导出全部信誉（GAP §3.2，持久化用）。
+    pub fn export_reputations(&self) -> Vec<(String, String)> {
+        self.reputations
+            .iter()
+            .filter_map(|(id, rep)| {
+                serde_json::to_string(rep).ok().map(|p| (id.clone(), p))
+            })
+            .collect()
+    }
+
+    /// v2.8.4: 导出全部质押（GAP §3.2，持久化用）。
+    pub fn export_stakes(&self) -> Vec<(String, String)> {
+        self.stakes
+            .iter()
+            .filter_map(|(id, s)| serde_json::to_string(s).ok().map(|p| (id.clone(), p)))
+            .collect()
+    }
+
+    /// v2.8.4: 导入全部信誉（GAP §3.2，重启恢复；坏行跳过并警告）。
+    pub fn import_reputations(&mut self, rows: Vec<(String, String)>) {
+        let mut n = 0usize;
+        for (id, payload) in rows {
+            match serde_json::from_str::<MarketReputation>(&payload) {
+                Ok(rep) => {
+                    self.reputations.insert(id, rep);
+                    n += 1;
+                }
+                Err(_) => eprintln!("⚠️ 信誉持久化损坏已跳过：{id}"),
+            }
+        }
+        if n > 0 {
+            println!("✅ 信誉已从磁盘恢复：{n} 个");
+        }
+    }
+
+    /// v2.8.4: 导入全部质押（GAP §3.2，重启恢复，质押资金仍可出价/罚没）。
+    pub fn import_stakes(&mut self, rows: Vec<(String, String)>) {
+        let mut n = 0usize;
+        for (id, payload) in rows {
+            match serde_json::from_str::<StakeRecord>(&payload) {
+                Ok(s) => {
+                    self.stakes.insert(id, s);
+                    n += 1;
+                }
+                Err(_) => eprintln!("⚠️ 质押持久化损坏已跳过：{id}"),
+            }
+        }
+        if n > 0 {
+            println!("✅ 质押已从磁盘恢复：{n} 个");
+        }
+    }
 }

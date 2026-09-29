@@ -334,6 +334,7 @@ npm install @twinsearth/agent-universe
 | v2.8.1 | **Windows Exec** | **Windows 直接 spawn 解释器（去 bash/python3 硬编码），print(1+1) 在 Windows 真机 200** |
 | v2.8.2 | **Rust-native Timeout** | **超时改 Rust 原生 spawn+读线程+try_wait kill（去外部 timeout/gtimeout），macOS CI 变绿** |
 | v2.8.3 | **Ledger Hash Chain** | **账本日志加 SHA256 哈希链 + 锚定 head（tamper-evident），坏行显式报告、水位取逻辑记录数、append 失败不推进（GAP §3.1/§3.6）** |
+| v2.8.4 | **Restart Gate** | **重启恢复证据闸门/结果信封/信誉/质押：验证策略不回 None、winner_price 不满额兜底、结果信封与质押重启后存活，根治“重启即绕过”（GAP §3.2）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

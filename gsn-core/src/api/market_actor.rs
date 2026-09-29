@@ -214,17 +214,42 @@ impl MarketActorHandle {
         tokio::spawn(async move {
             let mut market = AgentMarket::new();
 
-            // ── 启动恢复：账本（权威，资金安全）──
-            match store.load_ledger_records() {
-                Ok(records) => {
-                    let n = records.len();
-                    match market.restore_ledger(records) {
+            // ── v2.8.3: 启动先校验账本哈希链（GAP §3.1，tamper-evident）──
+            match store.verify_ledger_chain() {
+                Ok(head) => {
+                    if head.is_empty() {
+                        println!("🔗 账本哈希链：空（全新库）");
+                    } else {
+                        println!("🔗 账本哈希链校验通过，head={}", &head[..head.len().min(12)]);
+                    }
+                }
+                Err(seq) => {
+                    if seq == u64::MAX {
+                        eprintln!("🚨 CRITICAL: 账本链 head 锚定不一致（kv_meta 与链末不符），疑似持久化被篡改");
+                    } else {
+                        eprintln!("🚨 CRITICAL: 账本哈希链在 seq={seq} 处断裂，疑似持久化被篡改（当前以容错模式加载，请人工核查）");
+                    }
+                }
+            }
+
+            // ── 启动恢复：账本（权威，资金安全）。v2.8.3: 坏行显式报告（GAP §3.6）──
+            let restored = match store.load_ledger_records_checked() {
+                Ok(load) => {
+                    for (seq, _payload, reason) in &load.corrupt {
+                        eprintln!("⚠️ 账本流水 seq={seq} 损坏已跳过：{reason}");
+                    }
+                    let n = load.records.len();
+                    match market.restore_ledger(load.records) {
                         Ok(()) => println!("✅ 账本已从磁盘恢复：{n} 条流水"),
                         Err(e) => eprintln!("⚠️ 账本恢复失败: {e}"),
                     }
+                    n
                 }
-                Err(e) => eprintln!("⚠️ 账本读取失败: {e}"),
-            }
+                Err(e) => {
+                    eprintln!("⚠️ 账本读取失败: {e}（持久化降级，避免水位错位）");
+                    0
+                }
+            };
             // v2.7.4: agents / tasks 真正注入内存 market（此前只取 .len() 打日志，
             // 导致重启后账本/余额恢复但 /agents、/tasks、/stats 全空）。
             match store.load_agents() {
@@ -244,19 +269,23 @@ impl MarketActorHandle {
                 Err(e) => eprintln!("⚠️ tasks 读取失败: {e}"),
             }
 
-            // 已持久化流水水位（启动已有记录不重复 append）
-            let mut ledger_water = store.ledger_count().unwrap_or(0) as usize;
+            // v2.8.3: 水位 = 成功恢复的逻辑记录数（GAP §3.6，不再用物理 COUNT，
+            // 物理行数含损坏行会导致水位超前、账本空洞）。
+            let mut ledger_water = restored;
 
             while let Some(cmd) = rx.recv().await {
                 dispatch(&mut market, cmd);
 
-                // ── 写后增量持久化 ──
+                // ── 写后增量持久化（v2.8.3：逐条 append，失败不推进水位，GAP §3.6）──
                 let records = market.settlement_records();
-                if records.len() > ledger_water {
-                    for r in &records[ledger_water..] {
-                        let _ = store.append_ledger_record(r);
+                while records.len() > ledger_water {
+                    match store.append_ledger_record(&records[ledger_water]) {
+                        Ok(()) => ledger_water += 1,
+                        Err(e) => {
+                            eprintln!("⚠️ 账本流水 append 失败（停在水位 {ledger_water}，下轮重试）: {e}");
+                            break;
+                        }
                     }
-                    ledger_water = records.len();
                 }
                 // agents / tasks 快照 upsert（幂等，覆盖最新状态）
                 for a in market.snapshot_agents_for_store() {

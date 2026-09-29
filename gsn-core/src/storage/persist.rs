@@ -6,7 +6,14 @@ use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
 
+use sha2::{Digest, Sha256};
+
 use crate::marketplace::SettlementRecord;
+
+/// 哈希链创世前缀（v2.8.3，GAP §3.1：账本日志 tamper-evident）
+const LEDGER_GENESIS: &str = "";
+/// kv_meta 中锚定账本链 head hash 的键
+const LEDGER_HEAD_KEY: &str = "ledger_head_hash";
 
 /// SQLite 持久化存储
 pub struct PersistentStore {
@@ -50,6 +57,14 @@ pub struct StoredRelay {
     pub data_bytes: i64,
     pub last_check: String,
     pub created_at: String,
+}
+
+/// v2.8.3: 账本读回结果。损坏行显式返回（GAP §3.6，不再静默跳过）。
+#[derive(Debug, Default)]
+pub struct LedgerLoad {
+    pub records: Vec<SettlementRecord>,
+    /// (seq, payload, 解析失败原因)
+    pub corrupt: Vec<(i64, String, String)>,
 }
 
 impl PersistentStore {
@@ -101,12 +116,18 @@ impl PersistentStore {
             );
 
             -- v2.6.1: 只追加结算流水（账本落盘，重启可重放恢复，GAP §6.1）
+            -- v2.8.3: 加 prev_hash/record_hash 哈希链（GAP §3.1，tamper-evident）
             CREATE TABLE IF NOT EXISTS ledger_entries (
-                seq     INTEGER PRIMARY KEY AUTOINCREMENT,
-                payload TEXT NOT NULL
+                seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+                payload     TEXT NOT NULL,
+                prev_hash   TEXT NOT NULL DEFAULT '',
+                record_hash TEXT NOT NULL DEFAULT ''
             );
             ",
         )?;
+
+        // v2.8.3: 旧库迁移（补哈希链列并重算存量行），幂等
+        migrate_ledger_chain(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -388,42 +409,179 @@ impl PersistentStore {
     }
 
     // ─────────────── v2.6.1 账本落盘（GAP §6.1）───────────────
+    // v2.8.3: 哈希链 tamper-evident（GAP §3.1）
 
-    /// 追加一条结算流水（只追加，不可变；SQLite 事务保证不会出现半行）
+    /// 链哈希：SHA256(prev_hash || "|" || payload)
+    fn ledger_record_hash(prev_hash: &str, payload: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(prev_hash.as_bytes());
+        h.update(b"|");
+        h.update(payload.as_bytes());
+        hex::encode(h.finalize())
+    }
+
+    /// 追加一条结算流水（只追加，哈希链）。
+    /// 失败返回 Err，调用方不得推进水位（GAP §3.6）。
     pub fn append_ledger_record(&self, rec: &SettlementRecord) -> anyhow::Result<()> {
         let payload = serde_json::to_string(rec)?;
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        conn.execute(
-            "INSERT INTO ledger_entries (payload) VALUES (?1)",
-            params![payload],
+        let tx = conn.unchecked_transaction()?;
+        let prev_hash: String = tx
+            .query_row(
+                "SELECT record_hash FROM ledger_entries ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| LEDGER_GENESIS.to_string());
+        let record_hash = Self::ledger_record_hash(&prev_hash, &payload);
+        tx.execute(
+            "INSERT INTO ledger_entries (payload, prev_hash, record_hash) VALUES (?1, ?2, ?3)",
+            params![payload, prev_hash, record_hash],
         )?;
+        tx.execute(
+            "INSERT INTO kv_meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![LEDGER_HEAD_KEY, record_hash],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// 按序读回全部结算流水（用于重放恢复）。
-    /// 损坏 / 无法解析的行被容错跳过，不使整个账本不可读。
-    pub fn load_ledger_records(&self) -> anyhow::Result<Vec<SettlementRecord>> {
+    /// 读回并校验解析（v2.8.3）：损坏行显式返回，不静默跳过。
+    pub fn load_ledger_records_checked(&self) -> anyhow::Result<LedgerLoad> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt =
-            conn.prepare("SELECT payload FROM ledger_entries ORDER BY seq ASC")?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut out = Vec::new();
+            conn.prepare("SELECT seq, payload FROM ledger_entries ORDER BY seq ASC")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut out = LedgerLoad::default();
         for r in rows {
-            let payload = r?;
-            if let Ok(rec) = serde_json::from_str::<SettlementRecord>(&payload) {
-                out.push(rec);
+            let (seq, payload) = r?;
+            match serde_json::from_str::<SettlementRecord>(&payload) {
+                Ok(rec) => out.records.push(rec),
+                Err(e) => out.corrupt.push((seq, payload, e.to_string())),
             }
         }
         Ok(out)
     }
 
-    /// 已持久化流水条数（持久化水位）
+    /// 兼容旧调用：读回可解析记录（损坏行见 `load_ledger_records_checked`）。
+    pub fn load_ledger_records(&self) -> anyhow::Result<Vec<SettlementRecord>> {
+        Ok(self.load_ledger_records_checked()?.records)
+    }
+
+    /// 校验账本哈希链，返回 head hash。
+    /// 断链 / 哈希不匹配 / 锚定 head 不一致，返回 Err(首个断链 seq)；
+    /// head 锚定错误用 `u64::MAX`。
+    pub fn verify_ledger_chain(&self) -> Result<String, u64> {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = conn
+            .prepare("SELECT seq, payload, prev_hash, record_hash FROM ledger_entries ORDER BY seq ASC")
+            .map_err(|_| 0u64)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|_| 0u64)?;
+        let mut expected_prev = LEDGER_GENESIS.to_string();
+        let mut head = LEDGER_GENESIS.to_string();
+        for r in rows {
+            let (seq, payload, prev_hash, record_hash) = r.map_err(|_| 0u64)?;
+            let want = Self::ledger_record_hash(&expected_prev, &payload);
+            if prev_hash != expected_prev || record_hash != want {
+                return Err(seq as u64);
+            }
+            expected_prev = record_hash.clone();
+            head = record_hash;
+        }
+        // 锚定 head 校验（kv_meta 中若有 head，必须与链末一致）
+        let anchored: Option<String> = conn
+            .query_row(
+                "SELECT value FROM kv_meta WHERE key = ?1",
+                params![LEDGER_HEAD_KEY],
+                |row| row.get(0),
+            )
+            .ok();
+        if let Some(a) = anchored {
+            if a != head {
+                return Err(u64::MAX);
+            }
+        }
+        Ok(head)
+    }
+
+    /// 已持久化流水条数（物理水位；仅用于测试/统计）。
+    /// 业务恢复水位应以成功解析恢复的记录数为准（GAP §3.6）。
     pub fn ledger_count(&self) -> anyhow::Result<u64> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let count: u64 =
             conn.query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))?;
         Ok(count)
     }
+}
+
+/// v2.8.3: 旧库迁移——补哈希链列并按序重算存量行（GAP §3.1）。幂等。
+fn migrate_ledger_chain(conn: &Connection) -> anyhow::Result<()> {
+    let has_hash = {
+        let mut stmt = conn.prepare("PRAGMA table_info(ledger_entries)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for c in cols {
+            if c? == "record_hash" {
+                found = true;
+            }
+        }
+        found
+    };
+    if has_hash {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "ALTER TABLE ledger_entries ADD COLUMN prev_hash TEXT NOT NULL DEFAULT '';
+         ALTER TABLE ledger_entries ADD COLUMN record_hash TEXT NOT NULL DEFAULT '';",
+    )?;
+    // 按 seq 读 payload，逐行重算 prev_hash/record_hash
+    let seqs: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT seq FROM ledger_entries ORDER BY seq ASC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        let mut v = Vec::new();
+        for r in rows {
+            v.push(r?);
+        }
+        v
+    };
+    let mut prev = LEDGER_GENESIS.to_string();
+    for seq in seqs {
+        let payload: String = conn.query_row(
+            "SELECT payload FROM ledger_entries WHERE seq = ?1",
+            params![seq],
+            |row| row.get(0),
+        )?;
+        let hash = {
+            let mut h = Sha256::new();
+            h.update(prev.as_bytes());
+            h.update(b"|");
+            h.update(payload.as_bytes());
+            hex::encode(h.finalize())
+        };
+        conn.execute(
+            "UPDATE ledger_entries SET prev_hash = ?1, record_hash = ?2 WHERE seq = ?3",
+            params![prev, hash, seq],
+        )?;
+        prev = hash;
+    }
+    conn.execute(
+        "INSERT INTO kv_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![LEDGER_HEAD_KEY, prev],
+    )?;
+    Ok(())
 }
 
 /// 行映射：relay
@@ -514,21 +672,23 @@ mod tests {
         assert_eq!(agents[0].stake, 250);
     }
 
+    fn rec(acct: &str, amount: i64, ts: u64) -> SettlementRecord {
+        SettlementRecord {
+            task_id: format!("deposit:{acct}"),
+            from_account: String::new(),
+            to_account: acct.into(),
+            amount: Money::new(amount),
+            reason: SettlementReason::Deposited,
+            timestamp: ts,
+        }
+    }
+
     #[test]
-    fn ledger_append_load_and_skip_corrupt() {
+    fn ledger_append_load_and_reports_corrupt() {
         let path = tmp_db("led");
         {
             let s = PersistentStore::open(&path).unwrap();
-            let rec = SettlementRecord {
-                task_id: "deposit:a1".into(),
-                from_account: String::new(),
-                to_account: "a1".into(),
-                amount: Money::new(10),
-                reason: SettlementReason::Deposited,
-                timestamp: 5,
-            };
-            s.append_ledger_record(&rec).unwrap();
-            assert_eq!(s.ledger_count().unwrap(), 1);
+            s.append_ledger_record(&rec("a1", 10, 5)).unwrap();
             // 直接插一条损坏 payload（崩溃 / 脏行模拟）
             let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
@@ -538,9 +698,69 @@ mod tests {
             .unwrap();
         }
         let s = PersistentStore::open(&path).unwrap();
-        let recs = s.load_ledger_records().unwrap();
-        assert_eq!(recs.len(), 1, "损坏行应被容错跳过");
-        assert_eq!(recs[0].amount, Money::new(10));
+        // v2.8.3: 坏行必须显式报告，不再静默跳过
+        let load = s.load_ledger_records_checked().unwrap();
+        assert_eq!(load.records.len(), 1);
+        assert_eq!(load.corrupt.len(), 1, "损坏行必须在 corrupt 中显式返回");
+        assert_eq!(load.records[0].amount, Money::new(10));
         assert_eq!(s.ledger_count().unwrap(), 2, "物理行数含损坏行");
+        // 坏行同时破坏哈希链，verify 必须报错
+        assert!(s.verify_ledger_chain().is_err(), "坏行必须让链校验失败");
+    }
+
+    #[test]
+    fn ledger_hash_chain_verifies_after_appends_and_reopen() {
+        let path = tmp_db("chain");
+        let head = {
+            let s = PersistentStore::open(&path).unwrap();
+            s.append_ledger_record(&rec("a1", 10, 1)).unwrap();
+            s.append_ledger_record(&rec("a2", 20, 2)).unwrap();
+            s.append_ledger_record(&rec("a3", 30, 3)).unwrap();
+            let h = s.verify_ledger_chain().expect("全新 append 链必须通过");
+            assert!(!h.is_empty());
+            h
+        };
+        // 重开后链仍校验通过，且 head 一致
+        let s = PersistentStore::open(&path).unwrap();
+        assert_eq!(s.verify_ledger_chain().expect("重开后链必须通过"), head);
+        assert_eq!(s.ledger_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn ledger_chain_detects_payload_tampering() {
+        let path = tmp_db("tamper");
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            s.append_ledger_record(&rec("a1", 10, 1)).unwrap();
+            s.append_ledger_record(&rec("a2", 20, 2)).unwrap();
+            // 篡改第 1 条 payload（凭空插入一条 Deposited 造币的等价手法）
+            let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "UPDATE ledger_entries SET payload = ?1 WHERE seq = 1",
+                ["{\"tampered\":true}"],
+            )
+            .unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        // 必须报首个断链 seq=1（GAP §3.1：旧表无哈希链时此篡改被当成守恒）
+        assert_eq!(s.verify_ledger_chain(), Err(1));
+    }
+
+    #[test]
+    fn ledger_chain_detects_head_anchor_tampering() {
+        let path = tmp_db("anchor");
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            s.append_ledger_record(&rec("a1", 10, 1)).unwrap();
+            // 篡改 kv_meta 锚定 head
+            let conn = s.conn.lock().unwrap_or_else(|e| e.into_inner());
+            conn.execute(
+                "UPDATE kv_meta SET value = 'deadbeef' WHERE key = ?1",
+                [LEDGER_HEAD_KEY],
+            )
+            .unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        assert_eq!(s.verify_ledger_chain(), Err(u64::MAX), "锚定 head 不符必须报 u64::MAX");
     }
 }

@@ -1,9 +1,9 @@
-// Agent Universe v2.8.2 — Tauri 2 桌面客户端壳
+// Agent Universe v2.8.3 — Tauri 2 桌面客户端壳
 // 前端: Vite + HTML/JS，调用 @twinsearth/agent-universe
 
 #[tauri::command]
 fn get_sdk_version() -> String {
-    "2.8.2".to_string()
+    "2.8.3".to_string()
 }
 pub fn run() {
     tauri::Builder::default()

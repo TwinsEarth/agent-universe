@@ -64,7 +64,8 @@ v1.0.0 (Genesis)
                                                                                                                           └── v2.7.9 (安全边界)
                                                                                                                                 └── v2.8.0 (沙箱集成核心链路 - E2B/K8s API + 7 个 MCP 工具)
                                                                                                                                       ├── v2.8.1 (Windows exec 修复 - 去 bash/python3 硬编码，直接 spawn)
-                                                                                                                                      └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时) ← 当前
+                                                                                                                                      └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时)
+                                                                                                                                            └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6) ← 当前
 ```
 
 ## 大版本详情
@@ -464,6 +465,15 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **修复**：去掉对外部 `timeout`/`gtimeout` 的依赖，改用 Rust 原生超时——`exec` 改为 `spawn` + 两个读线程（stdout/stderr 各 `read_to_end`，防管道写满阻塞）+ 主线程 `try_wait` 轮询（10ms）；超时则 `child.kill()` + `wait()` + join 读线程后返回 `ResourceLimitExceeded{kind:"timeout"}`。Unix 分支保留 `bash -c ulimit`（bash 与 ulimit 内建 macOS 均有），`exec` 替换 bash 为目标程序后 kill 该 pid 无孤儿。
 - **版本一致性**：`check-version.sh` 新增 `ci.yml 版本断言`（bump 必须改到 ci.yml 里硬编码的 `au.version!=='X.Y.Z'`，否则 js-test 红）。
 - **验证**：见本版 release 记录；macOS 变绿后由 CI 确认。
+
+### v2.8.3 - 账本日志哈希链（gsn-core 0.2.83）
+
+**核心问题**：《v2.8.2 增量审计》§3.1【critical】——`ledger_entries` 表只有 `(seq, payload)`，无哈希链/签名/校验和/约束，插入一条 `Deposited` 即让 `restore` 与 `independent_audit` 同时报守恒（造币）；§3.6 水位用物理 COUNT（含坏行）、写入失败被 `let _` 吞掉、恢复失败永久关闭持久化。
+
+- **哈希链 + 锚定 head（§3.1）**：表加 `prev_hash`/`record_hash`，`record_hash = SHA256(prev_hash || "|" || payload)`，head 锚定 `kv_meta`；新增 `verify_ledger_chain()` 报首个断链 seq（head 锚定不符用 `u64::MAX`）；旧库 `migrate_ledger_chain()` 幂等迁移重算；启动先校验，断链打印 `🚨 CRITICAL`。
+- **水位/吞错/恢复（§3.6）**：新增 `load_ledger_records_checked()` 返回 `{records, corrupt}`，坏行显式报告不静默跳过；初始水位 = 成功恢复的逻辑记录数（不再用物理 COUNT）；写后逐条 append，成功才推进水位、失败 eprintln 下轮重试。
+- **边界**：只声称 **tamper-evident**（能重写整份文件者仍可重算整链并更新锚定），非 tamper-proof。
+- **验证**：新增 4 个对抗测试（payload 篡改→Err(1)、head 锚定篡改→Err(MAX)、append 链重开一致、坏行进 corrupt）；`cargo test --lib` 167 passed，集成 251 passed，0 failed。
 
 ## 小版本更新日志
 

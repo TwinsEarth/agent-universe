@@ -2,6 +2,17 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.6] - 2026-09-29
+
+### Agent Sandbox 核心架构（大版本重构第一步）
+
+- 新增 `sandbox/error.rs`：统一错误类型（EnvBlocked/IsolationViolation/ExecFailed/ResourceLimitExceeded/InvalidConfig/InvalidLifecycle/NetworkDenied 等）；
+- 新增 `sandbox/config.rs`：IsolationLevel、ResourceLimits、NetworkPolicy、FilesystemPolicy、SandboxConfig + validate；
+- 新增 `sandbox/state.rs`：生命周期状态机（Pending→Creating→Starting→Running⇄Paused→Stopping→Stopped/Failed）；
+- 新增 `sandbox/identity.rs`：沙箱临时身份、Agent 长期身份、短时执行令牌；
+- docker/firecracker 更新为显式环境探测，无 daemon/KVM 即 EnvBlocked；
+- 设计文档 `docs/sandbox/architecture.md`；新增 v276 测试 15 项全过。
+
 ## [v2.7.5] - 2026-09-29
 
 ### DCUtR 直连升级 + 多 relay 多通道同时在线

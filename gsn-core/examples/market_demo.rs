@@ -231,9 +231,9 @@ fn main() {
     market.open_dispute("dispute-1", "task-2", "requester-1", "结果质量不合格，疑似虚假交付").unwrap();
     println!("  争议已发起，任务状态：{}", market.get_task("task-2").unwrap().state.label());
 
-    // 仲裁：有罪，罚没 80，托管预算全额退回需求方
-    let verdict = market.arbitrate("dispute-1", true, Money::new(80)).unwrap();
-    println!("  仲裁结果：{}", verdict);
+    // 仲裁：有罪，罚没金额由服务端规则决定（全部质押），托管预算全额退回需求方
+    let (verdict, slashed) = market.arbitrate("dispute-1", "arbiter-1", true).unwrap();
+    println!("  仲裁结果：{}，罚没：{}", verdict, slashed.as_i64());
     println!("  任务状态：{}", market.get_task("task-2").unwrap().state.label());
     println!("  需求方余额（已退托管预算）：{}", market.balance("requester-1"));
 

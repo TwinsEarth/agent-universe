@@ -66,7 +66,8 @@ v1.0.0 (Genesis)
                                                                                                                                       ├── v2.8.1 (Windows exec 修复 - 去 bash/python3 硬编码，直接 spawn)
                                                                                                                                       └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时)
                                                                                                                                             └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6)
-                                                                                                                                                  └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2) ← 当前
+                                                                                                                                                  └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2)
+                                                                                                                                                        └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6) ← 当前
 ```
 
 ## 大版本详情
@@ -484,6 +485,16 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **结果信封落盘**：新增 `result_envelopes` 表与 `snapshot/restore_results`，公共 `get_result()`；已验收未结算任务重启后可结算。
 - **信誉/质押落盘**：新增 `reputations`/`stakes` 两表；`ReputationManager` 增 export/import；公共 `is_eligible()`；重启后仍可出价、罚没路径不再是死的。
 - **验证**：新增 `tests/v284_test.rs` 的“关闭再打开”对抗测试（策略不回 None、winner_price=4000、结果信封存活、质押恢复仍合格）；临时回退旧行为该测试如期失败（证明有效）；`cargo test --lib` 167 passed，集成 252 passed，clippy 无 warning，0 failed。
+
+### v2.8.5 - REST 认证闸门/状态转换/罚没服务端定（gsn-core 0.2.85）
+
+**核心问题**：《v2.8.2 增量审计》§3.5（REST）/ §3.7【critical】/ §3.8 / §2.2.6——REST 变更接口完全无认证（Bearer 只覆盖 MCP）、通配 CORS、无请求体上限/读超时；`open_dispute`/`arbitrate` 直接赋值状态绕过状态转换表、无仲裁者、罚没金额读请求体；`reject_task` 只在库层、REST/MCP 零调用。
+
+- **REST fail-closed 认证**：新增 `rest_authorize()`，GET/HEAD/OPTIONS 放行，变更类（POST/PUT/PATCH/DELETE）配置 `REST_BEARER_TOKEN` 必须 Bearer 匹配，**未配置默认 401**，仅 `REST_ALLOW_UNAUTHENTICATED=1` 逃生口放行。
+- **CORS 白名单 + body 上限/超时**：新增 `compute_cors()` 按 `REST_ALLOWED_ORIGINS` 白名单仅命中回显（消除通配 *）；新增 `REST_READ_TIMEOUT_SECS`（默认 30，超时 408）、`REST_MAX_BODY_BYTES`（默认 10MB，超限 413）、OPTIONS 预检 204。
+- **状态转换表 + 罚没服务端定**：`open_dispute` 经 `transition(Disputed)`（仅 Accepted/Running/Verifying/Rework 可争议，Open/Matched/终态拒绝）；`arbitrate` 改 `(dispute_id, arbitrator, guilty)`，仲裁者必填、重复仲裁拒绝、罚没由服务端规则定（作恶罚 100% 质押），guilty 退预算→Slashed，not_guilty→Accepted；两条罚没路径统一 `slash_stake_synced`；证据提升移到转换成功后。
+- **终局拒绝接线**：`reject_task` 通过 REST（`POST /tasks/{id}/reject`）、MarketActor（`RejectTask`）、MCP（`market_reject_task`）三处暴露。
+- **验证**：新增 `tests/v285_test.rs`（8 测试）与 `node.rs` `http_security_tests`（CORS/认证）；全量 0 failed，clippy `-D warnings` 无 warning（同步修 examples/market_demo.rs）。
 
 ## 小版本更新日志
 

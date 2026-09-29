@@ -50,6 +50,26 @@ pub fn escrow_account(task_id: &str) -> String {
     format!("__escrow__:{}", task_id)
 }
 
+/// 服务端罚没规则（v2.8.5，GAP §3.7/§3.8）：
+///
+/// 罚没金额**只由服务端规则决定，绝不接受请求体指定的金额**（根治
+/// 「调用方决定罚多少」）。两条路径统一从同一规则函数出账，保证
+/// 「质押记录」与「账本」口径一致：
+/// - 仲裁判定作恶（guilty）：罚没**全部**质押（100%）；
+/// - 验收终局拒绝 / 重复劳动（Rejected）：罚没 10% 质押。
+pub const SLASH_RATE_ARBITRATION: i64 = 100;
+pub const SLASH_RATE_REJECT: i64 = 10;
+
+/// 按质押总额与服务端百分比规则计算罚没金额。
+fn slash_amount_by_rule(stake_total: Money, rate_pct: i64) -> Money {
+    // 全额质押：直接返回总额；否则按比例（先乘后除，避免截断误差）。
+    if rate_pct >= 100 {
+        stake_total
+    } else {
+        Money::new(stake_total.as_i64().saturating_mul(rate_pct) / 100)
+    }
+}
+
 /// 对字节求 SHA256，返回小写十六进制（重复劳动检测用）
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -78,6 +98,8 @@ pub struct DisputeCase {
     pub reason: String,
     pub resolved: bool,
     pub verdict: Option<String>,
+    /// 仲裁者身份（v2.8.5，GAP §3.7）：仲裁时必须显式指定，拒绝匿名。
+    pub arbitrator: Option<String>,
 }
 
 /// 智能体市场主管理器
@@ -466,9 +488,26 @@ impl AgentMarket {
         }
         let decision = committee.tally();
 
-        // 证据升级（仅认证式 BFT 验收通过时）：Unverified 结果经固定委员集
-        // 签名投票判定 Stop 后，将其证据等级提升为 Verified，使其满足
-        // settle_task 的可信闸门；非认证 verify_result 路径不做此提升。
+        let target = match decision {
+            QaDecision::Stop => TaskState::Accepted,
+            QaDecision::Continue => TaskState::Rework,
+            QaDecision::NoQuorum => TaskState::NoQuorum,
+        };
+
+        // 状态转换必须先成功（v2.8.5，GAP §3.8）：转换失败时直接返回错误，
+        // 绝不提前升级证据——旧实现先升级证据再转换，一旦转换失败就会留下
+        // 「状态未变、证据却已被永久标记为可信」的不可回滚污染。
+        {
+            let task = self
+                .tasks
+                .get_mut(task_id)
+                .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
+            task.state = task.state.transition(target)?;
+        }
+
+        // 状态转换成功后才升级证据（仅认证式 BFT 判定 Stop）：Unverified
+        // 结果经固定委员集签名投票判定 Stop 后，将其证据等级提升为 Verified，
+        // 使其满足 settle_task 的可信闸门；非认证 verify_result 路径不做此提升。
         if matches!(decision, QaDecision::Stop) {
             if let Some(env) = self.results.get_mut(task_id) {
                 if !env.evidence_grade.is_trustworthy() {
@@ -477,16 +516,6 @@ impl AgentMarket {
             }
         }
 
-        let task = self
-            .tasks
-            .get_mut(task_id)
-            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
-        let target = match decision {
-            QaDecision::Stop => TaskState::Accepted,
-            QaDecision::Continue => TaskState::Rework,
-            QaDecision::NoQuorum => TaskState::NoQuorum,
-        };
-        task.state = task.state.transition(target)?;
         Ok(decision)
     }
 
@@ -598,11 +627,17 @@ impl AgentMarket {
             // 托管预算全额退回需求方
             self.settlement
                 .refund(task_id, &escrow, &requester, budget)?;
-            // 罚没执行者 10% 质押（资金退出系统，守恒仍成立）
-            let stake_acct = stake_account(&agent_id);
-            let slash_amt = Money::new(self.settlement.balance(&stake_acct).as_i64() / 10);
+            // 罚没执行者 10% 质押（服务端规则 SLASH_RATE_REJECT，资金退出
+            // 系统，守恒仍成立）。统一走 slash_stake_synced：先更新质押记录
+            // 再扣账本，根治旧逻辑「只扣账本、质押记录不变」的口径不一致。
+            let stake_total = self
+                .reputation_mgr
+                .stake(&agent_id)
+                .map(|s| s.amount)
+                .unwrap_or(Money::ZERO);
+            let slash_amt = slash_amount_by_rule(stake_total, SLASH_RATE_REJECT);
             if slash_amt.is_positive() {
-                self.settlement.slash(&stake_acct, slash_amt)?;
+                self.slash_stake_synced(&agent_id, slash_amt)?;
             }
             // 信誉记一次失败
             if let Some(rep) = self.reputation_mgr.reputation_mut(&agent_id) {
@@ -688,6 +723,18 @@ impl AgentMarket {
 
     // ===== F7: 争议与仲裁 =====
 
+    /// 同步罚没质押（v2.8.5，GAP §3.8）：
+    ///
+    /// 先更新质押记录（`reputation_mgr.slash_stake`），再扣账本资金
+    /// （`settlement.slash`），保证「质押记录」与「账本」口径一致，
+    /// 杜绝旧实现 reject 路径「只扣账本、质押记录不变」的不一致。
+    fn slash_stake_synced(&mut self, agent_id: &str, amount: Money) -> Result<Money, String> {
+        let stake_acct = stake_account(agent_id);
+        self.reputation_mgr.slash_stake(agent_id, amount)?;
+        self.settlement.slash(&stake_acct, amount)?;
+        Ok(amount)
+    }
+
     /// 发起争议
     pub fn open_dispute(
         &mut self,
@@ -700,51 +747,77 @@ impl AgentMarket {
             return Err(format!("NOT_FOUND: 任务 {} 不存在", task_id));
         }
 
-        if let Some(task) = self.tasks.get_mut(task_id) {
-            task.state = TaskState::Disputed;
-        }
+        // 状态经转换表进入 Disputed（GAP §3.7）：只有 Accepted/Running/
+        // Verifying/Rework 可发起争议，Open/Matched 与终态一律拒绝；
+        // 同时在此读取 owner（respondent），避免后续 push 时的借用冲突。
+        let respondent = {
+            let task = self.tasks.get_mut(task_id).ok_or_else(|| {
+                format!("NOT_FOUND: 任务 {} 不存在", task_id)
+            })?;
+            task.state = task.state.transition(TaskState::Disputed)?;
+            task.owner.clone().unwrap_or_default()
+        };
 
         self.disputes.push(DisputeCase {
             dispute_id: dispute_id.to_string(),
             task_id: task_id.to_string(),
             complainant: complainant.to_string(),
-            respondent: self
-                .tasks
-                .get(task_id)
-                .and_then(|t| t.owner.clone())
-                .unwrap_or_default(),
+            respondent,
             reason: reason.to_string(),
             resolved: false,
             verdict: None,
+            arbitrator: None,
         });
 
         Ok(())
     }
 
-    /// 仲裁争议
+    /// 仲裁争议（v2.8.5，GAP §3.7/§3.8）
+    ///
+    /// 关键变更：
+    /// - 必须显式指定仲裁者身份 `arbitrator`，拒绝匿名仲裁；
+    /// - 罚没金额**不再来自请求体**，由服务端规则 `SLASH_RATE_ARBITRATION`
+    ///   决定（仲裁作恶罚没全部质押）；
+    /// - 状态变更只经状态转换表（终态无入边）。
+    ///
+    /// 返回 `(verdict, slashed)`：裁决结论与服务端实际罚没金额。
     pub fn arbitrate(
         &mut self,
         dispute_id: &str,
+        arbitrator: &str,
         guilty: bool,
-        slash_amount: Money,
-    ) -> Result<String, String> {
-        let dispute = self
-            .disputes
-            .iter_mut()
-            .find(|d| d.dispute_id == dispute_id)
-            .ok_or_else(|| format!("NOT_FOUND: 争议 {} 不存在", dispute_id))?;
+    ) -> Result<(String, Money), String> {
+        if arbitrator.trim().is_empty() {
+            return Err(
+                "BAD_REQUEST: 仲裁必须显式指定仲裁者身份（arbitrator），拒绝匿名".to_string(),
+            );
+        }
 
-        let verdict = if guilty {
-            let agent_id = dispute.respondent.clone();
-            let task_id = dispute.task_id.clone();
-            if slash_amount.is_positive() {
-                // 罚没质押：资金从质押锁定账户退出系统
-                let stake_acct = stake_account(&agent_id);
-                self.reputation_mgr
-                    .slash_stake(&agent_id, slash_amount)?;
-                self.settlement.slash(&stake_acct, slash_amount)?;
+        // 先取出仲裁所需信息（避免与后续 &mut self 操作产生借用冲突）。
+        let (agent_id, task_id) = {
+            let dispute = self
+                .disputes
+                .iter_mut()
+                .find(|d| d.dispute_id == dispute_id)
+                .ok_or_else(|| format!("NOT_FOUND: 争议 {} 不存在", dispute_id))?;
+            if dispute.resolved {
+                return Err(format!("争议 {} 已仲裁，不能重复仲裁", dispute_id));
             }
-            // 任务托管预算退回需求方（作恶方不应获得报酬）
+            (dispute.respondent.clone(), dispute.task_id.clone())
+        };
+
+        let (verdict, slashed) = if guilty {
+            // 罚没金额由服务端规则定：仲裁作恶罚没全部质押。
+            let stake_total = self
+                .reputation_mgr
+                .stake(&agent_id)
+                .map(|s| s.amount)
+                .unwrap_or(Money::ZERO);
+            let slash_amount = slash_amount_by_rule(stake_total, SLASH_RATE_ARBITRATION);
+            if slash_amount.is_positive() {
+                self.slash_stake_synced(&agent_id, slash_amount)?;
+            }
+            // 任务托管预算全额退回需求方（作恶方不应获得报酬）。
             if let Some(t) = self.tasks.get(&task_id) {
                 let budget = t.budget;
                 let requester = t.requester.clone();
@@ -752,20 +825,30 @@ impl AgentMarket {
                 self.settlement
                     .refund(&task_id, &escrow, &requester, budget)?;
             }
+            // 状态经转换表进入 Slashed（Disputed → Slashed）。
             if let Some(task) = self.tasks.get_mut(&task_id) {
-                task.state = TaskState::Slashed;
+                task.state = task.state.transition(TaskState::Slashed)?;
             }
-            "guilty".to_string()
+            ("guilty".to_string(), slash_amount)
         } else {
-            if let Some(task) = self.tasks.get_mut(&dispute.task_id) {
-                task.state = TaskState::Accepted;
+            // 状态经转换表进入 Accepted（Disputed → Accepted）。
+            if let Some(task) = self.tasks.get_mut(&task_id) {
+                task.state = task.state.transition(TaskState::Accepted)?;
             }
-            "not_guilty".to_string()
+            ("not_guilty".to_string(), Money::ZERO)
         };
 
-        dispute.resolved = true;
-        dispute.verdict = Some(verdict.clone());
-        Ok(verdict)
+        // 回写争议结果与仲裁者。
+        if let Some(dispute) = self
+            .disputes
+            .iter_mut()
+            .find(|d| d.dispute_id == dispute_id)
+        {
+            dispute.resolved = true;
+            dispute.verdict = Some(verdict.clone());
+            dispute.arbitrator = Some(arbitrator.to_string());
+        }
+        Ok((verdict, slashed))
     }
 
     // ===== 查询接口 =====

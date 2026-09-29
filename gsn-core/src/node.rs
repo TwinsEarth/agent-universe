@@ -738,9 +738,83 @@ fn handle_peer_command(
 
 // ───────────────────────── HTTP 工具 ─────────────────────────
 
-pub fn http_response(status: u16, status_text: &str, body: String, content_type: &str) -> String {
+/// v2.8.5（GAP §3.5）：CORS 不再使用通配 `Access-Control-Allow-Origin: *`。
+///
+/// 从环境变量 `REST_ALLOWED_ORIGINS`（逗号分隔）读取白名单；请求 `Origin`
+/// 命中白名单时回显该 Origin 并附 `Vary: Origin`，否则不回显任何跨域许可
+/// （默认空 = 不允许任何跨域）。
+fn compute_cors(origin: Option<&str>) -> String {
+    let allowed = std::env::var("REST_ALLOWED_ORIGINS").unwrap_or_default();
+    let mut out = String::new();
+    if let Some(origin) = origin {
+        if !origin.is_empty()
+            && allowed.split(',').map(|s| s.trim()).any(|s| s == origin)
+        {
+            out.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\n"));
+            out.push_str("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
+            out.push_str("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
+            out.push_str("Vary: Origin\r\n");
+        }
+    }
+    out
+}
+
+/// v2.8.5（GAP §3.5）：REST 变更类接口 fail-closed 认证。
+///
+/// - GET/HEAD/OPTIONS 放行（只读）；
+/// - 配置了 `REST_BEARER_TOKEN` 时，POST/PUT/PATCH/DELETE 必须携带
+///   `Authorization: Bearer <token>` 且匹配，否则 401；
+/// - 未配置令牌时默认 401（fail-closed），仅当显式设置
+///   `REST_ALLOW_UNAUTHENTICATED=1` 才放行（受信网络的逃生口，打印警告）。
+///
+/// 返回 `Err(状态码, 状态文本, 响应体)`，调用方据此返回 401。
+fn rest_authorize(
+    method: &str,
+    auth_header: Option<&str>,
+) -> Result<(), (u16, &'static str, String)> {
+    let m = method.to_uppercase();
+    if matches!(m.as_str(), "GET" | "HEAD" | "OPTIONS") {
+        return Ok(());
+    }
+    let expected = std::env::var("REST_BEARER_TOKEN").ok().filter(|s| !s.is_empty());
+    if let Some(expected) = expected {
+        let provided = auth_header
+            .and_then(|h| {
+                h.strip_prefix("Bearer ")
+                    .or_else(|| h.strip_prefix("bearer "))
+            })
+            .map(|s| s.trim())
+            .unwrap_or("");
+        if provided == expected {
+            return Ok(());
+        }
+        return Err((
+            401,
+            "Unauthorized",
+            serde_json::json!({ "error": "认证失败：Bearer 令牌缺失或不匹配" }).to_string(),
+        ));
+    }
+    // 未配置令牌：默认 fail-closed；仅显式逃生口放行。
+    if std::env::var("REST_ALLOW_UNAUTHENTICATED")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        eprintln!("⚠️ REST_ALLOW_UNAUTHENTICATED=1：变更接口在无认证下开放（仅限受信网络）");
+        return Ok(());
+    }
+    Err((
+        401,
+        "Unauthorized",
+        serde_json::json!({
+            "error": "变更接口默认拒绝：请配置 REST_BEARER_TOKEN，或显式设置 REST_ALLOW_UNAUTHENTICATED=1"
+        })
+        .to_string(),
+    ))
+}
+
+pub fn http_response(status: u16, status_text: &str, body: String, content_type: &str, extra: &str) -> String {
     format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{}",
         status, status_text, content_type, body.len(), body
     )
 }
@@ -980,13 +1054,38 @@ async fn run_api_server(
         let sandbox_mgr = sandbox_mgr.clone();
 
         tokio::spawn(async move {
-            // 读取完整请求
+            // 读取完整请求（v2.8.5：加读超时与请求体上限，防 slow-loris / 内存 DoS）
+            let read_timeout_secs: u64 = std::env::var("REST_READ_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30);
+            let max_body_bytes: usize = std::env::var("REST_MAX_BODY_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10 * 1024 * 1024);
+
             let mut all = Vec::new();
             let mut buf = vec![0u8; 16384];
+            let mut early_err: Option<(u16, &'static str, String)> = None;
             loop {
-                match stream.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => {
+                let read_fut = stream.read(&mut buf);
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(read_timeout_secs),
+                    read_fut,
+                )
+                .await
+                {
+                    Err(_) => {
+                        // 单次读超时：408
+                        early_err = Some((
+                            408,
+                            "Request Timeout",
+                            serde_json::json!({ "error": "请求读取超时" }).to_string(),
+                        ));
+                        break;
+                    }
+                    Ok(Ok(0)) => break,
+                    Ok(Ok(n)) => {
                         all.extend_from_slice(&buf[..n]);
                         if let Ok(s) = std::str::from_utf8(&all) {
                             if let Some(header_end) = s.find("\r\n\r\n") {
@@ -997,15 +1096,32 @@ async fn run_api_server(
                                     .and_then(|l| l.split(':').nth(1))
                                     .and_then(|v| v.trim().parse().ok())
                                     .unwrap_or(0);
+                                if len > max_body_bytes {
+                                    early_err = Some((
+                                        413,
+                                        "Payload Too Large",
+                                        serde_json::json!({ "error": "请求体超过上限" }).to_string(),
+                                    ));
+                                    break;
+                                }
                                 let body_bytes = s.len() - header_end - 4;
+                                if body_bytes > max_body_bytes {
+                                    early_err = Some((
+                                        413,
+                                        "Payload Too Large",
+                                        serde_json::json!({ "error": "请求体超过上限" }).to_string(),
+                                    ));
+                                    break;
+                                }
                                 if body_bytes >= len || len == 0 { break; }
                             } else { break; }
                         } else { break; }
                     }
-                    Err(_) => return,
+                    Ok(Err(_)) => return,
                 }
             }
 
+            // 提前提取请求头（方法/路径/Origin/Authorization）
             let request = String::from_utf8_lossy(&all);
             let request_line = request.lines().next().unwrap_or("");
             let mut parts = request_line.split_whitespace();
@@ -1014,6 +1130,29 @@ async fn run_api_server(
             let (path_part, _) = raw_path.split_once('?').unwrap_or((&raw_path, ""));
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = request[body_start..].to_string();
+
+            let header_value = |name: &str| -> Option<String> {
+                request.lines().find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    if k.trim().eq_ignore_ascii_case(name) {
+                        Some(v.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
+            };
+            let origin_header = header_value("origin");
+            let auth_header = header_value("authorization");
+            // CORS 头（白名单命中才有，否则为空）
+            let cors_headers = compute_cors(origin_header.as_deref());
+
+            // 读取阶段错误（408/413）：直接返回
+            if let Some((st, stt, pl)) = early_err {
+                let resp = http_response(st, stt, pl, "application/json", &cors_headers);
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                return;
+            }
 
             // ───── MCP over HTTP 端点（优先拦截） ─────
             if path_part == "/api/v1/mcp" {
@@ -1042,14 +1181,30 @@ async fn run_api_server(
                     )
                     .await
                 } else {
-                    let response = http_response(405, "Method Not Allowed", String::new(), "text/plain");
+                    let response = http_response(405, "Method Not Allowed", String::new(), "text/plain", &cors_headers);
                     let _ = stream.write_all(response.as_bytes()).await;
                     return;
                 };
-                let response = http_response(mcp.status, mcp.status_text, mcp.body, &mcp.content_type);
+                let response = http_response(mcp.status, mcp.status_text, mcp.body, &mcp.content_type, &cors_headers);
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (MCP {})", method, path_part, mcp.status);
+                return;
+            }
+
+            // ───── REST 变更类接口认证闸门（v2.8.5，GAP §3.5；MCP 已独立认证） ─────
+            // CORS 预检（OPTIONS）直接返回 204 与 CORS 头。
+            if method == "OPTIONS" {
+                let resp = http_response(204, "No Content", String::new(), "text/plain", &cors_headers);
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                return;
+            }
+            if let Err((st, stt, pl)) = rest_authorize(&method, auth_header.as_deref()) {
+                let resp = http_response(st, stt, pl, "application/json", &cors_headers);
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (REST 认证拒绝 {})", method, path_part, st);
                 return;
             }
 
@@ -1058,7 +1213,7 @@ async fn run_api_server(
                 let net_path = path_part.trim_start_matches("/api/v1").trim_start_matches("/network").to_string();
                 let net_resp = handle_network_api(&method, &net_path, &body, &peer_cmd_tx, &start).await;
                 let ct = if net_resp.1 == "application/json" { "application/json" } else { "text/plain" };
-                let resp = http_response(net_resp.0, if net_resp.0 == 200 { "OK" } else if net_resp.0 == 201 { "Created" } else if net_resp.0 == 400 { "Bad Request" } else { "Not Found" }, net_resp.1, ct);
+                let resp = http_response(net_resp.0, if net_resp.0 == 200 { "OK" } else if net_resp.0 == 201 { "Created" } else if net_resp.0 == 400 { "Bad Request" } else { "Not Found" }, net_resp.1, ct, &cors_headers);
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
@@ -1097,6 +1252,7 @@ async fn run_api_server(
                     status_text,
                     payload.to_string(),
                     "application/json",
+                    &cors_headers,
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
@@ -1146,7 +1302,7 @@ async fn run_api_server(
                 serde_json::to_string(&routed.body).unwrap_or_default()
             };
             let content_type = if routed.body.is_null() { "text/plain" } else { "application/json" };
-            let response = http_response(routed.status, routed.status_text, response_body, content_type);
+            let response = http_response(routed.status, routed.status_text, response_body, content_type, &cors_headers);
             let _ = stream.write_all(response.as_bytes()).await;
             let _ = stream.flush().await;
             eprintln!("← {} {} ({} {})", method, path_part, routed.status, routed.status_text);
@@ -1319,4 +1475,70 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod http_security_tests {
+    use super::{compute_cors, rest_authorize};
+
+    // 环境变量是进程全局的；把所有依赖环境变量的断言放进单个测试函数
+    // 串行执行，避免与其它测试并行运行时相互污染。
+    #[test]
+    fn test_compute_cors_and_rest_authorize() {
+        // ── 保存现场 ──
+        let keys = [
+            "REST_ALLOWED_ORIGINS",
+            "REST_BEARER_TOKEN",
+            "REST_ALLOW_UNAUTHENTICATED",
+        ];
+        let before: Vec<Option<String>> =
+            keys.iter().map(|k| std::env::var(k).ok()).collect();
+
+        // ── compute_cors：白名单命中才回显，否则空 ──
+        std::env::set_var(
+            "REST_ALLOWED_ORIGINS",
+            "https://app.example.com, http://localhost:3000",
+        );
+        let h = compute_cors(Some("https://app.example.com"));
+        assert!(h.contains("Access-Control-Allow-Origin: https://app.example.com"));
+        assert!(h.contains("Vary: Origin"));
+        // 白名单外的来源 → 空（不回显，消除通配 *）
+        assert_eq!(compute_cors(Some("https://evil.com")), "");
+        // 无 Origin → 空
+        assert_eq!(compute_cors(None), "");
+        std::env::remove_var("REST_ALLOWED_ORIGINS");
+
+        // ── rest_authorize：只读方法放行 ──
+        std::env::remove_var("REST_BEARER_TOKEN");
+        std::env::remove_var("REST_ALLOW_UNAUTHENTICATED");
+        assert!(rest_authorize("GET", None).is_ok());
+        assert!(rest_authorize("HEAD", None).is_ok());
+        assert!(rest_authorize("OPTIONS", None).is_ok());
+        // 未配置 token：变更类默认 fail-closed 401
+        assert_eq!(rest_authorize("POST", None).unwrap_err().0, 401);
+        // 逃生口放行
+        std::env::set_var("REST_ALLOW_UNAUTHENTICATED", "1");
+        assert!(rest_authorize("POST", None).is_ok());
+        std::env::remove_var("REST_ALLOW_UNAUTHENTICATED");
+
+        // ── 配置 token：Bearer 匹配才放行 ──
+        std::env::set_var("REST_BEARER_TOKEN", "secret-token");
+        assert_eq!(rest_authorize("POST", None).unwrap_err().0, 401);
+        assert_eq!(
+            rest_authorize("POST", Some("Bearer wrong")).unwrap_err().0,
+            401
+        );
+        assert!(rest_authorize("POST", Some("Bearer secret-token")).is_ok());
+        assert!(rest_authorize("PUT", Some("Bearer secret-token")).is_ok());
+        assert!(rest_authorize("DELETE", Some("Bearer secret-token")).is_ok());
+        std::env::remove_var("REST_BEARER_TOKEN");
+
+        // ── 恢复现场 ──
+        for (k, v) in keys.iter().zip(before) {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
 }

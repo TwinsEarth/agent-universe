@@ -269,6 +269,11 @@ pub async fn route(
             // 恢复边：无共识任务重新开放（v2.6.0）
             return from_mr(market.reopen_task(id.clone()).await, 200);
         }
+        Some(RouteTarget::TaskReject(id)) => {
+            if method != "POST" { return method_not_allowed("POST"); }
+            // 终局拒绝（v2.8.5，GAP §2.2.6：此前 reject_task 仅库可达）
+            return from_mr(market.reject_task(id.clone()).await, 200);
+        }
         Some(RouteTarget::DisputesCollection) => {
             if method != "POST" { return method_not_allowed("POST"); }
             if let Some(v) = parsed_body {
@@ -280,11 +285,16 @@ pub async fn route(
             if method != "POST" { return method_not_allowed("POST"); }
             if let Some(v) = parsed_body {
                 let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
-                let slash = v.get("slash_amount")
-                    .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
-                    .map(crate::marketplace::Money::new)
-                    .unwrap_or(crate::marketplace::Money::ZERO);
-                return from_mr(market.arbitrate(id, guilty, slash).await, 200);
+                // v2.8.5：仲裁者身份必填（拒绝匿名）；罚没金额由服务端规则决定，
+                // 不再读取请求体的 slash_amount。
+                let arbitrator = v.get("arbitrator")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if arbitrator.trim().is_empty() {
+                    return Routed::bad_request("缺少仲裁者身份（arbitrator）");
+                }
+                return from_mr(market.arbitrate(id, arbitrator, guilty).await, 200);
             }
             return Routed::bad_request("缺少仲裁数据")
         }
@@ -334,6 +344,7 @@ enum RouteTarget {
     TaskSettle(String),
     TaskResume(String),
     TaskReopen(String),
+    TaskReject(String),
     DisputesCollection,
     DisputeArbitrate(String),
     AccountDeposit(String),
@@ -380,6 +391,7 @@ fn map_api_segments(seg: &[&str]) -> Option<RouteTarget> {
         ["tasks", id, "settle"] => Some(RouteTarget::TaskSettle((*id).to_string())),
         ["tasks", id, "resume"] => Some(RouteTarget::TaskResume((*id).to_string())),
         ["tasks", id, "reopen"] => Some(RouteTarget::TaskReopen((*id).to_string())),
+        ["tasks", id, "reject"] => Some(RouteTarget::TaskReject((*id).to_string())),
         ["disputes"] => Some(RouteTarget::DisputesCollection),
         ["disputes", id, "arbitrate"] => Some(RouteTarget::DisputeArbitrate((*id).to_string())),
         ["accounts", account, "deposit"] => Some(RouteTarget::AccountDeposit((*account).to_string())),

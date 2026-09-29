@@ -137,10 +137,13 @@ pub enum MarketCommand {
     ResumeRework { task_id: String, reply: oneshot::Sender<MarketResponse> },
     /// 恢复边：无共识任务重新开放（v2.6.0）
     ReopenTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    /// 终局拒绝（v2.8.5：此前 reject_task 仅库可达，未走 REST/MCP）
+    RejectTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
     /// 开启争议
     OpenDispute { dispute: Value, reply: oneshot::Sender<MarketResponse> },
     /// 仲裁
-    Arbitrate { dispute_id: String, guilty: bool, slash: Money, reply: oneshot::Sender<MarketResponse> },
+    /// 仲裁（v2.8.5：罚没金额服务端定，需显式仲裁者，不再传 slash）
+    Arbitrate { dispute_id: String, arbitrator: String, guilty: bool, reply: oneshot::Sender<MarketResponse> },
     /// 充值
     Deposit { account: String, amount: Money, reply: oneshot::Sender<MarketResponse> },
     /// 查询余额
@@ -393,11 +396,14 @@ impl MarketActorHandle {
     pub async fn reopen_task(&self, task_id: String) -> MarketResponse {
         self.call(|reply| MarketCommand::ReopenTask { task_id, reply }).await
     }
+    pub async fn reject_task(&self, task_id: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::RejectTask { task_id, reply }).await
+    }
     pub async fn open_dispute(&self, dispute: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::OpenDispute { dispute, reply }).await
     }
-    pub async fn arbitrate(&self, dispute_id: String, guilty: bool, slash: Money) -> MarketResponse {
-        self.call(|reply| MarketCommand::Arbitrate { dispute_id, guilty, slash, reply }).await
+    pub async fn arbitrate(&self, dispute_id: String, arbitrator: String, guilty: bool) -> MarketResponse {
+        self.call(|reply| MarketCommand::Arbitrate { dispute_id, arbitrator, guilty, reply }).await
     }
     pub async fn deposit(&self, account: String, amount: Money) -> MarketResponse {
         self.call(|reply| MarketCommand::Deposit { account, amount, reply }).await
@@ -574,6 +580,16 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
+        MarketCommand::RejectTask { task_id, reply } => {
+            match market.reject_task(&task_id) {
+                Ok(()) => {
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "rejected", "task_id": task_id
+                    })));
+                }
+                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+            }
+        }
         MarketCommand::OpenDispute { dispute, reply } => {
             let dispute_id = dispute.get("dispute_id").and_then(|v| v.as_str())
                 .unwrap_or(&format!("dispute-{}", uuid::Uuid::new_v4())).to_string();
@@ -589,14 +605,15 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
-        MarketCommand::Arbitrate { dispute_id, guilty, slash, reply } => {
-            match market.arbitrate(&dispute_id, guilty, slash) {
-                Ok(verdict) => {
+        MarketCommand::Arbitrate { dispute_id, arbitrator, guilty, reply } => {
+            match market.arbitrate(&dispute_id, &arbitrator, guilty) {
+                Ok((verdict, slashed)) => {
                     let _ = reply.send(MarketResponse::ok(serde_json::json!({
                         "status": "arbitrated",
                         "dispute_id": dispute_id,
+                        "arbitrator": arbitrator,
                         "verdict": verdict,
-                        "slash_amount": if guilty { slash } else { Money::ZERO },
+                        "slash_amount": slashed,
                     })));
                 }
                 Err(e) => { let _ = reply.send(MarketResponse::err(e)); }

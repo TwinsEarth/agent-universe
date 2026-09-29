@@ -53,12 +53,14 @@ impl MarketMcpBridge {
                 .param("round", "number", "视图轮次（默认 0）", false),
             tool("market_settle_task", "结算已验收任务")
                 .param("task_id", "string", "任务 ID", true),
+            tool("market_reject_task", "终局拒绝验证中/返工任务（v2.8.5）")
+                .param("task_id", "string", "任务 ID", true),
             tool("market_open_dispute", "对任务发起争议")
                 .param("dispute", "object", "争议 JSON（task_id/complainant/reason）", true),
-            tool("market_arbitrate", "仲裁争议，可罚没质押")
+            tool("market_arbitrate", "仲裁争议，罚没金额由服务端规则决定（v2.8.5）")
                 .param("dispute_id", "string", "争议 ID", true)
-                .param("guilty", "boolean", "是否裁定有罪", true)
-                .param("slash_amount", "integer", "罚没金额（整数）", false),
+                .param("arbitrator", "string", "仲裁者身份（必填，拒绝匿名）", true)
+                .param("guilty", "boolean", "是否裁定有罪", true),
             tool("market_deposit", "向账户充值")
                 .param("account", "string", "账户 DID", true)
                 .param("amount", "integer", "充值金额（整数）", true),
@@ -120,11 +122,20 @@ impl MarketMcpBridge {
                     .await
             }
             "market_settle_task" => self.market.settle_task(get_str("task_id")).await,
+            "market_reject_task" => self.market.reject_task(get_str("task_id")).await,
             "market_open_dispute" => self.market.open_dispute(get("dispute")).await,
             "market_arbitrate" => {
                 let guilty = args.get("guilty").and_then(|v| v.as_bool()).unwrap_or(false);
-                let slash = get_money("slash_amount");
-                self.market.arbitrate(get_str("dispute_id"), guilty, slash).await
+                // v2.8.5：仲裁者身份必填，罚没金额服务端规则决定。
+                let arbitrator = args.get("arbitrator")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if arbitrator.trim().is_empty() {
+                    MarketResponse::err("缺少仲裁者身份（arbitrator）")
+                } else {
+                    self.market.arbitrate(get_str("dispute_id"), arbitrator, guilty).await
+                }
             }
             "market_deposit" => self.market.deposit(get_str("account"), get_money("amount")).await,
             "market_balance" => self.market.balance(get_str("account")).await,

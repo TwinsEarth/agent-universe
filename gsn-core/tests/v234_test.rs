@@ -85,6 +85,27 @@ fn fund_and_publish(market: &mut AgentMarket, task: TaskSpec, funds: i64) -> Str
     market.publish_task(task).unwrap()
 }
 
+/// 将任务推进到 Accepted（投标 → 匹配 → 提交结果，policy=None 直接验收）。
+///
+/// v2.8.5 后 Disputed 仅可由 Accepted/Running/Verifying/Rework 进入，
+/// 因此发起争议前需先让任务离开 Open/Matched。
+fn match_and_accept(market: &mut AgentMarket, task_id: &str, agent: &str, price: i64) {
+    market.submit_bid(make_bid(agent, task_id, price)).unwrap();
+    market.match_task(task_id).unwrap();
+    market
+        .submit_result(ResultEnvelope {
+            task_id: task_id.to_string(),
+            agent_id: agent.to_string(),
+            report: r#"{"ok":true}"#.to_string(),
+            confidence: 0.95,
+            error_type: ErrorType::None,
+            trace_ref: format!("trace://{}/1", task_id),
+            evidence_grade: EvidenceGrade::CpuProto,
+            latency_ms: 100,
+        })
+        .unwrap();
+}
+
 // ===== F1: Agent 注册测试 =====
 
 #[test]
@@ -657,6 +678,7 @@ fn test_open_dispute() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
     fund_and_publish(&mut market, make_task("t1", 50, "u1"), 50);
+    match_and_accept(&mut market, "t1", "a1", 10);
 
     assert!(market.open_dispute("d1", "t1", "u1", "结果不合格").is_ok());
     assert_eq!(market.dispute_count(), 1);
@@ -670,26 +692,27 @@ fn test_arbitration_guilty() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
     fund_and_publish(&mut market, make_task("t1", 50, "u1"), 50);
-    market.submit_bid(make_bid("a1", "t1", 10)).unwrap();
-    market.match_task("t1").unwrap();
+    match_and_accept(&mut market, "t1", "a1", 10);
     market.open_dispute("d1", "t1", "u1", "作弊").unwrap();
 
-    let verdict = market.arbitrate("d1", true, Money::new(50)).unwrap();
+    // v2.8.5：仲裁者显式指定，罚没金额由服务端规则决定（不接受请求体）。
+    let (verdict, slashed) = market.arbitrate("d1", "arb-1", true).unwrap();
     assert_eq!(verdict, "guilty");
+    assert_eq!(slashed, Money::new(100), "仲裁作恶应罚没全部质押 100");
 
     let task = market.get_task("t1").unwrap();
     assert_eq!(task.state, TaskState::Slashed);
 
-    // v2.5.8: 作恶方不获报酬，托管预算全额退回需求方
+    // 作恶方不获报酬，托管预算全额退回需求方
     assert_eq!(market.balance("u1"), Money::new(50));
     assert_eq!(market.balance("__escrow__:t1"), Money::ZERO);
-    // 质押被罚 50：质押锁定账户剩 50
-    assert_eq!(market.balance("__stake__:a1"), Money::new(50));
+    // 仲裁作恶罚没全部质押：质押锁定账户清零
+    assert_eq!(market.balance("__stake__:a1"), Money::ZERO);
 
     // 精确守恒：余额和 = 总充值 - 总罚没
     let report = market.conservation_check();
     assert!(report.conserved, "仲裁后守恒失败: {:?}", report);
-    assert_eq!(report.total_slashed, Money::new(50));
+    assert_eq!(report.total_slashed, Money::new(100));
 }
 
 #[test]
@@ -697,10 +720,12 @@ fn test_arbitration_not_guilty() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
     fund_and_publish(&mut market, make_task("t1", 50, "u1"), 50);
+    match_and_accept(&mut market, "t1", "a1", 10);
     market.open_dispute("d1", "t1", "u1", "争议").unwrap();
 
-    let verdict = market.arbitrate("d1", false, Money::ZERO).unwrap();
+    let (verdict, slashed) = market.arbitrate("d1", "arb-1", false).unwrap();
     assert_eq!(verdict, "not_guilty");
+    assert_eq!(slashed, Money::ZERO);
 }
 
 // ===== 端到端流程测试 =====

@@ -394,6 +394,50 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 
 **核心内容**：按 GAP §7.5/§8.3/§8.4/§8.5/§8.8 修 MCP 与 LLM。**§8.8 严重无认证动钱**：HTTP `/api/v1/mcp` 此前不读任何 header/token 即分发 `market_deposit`/`arbitrate`/`settle_task`/`register_agent` 等动钱工具；`handle_post` 增加 `auth_header`/`expected_token` 参数，配置 `MCP_BEARER_TOKEN` 后须带 `Authorization: Bearer <token>`（否则 401），**未配置时默认拒绝全部 10 个写/动钱工具**（安全失败），node.rs 提取 Authorization 头传入。**§8.3**：`RequestId` 加 `Null` 变体，解析/非法请求回 `"id":null`。**§8.4**：`tools/call` 未知工具改正常 result + `isError:true`，不再回协议级 -32001。**§8.5**：McpServer 加 `initialized:bool` 握手状态机，未 initialize 前除 initialize 外全部返回 `-32002 NotInitialized`，`handle_initialize` 读取 `protocolVersion`。**§8.7 局部**：`ToolResult.is_error` 序列化改名 camelCase `isError`。**§7.5**：LLM 五个适配器 `chat()` 不再 `unwrap()`/空 choices `[0]` panic，错误与空数组友好降级。gsn-core **0.2.68**。全量 Rust 0 failed/0 ignored、JS **20**，clippy 清零。详见 [releases/v2.6.8.md](releases/v2.6.8.md)。
 
+### v2.6.9 - Doc Honesty（文档/测试一致性：停止过度承诺）
+
+**核心内容**：本版不改运行时行为，只消除 GAP §5.1/§7.6/§8.6/§9.6/§9.7 指出的「文档/测试承诺 > 代码事实」。`mcp/sse.rs` 模块头诚实说明 `handle_get` 只发一帧 `event: ready` 即关，真长连接未实现；`llm/network.rs::probe_all` 标注只按静态谓词打标记、不做真实 I/O；`test/regression.js` 头部说明断言跑在 JS 参考实现上、不构成 Rust 守护进程行为保证；`js/test/test.js` 注释从「14 项」更正为实际的「20 项」。gsn-core **0.2.69**。cargo 0 failed/0 ignored、JS 20、regression 14。详见 [releases/v2.6.9.md](releases/v2.6.9.md)。
+
+### v2.7.0 - Client Release（首次全平台客户端分发大版本，gsn-core 0.2.70）
+
+**核心内容**：自 v2.3.5 首次引入 Tauri 桌面壳以来，**第一次**随版本发布重建并交付全平台客户端；此后每 9 个小版本后的大版本才再构建一次。版本号统一到 2.7.0（npm ↔ gsn-core 0.2.70），覆盖 `desktop/` 与 `client/` 的 Cargo.toml/pyproject/aip-sdk 声明。CI 在对应 runner 构建 macOS aarch64 / Windows x64 / Linux x64 客户端与 `gsn-daemon-*` 各平台二进制，客户端内嵌 SDK `@twinsearth/agent-universe@2.7.0`。**无运行时逻辑变更**——是 v2.6.0–v2.6.9 十个修复版本的客户端分发节点。详见 [releases/v2.7.0.md](releases/v2.7.0.md)。
+
+### v2.7.1 - stableStringify 拒非法/静默载荷（GAP §9.1，gsn-core 0.2.71）
+
+**核心内容**：`js/lib/aca.js::stableStringify` 修三类不安全行为：对象 `undefined` 键**直接省略**、数组 `undefined` 转 `null`、`BigInt`/`Date`/顶层 `undefined` **显式抛 TypeError**（不再静默序列化为 `{}` 或抛晦涩 Node 异常）。身份双 DID 已统一：新身份 `did:nau:`，`parseDid` 同时接受上游 `did:aip:`。详见 [releases/v2.7.1.md](releases/v2.7.1.md)。
+
+### v2.7.2 - NAT 占位检测返 Unknown 不猜测（GAP §5.6，gsn-core 0.2.72）
+
+**核心内容**：`nat/mod.rs::detect_nat_type` 此前固定返回 `PortRestrictedCone` 却被上层当测量值写进拓扑。本版 `NatType` 新增 `Unknown` 变体，占位检测返回 `Unknown` 不再猜——真实 NAT 分类由 libp2p AutoNAT 判定。两处固化测试同步改断言 `Unknown`。cargo 0 failed、JS **21**、regression 14。详见 [releases/v2.7.2.md](releases/v2.7.2.md)。
+
+### v2.7.3 - 实机部署修复：发布缺字段 422 + 认证验收后证据不升级（gsn-core 0.2.73）
+
+**核心内容**：两个缺陷均来自 Mac/Windows 真机部署。**缺陷一**：`TaskSpec.state` 无 serde 默认但服务端又强制覆盖为 Open，缺省调用被 422——修复为加 `#[serde(default)]`，缺省即 Open。**缺陷二**：`Unverified` 结果经认证式 BFT 委员会判定 Stop、state=Accepted 后 evidence_grade 仍停在 Unverified，导致「验收通过却永远无法结算」死路——修复为委员会 Stop 时把对应结果提升为 `EvidenceGrade::Verified`。详见 [releases/v2.7.3.md](releases/v2.7.3.md)。
+
+### v2.7.4 - 重启恢复：agents/tasks 注入内存 market（gsn-core 0.2.74）
+
+**核心内容**：daemon 重启后账本/余额从 SQLite 正确恢复，但 `/agents`、`/tasks/{id}`、`/stats` 全空——根因是 `spawn_with_store` 恢复时只对 `load_agents/load_tasks` 取了 `.len()` 打日志，**未把业务对象注入内存 market**。修复：`TaskState::from_label` 反向解析磁盘大写字符串（未知/坏值回 Open），恢复路径把 agents/tasks 真正装进内存 HashMap。详见 [releases/v2.7.4.md](releases/v2.7.4.md)。
+
+### v2.7.5 - DCUtR 直连升级 + 多 relay 多通道同时在线（gsn-core 0.2.75）
+
+**核心内容**：P2P 网络层增强。**DCUtR**：relay 建连后跟踪 holepunching，成功则 `direct_peers` 记录并日志「直连升级成功」，打洞失败自动回退 relay；**多 relay 多通道**（方案 4）：`relay_listeners`/`ensure_channels` 正式作为默认，三端同时在线、失效自动切换。承接 Mac Mini + Windows + 云电脑三端跨网组网实测。详见 [releases/v2.7.5.md](releases/v2.7.5.md)。
+
+### v2.7.6 - Agent Sandbox 核心架构（大版本重构第一步，gsn-core 0.2.76）
+
+**核心内容**：智能体沙箱系统起点——只做核心架构与类型定义，不引入具体执行实现。新增 `gsn-core/src/sandbox/`：`error.rs`（EnvBlocked/IsolationViolation/ExecFailed/ResourceLimitExceeded 等统一错误+分类谓词）、`config.rs`（`IsolationLevel` Process/ContainerSharedKernel/MicroVM、`ResourceLimits` 全硬上限、`NetworkPolicy` 默认全拒绝、`FilesystemPolicy` 只读根+独立临时目录可写、`validate()` 拒绝零配额/逃逸路径）。明确沙箱在 Agent Infra 执行层的位置与安全默认。详见 [releases/v2.7.6.md](releases/v2.7.6.md)。
+
+### v2.7.7 - 进程级隔离运行时（沙箱真正能跑代码，gsn-core 0.2.77）
+
+**核心内容**：`sandbox/runtime/process.rs::ProcessSandbox` 实现 `Sandbox` trait，不依赖 Docker/KVM 即可在普通 PC 跑代码。隔离：独立临时目录 `au-sandbox-{id}` 作唯一工作目录、`safe_join` 拒绝对绝对路径/`..` 逃逸、`env_clear` 仅注入受限 PATH、`timeout -k 1` 强杀（退出码 124→ResourceLimitExceeded）+ `bash -c ulimit` 进程/句柄上限。支持 Python/JavaScript。详见 [releases/v2.7.7.md](releases/v2.7.7.md)。
+
+### v2.7.8 - 沙箱生命周期管理与弹性供给（gsn-core 0.2.78）
+
+**核心内容**：新增 `sandbox/manager.rs::SandboxManager`：`acquire/release/destroy` 批量管理；**预热池** warm pool 提前 start 空闲沙箱降冷启动；**休眠唤醒** release 时 pause 释放资源、wake 恢复；**Checkpoint/Fork**（工作目录快照与从活沙箱/checkpoint 复制新沙箱，对应训练评测 Reset/Fork/Replay）；`evict_idle` 回收过久休眠沙箱并补预热；`shutdown` 全清。详见 [releases/v2.7.8.md](releases/v2.7.8.md)。
+
+### v2.7.9 - 沙箱安全边界（gsn-core 0.2.79）
+
+**核心内容**：把 v2.7.6 的策略类型落到可调用检查。新增 `sandbox/security.rs`：`NetworkGuard::check_egress` 默认拒绝、`deny_raw_ip` 拒裸 IP、白名单精确 `host:port` + `:*` 端口通配 + `*.domain` 子域通配；`AuditLog` append-only（可 JSON Lines 落盘、按沙箱过滤）；`PermissionChecker` scope 精确匹配 + `*` 全权、缺失返 IsolationViolation。详见 [releases/v2.7.9.md](releases/v2.7.9.md)。
+
 ### v2.8.0 - 沙箱集成核心链路（大版本，gsn-core 0.2.80）
 
 **核心内容**：把 v2.7.6–v2.7.9 的沙箱核心/进程运行时/生命周期/安全边界集成进 daemon 核心执行链路。

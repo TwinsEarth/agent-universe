@@ -48,6 +48,9 @@ pub mod runtime;
 pub mod manager;
 pub use manager::SandboxManager;
 
+pub mod security;
+pub use security::{AuditEntry, AuditLog, EvidenceGrade, NetworkGuard, PermissionChecker};
+
 // 兼容旧导出（v2.4.0 名称），逐步迁移到 config:: 命名空间
 pub use config::IsolationLevel;
 pub use error::SandboxError;

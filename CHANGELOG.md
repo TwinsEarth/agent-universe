@@ -2,6 +2,17 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.9] - 2026-09-29
+
+### Agent Sandbox 安全边界
+
+- 新增 `sandbox/security.rs`：
+- NetworkGuard 出站策略落地（默认拒绝/白名单/裸IP/通配）；
+- AuditLog append-only 审计（含 JSON Lines 落盘）；
+- PermissionChecker scope 权限校验；
+- EvidenceGrade 三级证据分级（lowercase 序列化）；
+- v279 测试 13 项全过。
+
 ## [v2.7.8] - 2026-09-29
 
 ### Agent Sandbox 生命周期管理与弹性供给

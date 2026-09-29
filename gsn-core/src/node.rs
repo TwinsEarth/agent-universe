@@ -389,6 +389,14 @@ fn process_swarm_event(
                     }
                 }
                 Identify(_) => {}
+                // v2.7.5: DCUtR 直连升级结果——成功则纳入 direct_peers
+                Dcutr(e) => {
+                    if peer.note_dcutr_event(e) {
+                        eprintln!("⛏️ DCUtR 直连升级成功: {}", e.remote_peer_id);
+                    } else if e.result.is_err() {
+                        eprintln!("⛏️ DCUtR 直连失败（继续走 relay）: {}", e.remote_peer_id);
+                    }
+                }
                 _ => {}
             }
         }
@@ -514,7 +522,10 @@ fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent
                 RelayClient(e) => eprintln!("🔌 RelayClient {e:?}"),
                 Identify(e) => eprintln!("🏷️ Identify {e:?}"),
                 AutoNat(e) => eprintln!("🧭 AutoNat {e:?}"),
-                Dcutr(e) => eprintln!("⛏️ DCUtR {e:?}"),
+                Dcutr(e) => {
+                    // v2.7.5: 日志在 process_swarm_event 里记录（那里有 &mut peer）
+                    let _ = &e;
+                }
                 Kademlia(e) => {
                     use libp2p::kad::Event::*;
                     if let RoutingUpdated { peer, .. } = e {
@@ -638,6 +649,7 @@ fn handle_peer_command(
                 "active": active_ids,
                 "target_channels": DEFAULT_PARALLEL_RELAYS,
                 "relay_count": relays.len(),
+                "direct_peers": peer.direct_peer_ids(),
             });
             let _ = reply.send(v);
         }

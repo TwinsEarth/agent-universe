@@ -16,7 +16,7 @@ use libp2p::{
     Multiaddr, PeerId, SwarmBuilder,
 };
 use libp2p::core::transport::ListenerId;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 /// 网络行为组合
@@ -92,6 +92,9 @@ pub struct P2pPeer {
     /// v2.5.5: 多 relay 通道映射：relay peer id → circuit listener。
     /// 方案 4：多个 relay 同时 listen、持有多组 reservation，续期前按 relay 主动移除旧 listener。
     relay_listeners: HashMap<String, ListenerId>,
+    /// v2.7.5: DCUtR 直连升级成功的对端 peer（经 relay 打洞成功，升级为直连）。
+    /// 直连比 relay 中继延迟低、吞吐高；失败时仍回退 relay。
+    direct_peers: HashSet<PeerId>,
 }
 
 impl P2pPeer {
@@ -194,6 +197,7 @@ impl P2pPeer {
             swarm,
             bootstrapped: Vec::new(),
             relay_listeners: HashMap::new(),
+            direct_peers: HashSet::new(),
         })
     }
 
@@ -381,6 +385,20 @@ impl P2pPeer {
     /// v2.5.5: 当前持有 circuit listener 的 relay Peer ID 列表（多通道）
     pub fn active_relay_ids(&self) -> Vec<String> {
         self.relay_listeners.keys().cloned().collect()
+    }
+
+    /// v2.7.5: 记录 DCUtR 事件——result.is_ok() 表示经 relay 打洞成功、升级为直连。
+    /// 返回 true 表示本次是新升级成功（用于日志/指标）。
+    pub fn note_dcutr_event(&mut self, e: &dcutr::Event) -> bool {
+        match &e.result {
+            Ok(_conn_id) => self.direct_peers.insert(e.remote_peer_id),
+            Err(_) => false,
+        }
+    }
+
+    /// v2.7.5: 已 DCUtR 直连升级成功的对端 peer 列表
+    pub fn direct_peer_ids(&self) -> Vec<String> {
+        self.direct_peers.iter().map(|p| p.to_string()).collect()
     }
 
     /// 已连接对等节点的 peer_id 列表

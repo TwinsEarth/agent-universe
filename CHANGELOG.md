@@ -2,6 +2,15 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.7.5] - 2026-09-29
+
+### DCUtR 直连升级 + 多 relay 多通道同时在线
+
+- `P2pPeer.direct_peers` 跟踪 DCUtR holepunch 升级成功的对端，`/relays` 响应新增 `direct_peers` 字段；
+- `process_swarm_event` Dcutr 分支：成功打直连成功日志、失败回退 relay；
+- `ensure_channels` 默认 3 条 relay 通道同时在线，relay 掉线自动切换；
+- `select_parallel` 按分类优先级选健康 relay；容量策略沿用 v2.5.5 不回退。
+
 ## [v2.7.4] - 2026-09-29
 
 ### 重启恢复修复：agents/tasks 未注入内存 market

@@ -56,7 +56,8 @@ v1.0.0 (Genesis)
                                                                           └── v2.7.1 (stableStringify 拒非法/静默载荷 - GAP §9.1)
                                                                                 └── v2.7.2 (NAT 占位检测返 Unknown 不猜测 - GAP §5.6)
                                                                                       └── v2.7.3 (实机部署修复 - 发布缺字段/认证验收证据升级)
-                                                                                            └── v2.7.4 (重启恢复 - agents/tasks 注入内存 market) ← 当前
+                                                                                            └── v2.7.4 (重启恢复 - agents/tasks 注入内存 market)
+                                                                                                  └── v2.7.5 (DCUtR 直连升级 + 多 relay 多通道同时在线) ← 当前
 ```
 
 ## 大版本详情

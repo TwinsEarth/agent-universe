@@ -94,8 +94,16 @@ impl ProcessSandbox {
                 action: "exec".into(),
             });
         }
+        // 解释器名跨平台：Windows 上官方 Python 注册为 `python`（无 python3 别名），
+        // 硬编码 `python3` 会在 Windows 上找不到解释器导致 exec 500（v2.8.1 修复）。
         let (entry, program) = match lang {
-            CodeLanguage::Python => ("main.py", "python3"),
+            CodeLanguage::Python => {
+                if cfg!(target_os = "windows") {
+                    ("main.py", "python")
+                } else {
+                    ("main.py", "python3")
+                }
+            }
             CodeLanguage::JavaScript => ("main.js", "node"),
         };
         self.write_file(entry, code)?;
@@ -117,37 +125,74 @@ impl ProcessSandbox {
         // 仅允许白名单解释器；shell 需显式 allow_shell
         let resolved = resolve_program(program, cfg)?;
 
-        // 用 bash 包装 ulimit + timeout；timeout 秒数向上取整
-        let timeout_s = (cfg.resources.timeout_ms / 1000).max(1);
-        let mut inner = String::new();
-        inner.push_str(&format!("ulimit -u {}; ", cfg.resources.max_processes));
-        inner.push_str(&format!("ulimit -n {}; ", cfg.resources.max_open_files));
-        inner.push_str("exec ");
-        inner.push_str(&shell_quote(&resolved));
-        for a in args {
-            inner.push(' ');
-            inner.push_str(&shell_quote(a));
-        }
-
-        let mut cmd = std::process::Command::new("bash");
-        cmd.arg("-c")
-            // timeout 在最外层：到点发 SIGTERM（再 KILL 用 -k）
-            .arg(format!(
-                "timeout -k 1 {timeout_s} bash -c {quoted}",
-                quoted = shell_quote(&inner)
-            ))
-            .current_dir(dir)
-            // 不继承宿主环境
-            .env_clear();
-        // 仅注入受限 PATH，用于定位白名单解释器与 timeout；其余变量不继承
-        if let Some(p) = std::env::var_os("PATH") {
-            cmd.env("PATH", p);
-        }
-        for (k, v) in &cfg.env {
-            cmd.env(k, v);
-        }
+        // 平台分发：
+        // - Unix：用 bash 包装 ulimit（进程/句柄上限）+ timeout（超时强杀）；
+        // - Windows：无 bash/ulimit/timeout 等价物，直接 spawn 解释器。
+        //   资源上限与超时在 Windows 上暂未实现（已知降级，后续版本用 Job Object 补齐）。
+        //   这是 v2.8.1 修复：v2.8.0 硬编码 bash 导致 Windows 上 exec 一律 500。
+        let cmd = build_platform_command(&resolved, args, dir, cfg)?;
         Ok(cmd)
     }
+}
+
+/// 按目标平台构造执行命令。
+#[cfg(not(target_os = "windows"))]
+fn build_platform_command(
+    resolved: &str,
+    args: &[String],
+    dir: &Path,
+    cfg: &SandboxConfig,
+) -> Result<std::process::Command, SandboxError> {
+    // timeout 秒数向上取整
+    let timeout_s = (cfg.resources.timeout_ms / 1000).max(1);
+    let mut inner = String::new();
+    inner.push_str(&format!("ulimit -u {}; ", cfg.resources.max_processes));
+    inner.push_str(&format!("ulimit -n {}; ", cfg.resources.max_open_files));
+    inner.push_str("exec ");
+    inner.push_str(&shell_quote(resolved));
+    for a in args {
+        inner.push(' ');
+        inner.push_str(&shell_quote(a));
+    }
+
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-c")
+        // timeout 在最外层：到点发 SIGTERM（再 KILL 用 -k）
+        .arg(format!(
+            "timeout -k 1 {timeout_s} bash -c {quoted}",
+            quoted = shell_quote(&inner)
+        ))
+        .current_dir(dir)
+        // 不继承宿主环境
+        .env_clear();
+    // 仅注入受限 PATH，用于定位白名单解释器与 timeout；其余变量不继承
+    if let Some(p) = std::env::var_os("PATH") {
+        cmd.env("PATH", p);
+    }
+    for (k, v) in &cfg.env {
+        cmd.env(k, v);
+    }
+    Ok(cmd)
+}
+
+/// Windows：直接 spawn 解释器，不套 shell。
+#[cfg(target_os = "windows")]
+fn build_platform_command(
+    resolved: &str,
+    args: &[String],
+    dir: &Path,
+    cfg: &SandboxConfig,
+) -> Result<std::process::Command, SandboxError> {
+    let mut cmd = std::process::Command::new(resolved);
+    cmd.args(args).current_dir(dir).env_clear();
+    // Windows 上 python/node 通常已在 PATH；注入 PATH 保证能找到 .exe
+    if let Some(p) = std::env::var_os("PATH") {
+        cmd.env("PATH", p);
+    }
+    for (k, v) in &cfg.env {
+        cmd.env(k, v);
+    }
+    Ok(cmd)
 }
 
 impl super::super::Sandbox for ProcessSandbox {

@@ -402,6 +402,15 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **Kubernetes API（`sandbox/k8s.rs`）**：生成 `AgentSandbox` CRD 清单 + 示例 + reconcile 步骤，可 `kubectl apply`；当前节点无 K8s，仅生成清单、诚实标注。
 - **验证**：tests/v280_test 5 项；clippy 零警告；全量 Rust、JS 21、回归 14 全绿。详见 [releases/v2.8.0.md](releases/v2.8.0.md)。
 
+### v2.8.1 - Windows 沙箱 exec 跨平台修复（gsn-core 0.2.81）
+
+**核心内容**：修 v2.8.0 在 Windows 上 `POST /api/v1/sandboxes/{id}/exec` 一律 500 的阻断 Bug。根因：`sandbox/runtime/process.rs` 硬编码 `Command::new("bash")` 并用 `ulimit`/`timeout`/`exec` Unix shell 包装，Python 解释器写死 `python3`；Windows 实测 `bash`/`python3` 均不存在，`output()` 返回 io error → `SandboxError::Internal` → 500。
+
+- **解释器名跨平台**：`run_code` 中 Python 解释器按 `cfg!(target_os="windows")` 选 `python`（Windows）/`python3`（Unix）；JS 仍为 `node`。
+- **命令构造拆平台分支**：抽出 `build_platform_command(resolved, args, dir, cfg)`，`#[cfg(not(windows))]` 保留原 bash + ulimit + timeout 包装；`#[cfg(windows)]` 直接 `Command::new(resolved).args(args).current_dir(dir).env_clear()` 并注入 PATH 与 cfg.env。
+- **已知降级**：Windows 上暂未实现 ulimit 进程/句柄上限与 timeout 强杀（无 bash/timeout 等价物），后续版本用 Job Object 补齐。
+- **验证**：Linux 本地 daemon 0.2.81 smoke test `POST /exec {"language":"python","code":"print(1+1)"}` → 200 `stdout:"2\n"` exit_code=0；全量 cargo test 31 项全绿。Windows 二进制由 CI 出 Release 资产后回装复测。
+
 ## 小版本更新日志
 
 ### v2.0.1-v2.0.6

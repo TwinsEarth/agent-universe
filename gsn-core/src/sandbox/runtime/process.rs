@@ -6,7 +6,7 @@
 //! 1. 每个沙箱独立临时目录（`base/au-sandbox-{id}`），作为唯一工作目录；
 //! 2. 子进程只在该目录内运行，文件操作经路径校验拒绝逃逸；
 //! 3. 子进程不继承宿主环境，仅注入 cfg.env 白名单；
-//! 4. 经 `timeout`（超时强杀）+ `bash -c ulimit`（进程/句柄上限）；
+//! 4. 超时由 Rust 侧轮询后强杀（不依赖外部 timeout/gtimeout）+ `bash -c ulimit`（进程/句柄上限）；
 //! 5. 不挂载宿主路径，根只读由"不向临时目录外写"保证。
 //!
 //! 不提供内核级隔离（strength=1），不用于完全不可信代码。
@@ -95,7 +95,15 @@ impl ProcessSandbox {
             });
         }
         let (entry, program) = match lang {
-            CodeLanguage::Python => ("main.py", "python3"),
+            // macOS/Linux 自带 python3；Windows 官方安装名为 python
+            CodeLanguage::Python => (
+                "main.py",
+                if cfg!(target_os = "windows") {
+                    "python"
+                } else {
+                    "python3"
+                },
+            ),
             CodeLanguage::JavaScript => ("main.js", "node"),
         };
         self.write_file(entry, code)?;
@@ -116,38 +124,66 @@ impl ProcessSandbox {
 
         // 仅允许白名单解释器；shell 需显式 allow_shell
         let resolved = resolve_program(program, cfg)?;
-
-        // 用 bash 包装 ulimit + timeout；timeout 秒数向上取整
-        let timeout_s = (cfg.resources.timeout_ms / 1000).max(1);
-        let mut inner = String::new();
-        inner.push_str(&format!("ulimit -u {}; ", cfg.resources.max_processes));
-        inner.push_str(&format!("ulimit -n {}; ", cfg.resources.max_open_files));
-        inner.push_str("exec ");
-        inner.push_str(&shell_quote(&resolved));
-        for a in args {
-            inner.push(' ');
-            inner.push_str(&shell_quote(a));
-        }
-
-        let mut cmd = std::process::Command::new("bash");
-        cmd.arg("-c")
-            // timeout 在最外层：到点发 SIGTERM（再 KILL 用 -k）
-            .arg(format!(
-                "timeout -k 1 {timeout_s} bash -c {quoted}",
-                quoted = shell_quote(&inner)
-            ))
-            .current_dir(dir)
-            // 不继承宿主环境
-            .env_clear();
-        // 仅注入受限 PATH，用于定位白名单解释器与 timeout；其余变量不继承
-        if let Some(p) = std::env::var_os("PATH") {
-            cmd.env("PATH", p);
-        }
-        for (k, v) in &cfg.env {
-            cmd.env(k, v);
-        }
-        Ok(cmd)
+        build_platform_command(&resolved, args, dir, cfg)
     }
+}
+
+/// Unix（Linux/macOS）：bash 包装 ulimit 资源上限；
+/// 超时由 Rust 侧强杀（见 exec），**不依赖外部 timeout/gtimeout**——
+/// macOS 自带无 GNU timeout（只有 coreutils 的 gtimeout），这正是 mac CI 红的根因。
+#[cfg(not(target_os = "windows"))]
+fn build_platform_command(
+    resolved: &str,
+    args: &[String],
+    dir: &Path,
+    cfg: &SandboxConfig,
+) -> Result<std::process::Command, SandboxError> {
+    let mut inner = String::new();
+    inner.push_str(&format!("ulimit -u {}; ", cfg.resources.max_processes));
+    inner.push_str(&format!("ulimit -n {}; ", cfg.resources.max_open_files));
+    // exec 替换 bash 为目标程序，最终只有一个进程（pid 即 bash），
+    // Rust 侧 kill 该 pid 即可无孤儿地强杀。
+    inner.push_str("exec ");
+    inner.push_str(&shell_quote(resolved));
+    for a in args {
+        inner.push(' ');
+        inner.push_str(&shell_quote(a));
+    }
+
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg("-c")
+        .arg(&inner)
+        .current_dir(dir)
+        // 不继承宿主环境
+        .env_clear();
+    // 仅注入受限 PATH，用于定位白名单解释器；其余变量不继承
+    if let Some(p) = std::env::var_os("PATH") {
+        cmd.env("PATH", p);
+    }
+    for (k, v) in &cfg.env {
+        cmd.env(k, v);
+    }
+    Ok(cmd)
+}
+
+/// Windows：直接 spawn 解释器，不套 shell（无 bash/ulimit/timeout）。
+#[cfg(target_os = "windows")]
+fn build_platform_command(
+    resolved: &str,
+    args: &[String],
+    dir: &Path,
+    cfg: &SandboxConfig,
+) -> Result<std::process::Command, SandboxError> {
+    let mut cmd = std::process::Command::new(resolved);
+    cmd.args(args).current_dir(dir).env_clear();
+    // python/node 通常已在 PATH；注入 PATH 保证能找到 .exe
+    if let Some(p) = std::env::var_os("PATH") {
+        cmd.env("PATH", p);
+    }
+    for (k, v) in &cfg.env {
+        cmd.env(k, v);
+    }
+    Ok(cmd)
 }
 
 impl super::super::Sandbox for ProcessSandbox {
@@ -207,27 +243,77 @@ impl super::super::Sandbox for ProcessSandbox {
                 action: "exec".into(),
             });
         }
+        let cfg = self
+            .cfg
+            .clone()
+            .ok_or(SandboxError::Internal("no cfg".into()))?;
         let mut cmd = self.build_command(program, args)?;
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
         let start = Instant::now();
-        let output = cmd
-            .output()
+        let mut child = cmd
+            .spawn()
             .map_err(|e| SandboxError::Internal(e.to_string()))?;
-        let wall_ms = start.elapsed().as_millis() as u64;
 
-        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-        let cfg = self.cfg.as_ref().ok_or(SandboxError::Internal("no cfg".into()))?;
+        // 独立线程读 stdout/stderr，防止管道写满后子进程阻塞
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+        let stdout_handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Some(mut r) = stdout_pipe.take() {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let stderr_handle = std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Some(mut r) = stderr_pipe.take() {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        });
 
-        // timeout 退出码 124 = 超时
-        if output.status.code() == Some(124) {
-            return Err(SandboxError::ResourceLimitExceeded {
-                kind: "timeout".into(),
-                limit: cfg.resources.timeout_ms,
-                actual: wall_ms,
-            });
+        // 轮询等待；超时由 Rust 侧强杀（不依赖外部 timeout/gtimeout）
+        let timeout = cfg.resources.timeout_ms;
+        let status;
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => {
+                    status = s;
+                    break;
+                }
+                Ok(None) => {
+                    if start.elapsed() >= std::time::Duration::from_millis(timeout) {
+                        let actual = start.elapsed().as_millis() as u64;
+                        // exec 后 bash 已被替换为目标程序，kill 该 pid 即无孤儿强杀
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        let _ = stdout_handle.join();
+                        let _ = stderr_handle.join();
+                        return Err(SandboxError::ResourceLimitExceeded {
+                            kind: "timeout".into(),
+                            limit: timeout,
+                            actual,
+                        });
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => return Err(SandboxError::Internal(e.to_string())),
+            }
         }
 
-        let exit_code = output.status.code().unwrap_or(-1);
+        let wall_ms = start.elapsed().as_millis() as u64;
+        let stdout_bytes = stdout_handle
+            .join()
+            .map_err(|_| SandboxError::Internal("stdout join".into()))?;
+        let stderr_bytes = stderr_handle
+            .join()
+            .map_err(|_| SandboxError::Internal("stderr join".into()))?;
+        let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+        let exit_code = status.code().unwrap_or(-1);
         Ok(SandboxResult {
             exit_code,
             stdout,

@@ -48,6 +48,9 @@ expect "desktop/src-tauri Cargo.toml" "$VERSION" "$(first_version desktop/src-ta
 # gsn-core Rust 线（0.2.NN）
 expect "gsn-core/Cargo.toml"        "$RUST" "$(first_version gsn-core/Cargo.toml '^version')"
 
+# ci.yml 里 js-test 的 root re-export 版本断言（硬编码版本号，bump 必须改到，否则 js-test 红）
+expect "ci.yml 版本断言" "$VERSION" "$(first_version .github/workflows/ci.yml 'au.version')"
+
 if [ "$fail" -ne 0 ]; then
   echo ">>> 版本一致性检查失败：请先 bash scripts/bump-version.sh $VERSION 或修正 VERSION"
   exit 1

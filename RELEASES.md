@@ -62,7 +62,9 @@ v1.0.0 (Genesis)
                                                                                                               └── v2.7.7 (进程级隔离运行时)
                                                                                                                     └── v2.7.8 (生命周期管理与弹性供给)
                                                                                                                           └── v2.7.9 (安全边界)
-                                                                                                                                └── v2.8.0 (沙箱集成核心链路 - E2B/K8s API + 7 个 MCP 工具) ← 当前
+                                                                                                                                └── v2.8.0 (沙箱集成核心链路 - E2B/K8s API + 7 个 MCP 工具)
+                                                                                                                                      ├── v2.8.1 (Windows exec 修复 - 去 bash/python3 硬编码，直接 spawn)
+                                                                                                                                      └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时) ← 当前
 ```
 
 ## 大版本详情
@@ -401,6 +403,23 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **MCP 工具（`mcp/sandbox_tools.rs`，7 个）**：`sandbox_create/list/get/run_code/pause/resume/destroy`，复用同一处理器（单一来源）；sse/stdio 双路径接入；mutating 工具无 token 默认拒绝。公共构造 `tool()`/`ParamBuilder` 上移 `mcp/tool.rs`。
 - **Kubernetes API（`sandbox/k8s.rs`）**：生成 `AgentSandbox` CRD 清单 + 示例 + reconcile 步骤，可 `kubectl apply`；当前节点无 K8s，仅生成清单、诚实标注。
 - **验证**：tests/v280_test 5 项；clippy 零警告；全量 Rust、JS 21、回归 14 全绿。详见 [releases/v2.8.0.md](releases/v2.8.0.md)。
+
+### v2.8.1 - Windows exec 修复（gsn-core 0.2.81）
+
+**核心问题**：v2.8.0 在 Windows 上沙箱创建 201 正常，但 `POST /api/v1/sandboxes/{id}/exec` body `{"language":"python","code":"print(1+1)"}` 一律 HTTP 500 空 body。
+
+- **根因**：`process.rs` 硬编码 `Command::new("bash")` + `bash -c "timeout ... bash -c 'ulimit ...; exec <prog>'"`，且 Python 解释器写死 `python3`；Windows 实测只有 `python`/`node`，无 `bash`/`python3`，`.output()` io error → Internal → 500。
+- **修复**：`build_platform_command` 拆为 `#[cfg(not(windows))]`/`#[cfg(windows)]` 两版；Windows 直接 spawn 解释器、不套 shell；Python 解释器按平台选 `python`/`python3`。
+- **验证**：Linux 本地 smoke：daemon 0.2.81 建 sb-1，exec `print(1+1)` → 200 `{"exit_code":0,"stdout":"2\n","wall_ms":121}`；全量 cargo test 31 项全绿；Release/Publish CI 全绿，npm `@twinsearth/agent-universe@2.8.1` 已发。
+
+### v2.8.2 - macOS CI 修复（gsn-core 0.2.82）
+
+**核心问题**：main 分支 `.github/workflows/ci.yml` 仅 `rust-test` 的 `macos-latest` Test step 失败（Ubuntu 全绿），`gsn-core/tests/v277_test.rs` 6 个 exec 类测试在 macOS FAILED。
+
+- **根因**：**macOS runner 无 GNU `timeout`（只有 coreutils 的 `gtimeout`）**，而 `process.rs` 硬编码 `timeout -k 1 N bash -c ...`；命令找不到 → exec 失败；超时测试因无 timeout 强杀返回 Ok，断言失败。
+- **修复**：去掉对外部 `timeout`/`gtimeout` 的依赖，改用 Rust 原生超时——`exec` 改为 `spawn` + 两个读线程（stdout/stderr 各 `read_to_end`，防管道写满阻塞）+ 主线程 `try_wait` 轮询（10ms）；超时则 `child.kill()` + `wait()` + join 读线程后返回 `ResourceLimitExceeded{kind:"timeout"}`。Unix 分支保留 `bash -c ulimit`（bash 与 ulimit 内建 macOS 均有），`exec` 替换 bash 为目标程序后 kill 该 pid 无孤儿。
+- **版本一致性**：`check-version.sh` 新增 `ci.yml 版本断言`（bump 必须改到 ci.yml 里硬编码的 `au.version!=='X.Y.Z'`，否则 js-test 红）。
+- **验证**：见本版 release 记录；macOS 变绿后由 CI 确认。
 
 ## 小版本更新日志
 

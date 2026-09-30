@@ -21,7 +21,7 @@ fn get_platform() -> String {
 
 #[tauri::command]
 fn get_sdk_version() -> String {
-    "2.9.0".to_string()
+    env!("CARGO_PKG_VERSION").to_string()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

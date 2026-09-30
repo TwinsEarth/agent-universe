@@ -228,7 +228,8 @@ fn v277_default_config_refused_without_waiver() {
 }
 
 // v2.9.1（G1）：内存地址空间上限被强制执行，超出上限的分配不能成功。
-#[cfg(unix)]
+// 依赖 ulimit -v（RLIMIT_AS），Linux 强制；macOS 不支持（故 linux-only）。
+#[cfg(target_os = "linux")]
 #[test]
 fn v277_memory_limit_blocks_large_allocation() {
     let id = "v277-mem-limit";

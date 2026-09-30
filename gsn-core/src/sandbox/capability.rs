@@ -305,8 +305,8 @@ pub fn process_declaration() -> CapabilityDeclaration {
                      不覆盖句柄"
                 .to_string(),
         });
-    } else {
-        // Unix：bash ulimit 强制 CPU 时间(-t)、进程数(-u)、句柄(-n)。
+    } else if cfg!(target_os = "linux") {
+        // Linux：bash ulimit 强制 CPU 时间(-t)、进程数(-u)、句柄(-n)。
         // 内存：Python 用 ulimit -v（虚拟地址，精确）；Node/V8 因启动预留
         // 大块虚拟 CodeRange，ulimit -v 无法可靠限制，改用 V8
         // --max-old-space-size 限制 JS 堆，ulimit -v 给预留余量并兜底总
@@ -315,6 +315,19 @@ pub fn process_declaration() -> CapabilityDeclaration {
         enforced.push(CpuLimit);
         enforced.push(ProcessCountLimit);
         enforced.push(OpenFileLimit);
+    } else {
+        // macOS：ulimit -t/-u/-n 有效，但内核不支持 RLIMIT_AS/VMEM，
+        // 故 Python 内存无强制原语（Node 的 --max-old-space-size 仍限制
+        // JS 堆，但无法对所有语言保证内存边界）→ MemoryLimit 记为 unenforced。
+        enforced.push(CpuLimit);
+        enforced.push(ProcessCountLimit);
+        enforced.push(OpenFileLimit);
+        unenforced.push(UnenforcedCapability {
+            boundary: MemoryLimit,
+            reason: "macOS 内核不支持 RLIMIT_AS/VMEM（ulimit -v 失败或静默无效）；Node 的 \
+                     --max-old-space-size 仅限制 JS 堆，无法对所有语言保证内存边界"
+                .to_string(),
+        });
     }
 
     CapabilityDeclaration::from_parts("process", enforced, unenforced)

@@ -152,24 +152,29 @@ fn build_platform_command(
 ) -> Result<std::process::Command, SandboxError> {
     let mut inner = String::new();
     let is_node = resolved == "node";
-    // 每条资源限制失败即中止（exit 200），绝不静默不受限地 exec 目标。
-    // 地址空间（-v）单位 KB；内存 MB → KB
+    // 地址空间（-v）单位 KB。
     //
     // Node/V8：启动时 mmap 预留大块虚拟地址（CodeRange，跨版本大小不同，
     // 新版可达 1GB+），是虚拟预留而非实际占用。ulimit -v 无法区分预留与
     // 实际占用，按 mem_mb 设会导致高版本 Node 启动即被信号杀死（CI 红）。
     // 因此 Node 的实际内存由 V8 官方 `--max-old-space-size`（下方）限制，
     // ulimit -v 只给 V8 预留留足余量（至少 2GB，大内存时 mem_mb+1GB）。
-    // Python：不预留大虚拟地址，ulimit -v 精确等于 mem_mb。
+    // Python：不预留大虚拟地址，Linux 上 ulimit -v 精确等于 mem_mb。
+    //
+    // **macOS：内核不支持 RLIMIT_AS/VMEM（ulimit -v 直接失败或静默无效），
+    // 故 Darwin 跳过 -v；Python 内存无强制原语（需 waiver），Node 仍由
+    // --max-old-space-size 限制 JS 堆。**
     let vmem_mb = if is_node {
         u64::from(cfg.resources.mem_mb).max(1024) + 1024
     } else {
         u64::from(cfg.resources.mem_mb)
     };
     let vmem_kb = vmem_mb * 1024;
-    // CPU 时间（-t）单位秒，毫秒向上取整，至少 1 秒
+    inner.push_str(&format!(
+        "case \"$(uname -s)\" in Linux) ulimit -v {vmem_kb} || exit 200;; Darwin);; *) ulimit -v {vmem_kb} || exit 200;; esac; "
+    ));
+    // CPU 时间（-t）单位秒，毫秒向上取整，至少 1 秒；Linux/macOS 均支持
     let cpu_secs = u64::from(cfg.resources.cpu_millis).div_ceil(1_000).max(1);
-    inner.push_str(&format!("ulimit -v {vmem_kb} || exit 200; "));
     inner.push_str(&format!("ulimit -t {cpu_secs} || exit 200; "));
     inner.push_str(&format!(
         "ulimit -u {} || exit 200; ",

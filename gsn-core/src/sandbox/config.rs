@@ -273,6 +273,13 @@ impl SandboxConfig {
             ),
             Waiver::new(Capability::DiskQuota, reason("disk quota")),
         ];
+        // macOS 无 RLIMIT_AS，Python 内存无强制原语 → 显式 waiver（带理由）。
+        if cfg!(target_os = "macos") {
+            cfg.waivers.push(Waiver::new(
+                Capability::MemoryLimit,
+                reason("memory (RLIMIT_AS)"),
+            ));
+        }
         cfg
     }
 }

@@ -172,7 +172,9 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    needs: build-and-upload
+    # 只依赖 gate（含版本一致性 + 全量 Rust 测试 + clippy + Release 创建）。
+    # npm 包（JS SDK）与 macOS daemon 二进制无关；不被 macOS runner 排队阻塞。
+    needs: gate
     steps:
       - uses: actions/checkout@v4
 

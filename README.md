@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.8.9（v2.8.8 跳过），详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.0（v2.8.8 跳过），详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -339,6 +339,7 @@ npm install @twinsearth/agent-universe
 | v2.8.6 | **MCP Validate** | **MCP 参数校验接入两个生产传输（sse/stdio），非法金额/类型返 -32602 不再静默存 0；金额入口只接受整数（get_money/REST/CLI 去浮点）；ACA Receipt 计量整数化，规范签名载荷无浮点、三端一致（GAP §3.5/§4.1）** |
 | v2.8.7 | **Sandbox Auth** | **沙箱变更接口统一认证（401）+ 所有权绑定（非所有者 403）；随机 id（sb- + 16 hex）不可猜、重启不复用；输出截断 1 MiB；请求体 env/初始文件/超时/域名/资源真正生效；Windows Job Object 强制资源/进程树；启动清扫孤儿沙箱（GAP §3.3）** |
 | v2.8.9 | **Claim Verification** | **弱公钥拒绝接入 register_peer/委员/贡献验证；贡献验证 DID↔公钥绑定（一把密钥不能伪造 DID 绕去重）；审计点名生产 panic 全部类型化；NAT 守卫锁值 Unknown、纠删码测试真丢数据片靠校验片重建；锁毒化 into_inner 恢复全部告警（GAP §2.2）。v2.8.8 按指示跳过** |
+| v2.9.0 | **Workbench** | **桌面工作台大版本（继续 Tauri 2，参考 DeepSeek Harness）：9 大视图、默认工作区、过程展示分级、托盘常驻/单实例、后台任务、Excel/CSV/TSV 预览、模型提供商统一入口、终端、Subagent/团队、插件管理；`?all=1` 真实任务/智能体列表；client-build 三平台构建工作台、ci 增 workbench-check** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
@@ -400,6 +401,24 @@ npm install
 npm run build        # 前端
 npx tauri build      # 桌面安装包（需在对应系统上，并装好平台依赖）
 npx tauri android build --apk   # Android（需 JDK + Android SDK/NDK）
+```
+
+## v2.9.0 桌面工作台（Workbench）
+
+v2.9.0 把客户端从极简演示升级为真正「工作台」，深度参考 DeepSeek Harness 桌面版；**继续用 Tauri 2，不迁移 Electron**。
+
+- **工作台工程**：`desktop/`（前端 Vite + 9 视图在 `desktop/src/`，Rust 壳 `desktop/src-tauri/`）；旧精简客户端 `client/` 保留。
+- **9 大视图**：工作区总览、任务、智能体（卡片/团队）、终端、文件（Excel/CSV/TSV 预览）、工具（沙箱执行）、模型提供商、插件、设置。
+- **产品形态**：默认工作区（免选文件夹，`~/.agent-universe/workspaces/default`）、过程展示分级（results/steps/full）、托盘常驻 + 单实例、关闭隐藏、后台任务、模型提供商统一入口。
+- **daemon 托管**：桌面端查找/启动/健康检查/停止/重启 gsn-daemon，仅绑 loopback，不暴露局域网。
+- **构建节奏**：客户端不随每个版本构建，仅在大版本（约每 9 个小版本）手动 `workflow_dispatch` 构建一次（见 `client-build.yml`）；Android 仍由 client 产出。
+- **边界**：LLM 仍为 mock、插件为实验开关、沙箱依赖可执行后端、实时性为轮询。
+
+```bash
+cd desktop
+npm install
+npm run build
+npx tauri build      # 工作台桌面安装包（需在对应系统并装好平台依赖）
 ```
 
 ## v2.3.6 MCP/ACA 深化与跨语言可信对齐

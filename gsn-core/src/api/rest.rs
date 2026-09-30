@@ -181,7 +181,10 @@ pub async fn route(
                 }
                 return Routed::bad_request("缺少注册卡片");
             }
-            // GET /api/v1/agents?skill= 或 ?q=
+            // GET /api/v1/agents?all=1 列出全部（工作台）
+            if q.contains_key("all") {
+                return from_mr(market.list_all_agents().await, 200);
+            }
             if let Some(skill) = q.get("skill") {
                 return from_mr(market.discover(skill.clone()).await, 200);
             }
@@ -201,7 +204,10 @@ pub async fn route(
                 }
                 return Routed::bad_request("缺少请求体");
             }
-            // GET: 列表统计
+            // GET: ?all=1 列出全部（工作台），否则返回统计
+            if q.contains_key("all") {
+                return from_mr(market.list_all_tasks().await, 200);
+            }
             return from_mr(market.list_tasks().await, 200);
         }
         Some(RouteTarget::TaskItem(id)) => {

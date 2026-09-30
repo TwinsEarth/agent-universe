@@ -107,12 +107,16 @@ pub enum MarketCommand {
     Discover { skill: String, reply: oneshot::Sender<MarketResponse> },
     /// 关键词搜索
     Search { query: String, reply: oneshot::Sender<MarketResponse> },
+    /// 列出全部已注册智能体（工作台，?all=1）
+    ListAllAgents { reply: oneshot::Sender<MarketResponse> },
     /// 发布任务（传入任务 JSON）
     PublishTask { task: Value, reply: oneshot::Sender<MarketResponse> },
     /// 查询任务
     GetTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
-    /// 列出全部任务
+    /// 列出任务（默认统计）
     ListTasks { reply: oneshot::Sender<MarketResponse> },
+    /// 列出全部任务（工作台，?all=1）
+    ListAllTasks { reply: oneshot::Sender<MarketResponse> },
     /// 投标
     SubmitBid { bid: Value, reply: oneshot::Sender<MarketResponse> },
     /// 匹配任务
@@ -348,6 +352,9 @@ impl MarketActorHandle {
     pub async fn search(&self, query: String) -> MarketResponse {
         self.call(|reply| MarketCommand::Search { query, reply }).await
     }
+    pub async fn list_all_agents(&self) -> MarketResponse {
+        self.call(|reply| MarketCommand::ListAllAgents { reply }).await
+    }
     pub async fn publish_task(&self, task: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::PublishTask { task, reply }).await
     }
@@ -356,6 +363,9 @@ impl MarketActorHandle {
     }
     pub async fn list_tasks(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::ListTasks { reply }).await
+    }
+    pub async fn list_all_tasks(&self) -> MarketResponse {
+        self.call(|reply| MarketCommand::ListAllTasks { reply }).await
     }
     pub async fn submit_bid(&self, bid: Value) -> MarketResponse {
         self.call(|reply| MarketCommand::SubmitBid { bid, reply }).await
@@ -467,6 +477,13 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 "agents": agents,
             })));
         }
+        MarketCommand::ListAllAgents { reply } => {
+            let agents = market.list_all_agents();
+            let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                "count": agents.len(),
+                "agents": agents,
+            })));
+        }
         MarketCommand::PublishTask { task, reply } => {
             match serde_json::from_value::<TaskSpec>(task) {
                 Ok(mut t) => {
@@ -498,6 +515,13 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
                 "task_count": market.task_count(),
                 "settled_count": market.settled_count(),
+            })));
+        }
+        MarketCommand::ListAllTasks { reply } => {
+            let tasks = market.list_all_tasks();
+            let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                "count": tasks.len(),
+                "tasks": tasks,
             })));
         }
         MarketCommand::SubmitBid { bid, reply } => {

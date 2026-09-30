@@ -227,6 +227,13 @@ impl AgentMarket {
         self.agents.get(agent_id)
     }
 
+    /// 列出全部已注册 Agent（工作台，按 agent_id 排序）
+    pub fn list_all_agents(&self) -> Vec<MarketAgentCard> {
+        let mut cards: Vec<MarketAgentCard> = self.agents.values().cloned().collect();
+        cards.sort_by(|a, b| a.agent_id.cmp(&b.agent_id));
+        cards
+    }
+
     // ===== F2: 任务发布 =====
 
     /// 发布任务
@@ -262,6 +269,13 @@ impl AgentMarket {
     /// 获取任务
     pub fn get_task(&self, task_id: &str) -> Option<&TaskSpec> {
         self.tasks.get(task_id)
+    }
+
+    /// 列出全部任务（工作台，新创建的在前）
+    pub fn list_all_tasks(&self) -> Vec<TaskSpec> {
+        let mut v: Vec<TaskSpec> = self.tasks.values().cloned().collect();
+        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.task_id.cmp(&b.task_id)));
+        v
     }
 
     /// v2.8.4: 读取任务结果信封（GAP §3.2，验证结果信封重启后存活）。

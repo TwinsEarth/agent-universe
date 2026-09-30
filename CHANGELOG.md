@@ -2,6 +2,19 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.9.0] - 2026-09-30
+
+### 桌面工作台大版本（Workbench，继续 Tauri 2）
+
+- 极简 Tauri 客户端升级为「工作台」，深度参考 DeepSeek Harness（不迁移 Electron）；
+- **9 大视图**：工作区总览、任务、智能体（卡片/团队）、终端、文件（Excel/CSV/TSV 预览）、工具（沙箱执行）、模型提供商、插件、设置；
+- 默认工作区（免选文件夹）、过程展示分级（results/steps/full）、托盘常驻/单实例/关闭隐藏、后台任务、模型提供商统一入口；
+- daemon 托管：查找/启动/健康检查/停止/重启，仅绑 loopback；
+- 后端列表：`GET /api/v1/agents?all=1`、`/api/v1/tasks?all=1` 返回真实列表（无参仍统计）；
+- 构建 pipeline：client-build 三平台改构建 desktop，ci.yml 新增 workbench-check；
+- 验证：clippy 零警告、448 测试通过、版本 10 点一致、vite build 通过。
+- 边界：LLM 仍 mock、插件为实验开关、沙箱依赖可执行后端、实时为轮询；v2.8.8 跳过。
+
 ## [v2.8.0] - 2026-09-29
 
 ### Agent Sandbox 集成核心链路（大版本）

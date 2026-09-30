@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Agent Universe Client",
-  "version": "2.8.9",
-  "identifier": "com.twinsearth.auclient",
+  "productName": "Agent Universe Workbench",
+  "version": "2.9.0",
+  "identifier": "com.twinsearth.auworkbench",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
@@ -10,12 +10,14 @@
   "app": {
     "windows": [
       {
-        "title": "Agent Universe v2.8.9",
-        "width": 920,
-        "height": 720,
-        "minWidth": 720,
-        "minHeight": 560,
-        "resizable": true
+        "label": "main",
+        "title": "Agent Universe 工作台 v2.9.0",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 1000,
+        "minHeight": 680,
+        "resizable": true,
+        "center": true
       }
     ],
     "security": {

@@ -46,6 +46,46 @@ jobs:
       - name: Run gsn-daemon --help
         run: cd gsn-core && cargo run --bin gsn-daemon -- --help
 
+  workbench-check:
+    name: Workbench Desktop
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Linux Tauri dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev librsvg2-dev libappindicator3-dev \
+            patchelf file
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: desktop
+        run: npm run build
+
+      - name: Cargo check
+        working-directory: desktop/src-tauri
+        run: cargo check --all-targets
+
+      - name: Clippy
+        working-directory: desktop/src-tauri
+        run: cargo clippy --all-targets -- -D warnings
+
   python-test:
     name: Python SDK
     runs-on: ubuntu-latest
@@ -87,7 +127,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='2.8.9') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='2.9.0') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

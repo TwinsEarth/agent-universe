@@ -70,7 +70,9 @@ v1.0.0 (Genesis)
                                                                                                                                                         └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6)
                                                                                                                                                               └── v2.8.6 (MCP Validate - MCP 校验接入生产传输 sse/stdio/金额入口拒绝浮点/规范签名载荷整数化 - GAP §3.5/§4.1)
                                                                                                                                                                     └── v2.8.7 (Sandbox Auth - 沙箱认证/所有权/资源限制/随机 id/孤儿清扫/Win Job Object - GAP §3.3)
-                                                                                                                                                                          └── v2.8.9 (Claim Verification - 弱公钥拒绝接入/贡献验证 DID 绑定/生产 panic 类型化/NAT 守卫锁值/纠删码真恢复/毒化告警 - GAP §2.2) ← 当前
+                                                                                                                                                                          ├── v2.8.9 (Claim Verification - 弱公钥拒绝接入/贡献验证 DID 绑定/生产 panic 类型化/NAT 守卫锁值/纠删码真恢复/毒化告警 - GAP §2.2)
+                                                                                                                                                                          │     （v2.8.8 按用户指示跳过）
+                                                                                                                                                                          └── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2) ← 当前
 ```
 
 ## 大版本详情
@@ -528,6 +530,18 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v2.9.0 - 桌面工作台大版本（gsn-core 0.2.90）
+
+**核心内容**：深度参考 DeepSeek Harness 桌面版，把极简 Tauri 2 演示客户端升级为真正「工作台」；**继续用 Tauri 2，不迁移 Electron**。
+
+- **9 大视图**：工作区总览、任务、智能体（卡片/团队）、终端、文件（含 Excel/CSV/TSV 预览）、工具（沙箱代码执行）、模型提供商、插件、设置。
+- **产品形态**：默认工作区（免选文件夹）、过程展示分级（results/steps/full）、托盘常驻 + 单实例、关闭隐藏、后台任务、模型提供商统一入口。
+- **daemon 托管**：桌面端查找/启动/健康检查/停止/重启 gsn-daemon，仅绑 loopback，不暴露局域网。
+- **后端列表增强**：`GET /api/v1/agents?all=1`、`/api/v1/tasks?all=1` 返回真实列表（无参仍返回统计，兼容）。
+- **构建 pipeline**：client-build 三平台改构建 desktop 工作台；ci.yml 新增 workbench-check。
+- **验证**：gsn-core clippy 零警告、448 passed / 0 failed / 0 ignored；版本 10 点一致；前端 vite build 通过。
+- **边界**：LLM 仍为 mock、插件为实验开关、沙箱依赖可执行后端、实时性为 4s 轮询；v2.8.8 跳过。
 
 ## 小版本更新日志
 

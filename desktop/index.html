@@ -3,42 +3,17 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Agent Universe v2.8.9</title>
+  <title>Agent Universe 工作台 v2.9.0</title>
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
-  <div class="app">
-    <header>
-      <h1>Agent Universe</h1>
-      <span class="version" id="sdk-version">v2.8.9</span>
-    </header>
-
-    <section class="panel">
-      <div class="row">
-        <span class="label">DID</span>
-        <span class="value did" id="did">—</span>
-      </div>
-      <div class="row">
-        <span class="label">网络</span>
-        <span class="value">本地市场演示（SDK 内存态）</span>
-      </div>
-      <div class="row">
-        <span class="label">模式</span>
-        <span class="value">轻客户端 / Market Demo</span>
-      </div>
-    </section>
-
-    <section class="panel">
-      <button id="btn-run" class="cta">▶ 运行市场端到端演示</button>
-      <p class="hint">充值 → 质押 → 发布 → 投标 → 匹配 → 完成 → 结算 → 重复防护 → 守恒校验</p>
-    </section>
-
-    <section class="panel">
-      <h2>运行日志</h2>
-      <pre id="log" class="log">就绪。点击上方按钮开始演示。\n</pre>
-    </section>
+  <div id="app">
+    <div id="boot">
+      <div class="boot-logo">◈</div>
+      <div class="boot-title">Agent Universe</div>
+      <div class="boot-sub" id="boot-sub">正在初始化工作台…</div>
+    </div>
   </div>
-
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>

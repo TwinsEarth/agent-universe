@@ -768,6 +768,36 @@ fn compute_cors(origin: Option<&str>) -> String {
 ///   `REST_ALLOW_UNAUTHENTICATED=1` 才放行（受信网络的逃生口，打印警告）。
 ///
 /// 返回 `Err(状态码, 状态文本, 响应体)`，调用方据此返回 401。
+/// 从认证头提取稳定主体标识（v2.8.7 沙箱所有权用）。
+///
+/// - 有效 Bearer → `sub:<token 的 sha256 前 16 hex>`，不泄露明文；
+/// - 无 Bearer 但显式 `REST_ALLOW_UNAUTHENTICATED=1` → `sub:anonymous`
+///   （无主体隔离，仅限本地受信开发）；
+/// - 其余 → None（配置了 token 的变更类在 rest_authorize 已被挡；
+///   handle_api 变更类再以 401 兜底）。
+pub(crate) fn extract_caller(auth_header: Option<&str>) -> Option<String> {
+    use sha2::Digest;
+    let token = auth_header
+        .and_then(|h| {
+            h.strip_prefix("Bearer ")
+                .or_else(|| h.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    if let Some(token) = token {
+        let digest = sha2::Sha256::digest(token.as_bytes());
+        let hex = hex::encode(digest);
+        return Some(format!("sub:{}", &hex[..16]));
+    }
+    if std::env::var("REST_ALLOW_UNAUTHENTICATED")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return Some("sub:anonymous".to_string());
+    }
+    None
+}
+
 fn rest_authorize(
     method: &str,
     auth_header: Option<&str>,
@@ -1220,16 +1250,23 @@ async fn run_api_server(
                 return;
             }
 
-            // ───── Agent Sandbox 端点（v2.8.0，独立分流） ─────
+            // ───── Agent Sandbox 端点（v2.8.7：认证 + 所有权 + 审计） ─────
+            // 认证闸门已由上方 rest_authorize（v2.8.5）覆盖；这里提取认证身份
+            // 作为 caller 传入，用于 create 绑定 owner 与后续操作的所有权校验。
             if crate::sandbox::is_sandbox_route(path_part) {
                 let mgr = sandbox_mgr.clone();
                 let method_c = method.clone();
                 let path_c = raw_path.clone();
                 let body_c = body.clone();
+                let caller = extract_caller(auth_header.as_deref());
                 let result = tokio::task::spawn_blocking(move || {
-                    let mut guard = mgr.lock().unwrap();
+                    let mut guard = mgr.lock().unwrap_or_else(|e| e.into_inner());
                     crate::sandbox::handle_sandbox_api(
-                        &method_c, &path_c, &body_c, &mut guard,
+                        &method_c,
+                        &path_c,
+                        &body_c,
+                        caller.as_deref(),
+                        &mut guard,
                     )
                 })
                 .await;
@@ -1241,6 +1278,7 @@ async fn run_api_server(
                     200 => "OK",
                     201 => "Created",
                     400 => "Bad Request",
+                    401 => "Unauthorized",
                     403 => "Forbidden",
                     404 => "Not Found",
                     422 => "Unprocessable Entity",

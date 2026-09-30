@@ -149,8 +149,10 @@ pub async fn handle_post(
                     ));
                 }
             }
+            // MCP 已通过 Bearer 认证，据此派生沙箱所有权主体（与 REST 同一逻辑）
+            let mcp_caller = crate::node::extract_caller(auth_header);
             let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
-                sb_bridge.call(name, &args).await
+                sb_bridge.call(name, &args, mcp_caller.as_deref()).await
             } else {
                 bridge.call(name, &args).await
             };

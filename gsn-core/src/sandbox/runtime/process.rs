@@ -20,6 +20,10 @@ use super::CodeLanguage;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// 单次执行 stdout/stderr 最大捕获字节数（v2.8.7，防父进程内存 DoS）
+const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MiB
+
+
 /// 进程级隔离沙箱
 pub struct ProcessSandbox {
     id: String,
@@ -27,6 +31,9 @@ pub struct ProcessSandbox {
     work_dir: Option<PathBuf>,
     cfg: Option<SandboxConfig>,
     created_ms: u64,
+    /// Windows Job Object（create 时建立，destroy/Drop 时杀整棵树）
+    #[cfg(windows)]
+    job: Option<super::winjob::WinJob>,
 }
 
 impl ProcessSandbox {
@@ -37,6 +44,8 @@ impl ProcessSandbox {
             work_dir: None,
             cfg: None,
             created_ms: now_ms(),
+            #[cfg(windows)]
+            job: None,
         }
     }
 
@@ -228,6 +237,14 @@ impl super::super::Sandbox for ProcessSandbox {
         }
         self.work_dir = Some(dir);
         self.cfg = Some(cfg.clone());
+        // v2.8.7：Windows 建立 Job Object（内存/进程数上限 + 句柄关闭杀树）
+        #[cfg(windows)]
+        {
+            self.job = Some(
+                super::winjob::WinJob::new(cfg.resources.mem_mb, cfg.resources.max_processes)
+                    .map_err(SandboxError::Internal)?,
+            );
+        }
         Ok(())
     }
 
@@ -255,27 +272,30 @@ impl super::super::Sandbox for ProcessSandbox {
             .spawn()
             .map_err(|e| SandboxError::Internal(e.to_string()))?;
 
-        // 独立线程读 stdout/stderr，防止管道写满后子进程阻塞
+        // v2.8.7：Windows 把子进程纳入 Job Object（其后 fork 的子进程也在 job）
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            if let Some(job) = &self.job {
+                if let Err(e) = job.assign(child.as_raw_handle() as isize) {
+                    kill_process_tree(&mut child);
+                    return Err(SandboxError::Internal(e));
+                }
+            }
+        }
+
+        // 独立线程有界读取 stdout/stderr（v2.8.7：take 上限防父进程内存 DoS；
+        // 写满后不再读，管道缓冲反压会让子进程阻塞，等超时被 kill）
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
         let stdout_handle = std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buf = Vec::new();
-            if let Some(mut r) = stdout_pipe.take() {
-                let _ = r.read_to_end(&mut buf);
-            }
-            buf
+            read_bounded(&mut stdout_pipe)
         });
         let stderr_handle = std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buf = Vec::new();
-            if let Some(mut r) = stderr_pipe.take() {
-                let _ = r.read_to_end(&mut buf);
-            }
-            buf
+            read_bounded(&mut stderr_pipe)
         });
 
-        // 轮询等待；超时由 Rust 侧强杀（不依赖外部 timeout/gtimeout）
+        // 轮询等待；超时由 Rust 侧强杀整棵进程树（不依赖外部 timeout/gtimeout）
         let timeout = cfg.resources.timeout_ms;
         let status;
         loop {
@@ -287,9 +307,7 @@ impl super::super::Sandbox for ProcessSandbox {
                 Ok(None) => {
                     if start.elapsed() >= std::time::Duration::from_millis(timeout) {
                         let actual = start.elapsed().as_millis() as u64;
-                        // exec 后 bash 已被替换为目标程序，kill 该 pid 即无孤儿强杀
-                        let _ = child.kill();
-                        let _ = child.wait();
+                        kill_process_tree(&mut child);
                         let _ = stdout_handle.join();
                         let _ = stderr_handle.join();
                         return Err(SandboxError::ResourceLimitExceeded {
@@ -300,7 +318,13 @@ impl super::super::Sandbox for ProcessSandbox {
                     }
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                Err(e) => return Err(SandboxError::Internal(e.to_string())),
+                // v2.8.7：try_wait 出错也必须先 kill 回收，避免孤儿进程
+                Err(e) => {
+                    kill_process_tree(&mut child);
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
+                    return Err(SandboxError::Internal(format!("等待子进程失败并已清理: {e}")));
+                }
             }
         }
 
@@ -341,6 +365,11 @@ impl super::super::Sandbox for ProcessSandbox {
         if !self.state.is_terminal() {
             self.apply(LifecycleAction::Stop)?;
             self.apply(LifecycleAction::MarkStopped)?;
+        }
+        // v2.8.7：Windows 关闭 job 句柄 → 杀整棵进程树
+        #[cfg(windows)]
+        {
+            let _ = self.job.take();
         }
         if let Some(dir) = self.work_dir.take() {
             // 尽力清理临时目录；失败不阻断（标记 Internal 供审计）
@@ -399,6 +428,41 @@ fn now_ms() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 有界读取管道输出（v2.8.7）：最多读 MAX_OUTPUT_BYTES，超出截断
+fn read_bounded<R: std::io::Read>(pipe: &mut Option<R>) -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    if let Some(r) = pipe.take() {
+        let mut limited = r.take(MAX_OUTPUT_BYTES as u64 + 1);
+        let _ = limited.read_to_end(&mut buf);
+        if buf.len() > MAX_OUTPUT_BYTES {
+            buf.truncate(MAX_OUTPUT_BYTES);
+        }
+    }
+    buf
+}
+
+/// 强杀子进程并回收（v2.8.7）。
+///
+/// Unix：exec 已把 bash 替换为目标程序，child.kill 即杀目标；wait 回收。
+/// Windows：先 taskkill /T /F 杀整棵进程树，再 kill/wait 兜底。
+/// （Windows 上另有 Job Object 做被动兜底，见 runtime/winjob.rs）
+#[cfg(unix)]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(windows)]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let pid = child.id().to_string();
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", pid.as_str(), "/T", "/F"])
+        .status();
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 // env_clear 后子进程需要 PATH 才能找到解释器。

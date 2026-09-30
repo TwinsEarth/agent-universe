@@ -18,7 +18,8 @@ fn call(
     path: &str,
     body: &str,
 ) -> (u16, serde_json::Value) {
-    handle_sandbox_api(method, path, body, mgr)
+    // v2.8.7：变更类需认证，固定使用受信测试主体 "tester"
+    handle_sandbox_api(method, path, body, Some("tester"), mgr)
 }
 
 #[test]
@@ -30,7 +31,7 @@ fn v280_full_lifecycle() {
     // create
     let (st, v) = call(&mut mgr, "POST", "/api/v1/sandboxes", "{}");
     assert_eq!(st, 201);
-    let id = v.get("sandbox_id").unwrap().as_str().unwrap().to_string();
+    let id = v.get("id").unwrap().as_str().unwrap().to_string();
     assert!(!id.is_empty());
 
     // get
@@ -85,7 +86,7 @@ fn v280_e2b_alias_routes() {
     // E2B 别名 /v1/sandboxes
     let (st, v) = call(&mut mgr, "POST", "/v1/sandboxes", "{}");
     assert_eq!(st, 201);
-    let id = v.get("sandbox_id").unwrap().as_str().unwrap().to_string();
+    let id = v.get("id").unwrap().as_str().unwrap().to_string();
     // E2B /commands 别名
     let body = r#"{"language":"python","code":"print('e2b')"}"#;
     let (st, v) = call(&mut mgr, "POST", &format!("/v1/sandboxes/{id}/commands"), body);
@@ -99,15 +100,25 @@ fn v280_error_codes() {
     let _ = std::fs::remove_dir_all(&base);
     let mut mgr = mk_manager(&base);
 
+    // 先创建一个真实沙箱（owner=tester）
+    let (st, v) = call(&mut mgr, "POST", "/api/v1/sandboxes", "{}");
+    assert_eq!(st, 201);
+    let id = v.get("id").unwrap().as_str().unwrap().to_string();
+
     // exec 缺 code → 400
-    let (st, _) = call(&mut mgr, "POST", "/api/v1/sandboxes/sbx/exec", r#"{"language":"python"}"#);
+    let (st, _) = call(
+        &mut mgr,
+        "POST",
+        &format!("/api/v1/sandboxes/{id}/exec"),
+        r#"{"language":"python"}"#,
+    );
     assert_eq!(st, 400);
 
     // 不支持的语言 → 400
     let (st, _) = call(
         &mut mgr,
         "POST",
-        "/api/v1/sandboxes/sbx/exec",
+        &format!("/api/v1/sandboxes/{id}/exec"),
         r#"{"language":"ruby","code":"x"}"#,
     );
     assert_eq!(st, 400);

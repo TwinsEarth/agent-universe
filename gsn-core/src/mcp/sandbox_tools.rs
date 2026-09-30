@@ -43,7 +43,9 @@ impl SandboxMcpBridge {
     }
 
     /// 执行工具调用
-    pub async fn call(&self, name: &str, args: &Value) -> ToolResult {
+    ///
+    /// `caller`：认证主体（MCP 已通过 Bearer 认证；None 时变更类被 handle_api 拒绝）
+    pub async fn call(&self, name: &str, args: &Value, caller: Option<&str>) -> ToolResult {
         let get_str = |k: &str| -> String {
             args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
         };
@@ -87,9 +89,10 @@ impl SandboxMcpBridge {
         };
 
         let mgr = self.manager.clone();
+        let caller = caller.map(str::to_string);
         let result = tokio::task::spawn_blocking(move || {
-            let mut guard = mgr.lock().unwrap();
-            handle_sandbox_api(method, &path, &body, &mut guard)
+            let mut guard = mgr.lock().unwrap_or_else(|e| e.into_inner());
+            handle_sandbox_api(method, &path, &body, caller.as_deref(), &mut guard)
         })
         .await;
 

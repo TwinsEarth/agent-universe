@@ -49,20 +49,25 @@ gsn-core/src/sandbox/
 ├── config.rs     # SandboxConfig、ResourceLimits、NetworkPolicy、FilesystemPolicy、IsolationLevel
 ├── state.rs      # 生命周期状态机
 ├── identity.rs   # 沙箱身份、Agent Identity、短时执行令牌
-├── docker.rs     # 容器共享内核后端
-├── firecracker.rs# microVM 强隔离后端
-├── runtime/      # v2.7.7：进程级隔离运行时
+├── docker.rs     # 容器后端：仅 PATH 探测（未实现 Sandbox trait）
+├── firecracker.rs# microVM 后端：仅 /dev/kvm 探测（未实现 Sandbox trait）
+├── runtime/      # v2.7.7：进程级隔离运行时（默认且唯一真跑的后端）
+│   ├── process.rs
+│   └── winjob.rs # v2.8.7：Windows Job Object（cfg windows）
 ├── manager.rs    # v2.7.8：生命周期与弹性供给
 └── security.rs   # v2.7.9：网络策略、审计、权限
 ```
 
 ## 5. 隔离级别（如实标注，不静默冒充）
 
-| 级别 | 边界 | 强度 | 不可用时 |
-|---|---|---|---|
-| Process | 独立临时目录 + 超时/资源约束 | 1 | —— fallback |
-| ContainerSharedKernel | 共享宿主内核（runc） | 2 | 降级 Process |
-| MicroVM | 硬件虚拟化，内核独立 | 3 | 降级 Container |
+| 级别 | 边界 | 状态 |
+|---|---|---|
+| Process | 独立临时目录 + `env_clear` + `ulimit`（Unix）/ Job Object（Windows）+ 超时强杀 | **当前唯一真跑的后端** |
+| ContainerSharedKernel | 共享宿主内核（runc） | 未实现（docker.rs 仅探测） |
+| MicroVM | 硬件虚拟化，内核独立 | 未实现（firecracker.rs 仅探测；无 `/dev/kvm` 环境） |
+
+> 进程级隔离不提供内核级边界，不可用于运行完全不可信的代码。
+> 后端不静默冒充：请求了无法执行的隔离级别即返回错误，而不是降级后仍声称强隔离。
 
 ## 6. 生命周期状态机
 
@@ -94,3 +99,18 @@ Pending ─create→ Creating ─start→ Starting ─→ Running
 | v2.7.8 | 生命周期管理：SandboxManager、预热池、休眠唤醒、checkpoint |
 | v2.7.9 | 安全边界：网络策略、审计日志、权限、Agent Identity |
 | v2.8.0 | 集成核心链路：E2B 兼容 API、MCP/CLI/REST 接入、客户端构建 |
+
+## 9. v2.8.7 安全加固（GAP §3.3）
+
+v2.8.0 落地后，审计发现沙箱安全边界此前只存在于文档与单元测试：
+
+- **变更类统一认证**：`handle_api` 对 create/exec/pause/resume/destroy 要求非空 `caller`（否则 401），
+  认证主体由 `extract_caller`（Bearer 令牌 → `sub:<sha256 前 16 hex>`，不泄露明文）派生；
+  sse 透传、stdio 固定 `local:stdio`。
+- **所有权绑定**：create 后 `bind_owner`，后续变更经 `check_owner` 校验，非所有者返 403。
+- **随机 id**：`sb-` + 16 hex，经单一 `validate_sandbox_id` 校验，不可猜、不重复、重启不复用。
+- **输出 / 资源上限**：stdout/stderr 有界读取截断到 1 MiB；请求体配置经 `config_from_body` 真正生效；
+  Windows 用 Job Object 强制内存/进程数上限与整棵进程树 kill。
+- **孤儿清扫**：`SandboxManager::new` 启动即清理残留 `au-sandbox-*`。
+
+验证：`tests/v287_test.rs`（12 测试），并实证截断与认证两项首次失败回归；全量 0 failed、clippy 零警告。

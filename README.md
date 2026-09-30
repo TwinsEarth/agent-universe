@@ -290,7 +290,7 @@ npm install @twinsearth/agent-universe
 | v2.3.4 | Market | 智能体市场 Agent Market |
 | v2.3.5 | **Client** | **跨平台客户端 + CLI/REST/MCP 重构** |
 | v2.3.6 | **MCP/ACA** | **MCP/ACA 深化重构 + 三端跨语言可信对齐** |
-| v2.4.0 | **Govern** | **CPU 治理轻量化：结算守恒 O(1) 增量维护 + Sandbox trait（Docker/Firecracker）** |
+| v2.4.0 | **Govern** | **CPU 治理轻量化：结算守恒 O(1) 增量维护 + Sandbox trait 接口（进程级为默认后端；Docker/Firecracker 仅做环境探测，未实现隔离）** |
 | v2.4.1 | **Layer** | **Lv1–Lv7 分层拓扑：扇入有界、边数亚二次、路由≤7 跳 + TopologyRouter 降级** |
 | v2.4.2 | **Memory** | **个体内部记忆库 + 群体外部共享记忆库** |
 | v2.4.3 | **3-Tier Memory** | **分层主体记忆（Lv1–Lv7）+ 跨代记忆哈希链** |
@@ -337,6 +337,7 @@ npm install @twinsearth/agent-universe
 | v2.8.4 | **Restart Gate** | **重启恢复证据闸门/结果信封/信誉/质押：验证策略不回 None、winner_price 不满额兜底、结果信封与质押重启后存活，根治“重启即绕过”（GAP §3.2）** |
 | v2.8.5 | **REST Auth** | **REST 变更接口 fail-closed 认证（未配 token 默认 401）、CORS 白名单消除通配、请求体上限/读超时、状态转换表（Open/终态不能争议）、罚没金额服务端定、reject_task 经 REST/MCP 可达（GAP §3.5/§3.7/§3.8/§2.2.6）** |
 | v2.8.6 | **MCP Validate** | **MCP 参数校验接入两个生产传输（sse/stdio），非法金额/类型返 -32602 不再静默存 0；金额入口只接受整数（get_money/REST/CLI 去浮点）；ACA Receipt 计量整数化，规范签名载荷无浮点、三端一致（GAP §3.5/§4.1）** |
+| v2.8.7 | **Sandbox Auth** | **沙箱变更接口统一认证（401）+ 所有权绑定（非所有者 403）；随机 id（sb- + 16 hex）不可猜、重启不复用；输出截断 1 MiB；请求体 env/初始文件/超时/域名/资源真正生效；Windows Job Object 强制资源/进程树；启动清扫孤儿沙箱（GAP §3.3）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

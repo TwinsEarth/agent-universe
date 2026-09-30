@@ -93,8 +93,9 @@ pub async fn run_stdio() -> anyhow::Result<()> {
                         if let Err(msg) = validate_arguments(&td.input_schema, &args) {
                             McpResponse::error(id, McpError::InvalidParams(msg))
                         } else {
+                            // stdio 为本机受信传输（无网络），使用固定本地主体
                             let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
-                                sb_bridge.call(name, &args).await
+                                sb_bridge.call(name, &args, Some("local:stdio")).await
                             } else {
                                 bridge.call(name, &args).await
                             };

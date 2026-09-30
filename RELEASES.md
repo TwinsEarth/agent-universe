@@ -68,7 +68,8 @@ v1.0.0 (Genesis)
                                                                                                                                             └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6)
                                                                                                                                                   └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2)
                                                                                                                                                         └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6)
-                                                                                                                                                              └── v2.8.6 (MCP Validate - MCP 校验接入生产传输 sse/stdio/金额入口拒绝浮点/规范签名载荷整数化 - GAP §3.5/§4.1) ← 当前
+                                                                                                                                                              └── v2.8.6 (MCP Validate - MCP 校验接入生产传输 sse/stdio/金额入口拒绝浮点/规范签名载荷整数化 - GAP §3.5/§4.1)
+                                                                                                                                                                    └── v2.8.7 (Sandbox Auth - 沙箱认证/所有权/资源限制/随机 id/孤儿清扫/Win Job Object - GAP §3.3) ← 当前
 ```
 
 ## 大版本详情
@@ -505,6 +506,16 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **金额入口只接受整数**：`get_money` 与 REST `AccountDeposit` 删除 `as_f64().map(|f| f as i64)` 截断，只取 `as_i64()`（`"lots"`/`10.5`/`10.0` 均拒）；CLI 改 `parse::<i64>`。
 - **签名载荷整数化**：`ResourceMetering.bandwidth_mb`/`energy_joules` 由 f64 改 u64，规范载荷无浮点，三端逐字节一致。
 - **验证**：新增 `tests/v286_test.rs`（8 测试）；实证测试有效性（临时令校验返回 Ok 后 6 failed/2 passed，恢复后全过）；全量 0 failed，clippy `-D warnings` 退出 0。
+
+### v2.8.7 - Agent Sandbox 认证/所有权/资源限制/随机 id/孤儿清扫（gsn-core 0.2.87）
+
+**核心问题**：《v2.8.2 增量审计》§3.3——沙箱 REST 路径无认证、无所有权模型（任意调用者可 exec/pause/destroy 任意 `sb-N`）；安全组件（NetworkGuard/PermissionChecker/AuditLog/ExecutionToken）生产零调用；id 为 `sb-N` 计数器，重启后 `sb-1` 复用并继承文件；stdout/stderr 无上限读取；请求体配置被丢弃。
+
+- **变更类统一认证 + 所有权**：`handle_api` 对 create/exec/pause/resume/destroy 统一要求非空 `caller`（否则 401），create 绑定 owner，后续变更经 `check_owner` 校验，非所有者 403；认证主体由 `extract_caller`（Bearer → `sub:<sha256 前 16 hex>`）派生，sse 透传、stdio 固定 `local:stdio`。
+- **随机 id**：`sb-` + 16 hex（rand），经单一 `validate_sandbox_id` 自检，不可猜、不重复，杜绝重启复用。
+- **资源 / 输出上限**：stdout/stderr 有界读取截断到 1 MiB；请求体 env/initial_files/timeout/allowed_domains/resources 经 `config_from_body` 真正生效并校验；Windows 新增 Job Object（winjob.rs）强制内存/进程上限与进程树 kill。
+- **孤儿清扫 + 锁加固**：启动清扫残留 `au-sandbox-*`；锁改用 `into_inner()`。
+- **验证**：新增 `tests/v287_test.rs`（12 测试）；实证截断（改 MAX_OUTPUT 后失败）与认证（令 None 放行后失败）两项首次失败回归，恢复后全过；更新 v280 至新签名；全量 0 failed，clippy 零警告。
 
 ## 小版本更新日志
 

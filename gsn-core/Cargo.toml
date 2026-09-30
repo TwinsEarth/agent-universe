@@ -1,8 +1,8 @@
 [package]
 name = "gsn-core"
-version = "0.2.86"
+version = "0.2.87"
 edition = "2021"
-description = "Agent Universe 核心库 v2.8.6: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+description = "Agent Universe 核心库 v2.8.7: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
 repository = "https://github.com/TwinsEarth/agent-universe"
 homepage = "https://github.com/TwinsEarth/agent-universe"
@@ -62,5 +62,13 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reed-solomon-erasure = "6.0.0"
+
+# v2.8.7：Windows Job Object（内存/进程数上限 + 整棵进程树随句柄关闭）
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]

@@ -15,6 +15,9 @@
 
 pub mod process;
 
+#[cfg(windows)]
+pub mod winjob;
+
 pub use process::ProcessSandbox;
 
 /// 代码语言（Agent 生成代码时用）

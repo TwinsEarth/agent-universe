@@ -231,9 +231,22 @@ fn build_platform_command(
         cmd.arg(format!("--max-old-space-size={heap}"));
     }
     cmd.args(args).current_dir(dir).env_clear();
-    // python/node 通常已在 PATH；注入 PATH 保证能找到 .exe
+    // 受限 PATH：定位白名单解释器
     if let Some(p) = std::env::var_os("PATH") {
         cmd.env("PATH", p);
+    }
+    // SystemRoot 是 Windows 系统组件（BCrypt/加密 API、DLL 加载）的必需
+    // 变量。env_clear 后缺失它，Node 启动时 CSPRNG 初始化断言失败
+    // （`ncrypto::CSPRNG(nullptr, 0)` → abort 134）。这是系统级、非用户
+    // 特定变量，不携带用户数据，可安全保留。
+    if let Some(sr) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", sr);
+    }
+    // TEMP/TMP 指向沙箱内 tmp（隔离，不使用宿主 temp）
+    let tmp_dir = dir.join("tmp");
+    if std::fs::create_dir_all(&tmp_dir).is_ok() {
+        cmd.env("TEMP", &tmp_dir);
+        cmd.env("TMP", &tmp_dir);
     }
     for (k, v) in &cfg.env {
         cmd.env(k, v);

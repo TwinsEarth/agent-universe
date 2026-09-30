@@ -27,9 +27,12 @@ pub enum ReceiptStatus {
 pub struct ResourceMetering {
     pub compute_ms: u64,
     pub memory_peak_mb: u64,
-    pub bandwidth_mb: f64,
+    /// v2.8.6（GAP §4.1）：带宽 MB 改整数（u64），杜绝 f64 进入签名载荷
+    /// 导致跨语言字节不一致（Rust `0.0` / Python `0.0` / JS `0`）。
+    pub bandwidth_mb: u64,
     pub storage_bytes: u64,
-    pub energy_joules: f64,
+    /// v2.8.6（GAP §4.1）：能量焦耳改整数（u64），规范载荷不再含浮点。
+    pub energy_joules: u64,
 }
 
 /// 执行收据

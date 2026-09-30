@@ -200,3 +200,13 @@ pub fn validate_arguments(schema: &ToolSchema, args: &serde_json::Value) -> Resu
 
     Ok(())
 }
+
+/// 按工具名在定义列表中查找定义（v2.8.6，GAP §3.5）。
+///
+/// tools/list 与 tools/call 共用同一份定义列表，因此传输层（sse / stdio）
+/// 可用它在执行前定位 inputSchema，再调 [`validate_arguments`]；
+/// 找不到即未知工具。这样新增传输也必须经过同一查找→校验入口，
+/// 无法绕过 schema 直接到达执行器。
+pub fn find_tool<'a>(tools: &'a [ToolDefinition], name: &str) -> Option<&'a ToolDefinition> {
+    tools.iter().find(|t| t.name == name)
+}

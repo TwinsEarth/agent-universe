@@ -81,9 +81,11 @@ impl MarketMcpBridge {
             args.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
         };
         let get_money = |key: &str| -> crate::marketplace::Money {
-            // 金额一律为整数；非整数/缺失按 0（严格参数校验在 v2.6.1 返回 -32602）
+            // v2.8.6（GAP §4.1）：金额入口只接受整数（i64），拒绝 JSON 浮点
+            // （10.5 截断、10.0 亦为 f64）。非法值由 validate_arguments 先返 -32602，
+            // 此处纵深防御，绝不做浮点→整数截断。
             args.get(key)
-                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                .and_then(|v| v.as_i64())
                 .map(crate::marketplace::Money::new)
                 .unwrap_or(crate::marketplace::Money::ZERO)
         };

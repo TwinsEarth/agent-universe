@@ -311,8 +311,9 @@ fn test_mcp_tools_call_real_execution() {
         assert!(!text.contains("tool executed"), "不应再是占位响应");
 
         // 充值 + 余额查询，验证带参工具真实执行
+        // v2.8.6：金额入口只接受整数，500.0 浮点会被拒（GAP §4.1）。
         let r = bridge.call("market_deposit",
-            &json!({"account":"c1","amount":500.0})).await;
+            &json!({"account":"c1","amount":500})).await;
         assert!(!r.is_error);
 
         let r = bridge.call("market_balance",
@@ -395,7 +396,8 @@ fn test_mcp_http_tools_call() {
             "jsonrpc":"2.0","id":3,"method":"tools/call",
             "params":{
                 "name":"market_deposit",
-                "arguments":{"account":"http-1","amount":250.0}
+                // v2.8.6（GAP §4.1）：金额入口只接受整数，250.0 浮点会被 -32602 拒绝。
+                "arguments":{"account":"http-1","amount":250}
             }
         });
         // v2.6.8：写/动钱工具必须带正确 Bearer 令牌

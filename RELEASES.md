@@ -67,7 +67,8 @@ v1.0.0 (Genesis)
                                                                                                                                       └── v2.8.2 (macOS CI 修复 - 去外部 timeout/gtimeout，Rust 原生超时)
                                                                                                                                             └── v2.8.3 (Ledger Hash Chain - 账本日志哈希链 tamper-evident + 水位/吞错/恢复失败修复 - GAP §3.1/§3.6)
                                                                                                                                                   └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2)
-                                                                                                                                                        └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6) ← 当前
+                                                                                                                                                        └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6)
+                                                                                                                                                              └── v2.8.6 (MCP Validate - MCP 校验接入生产传输 sse/stdio/金额入口拒绝浮点/规范签名载荷整数化 - GAP §3.5/§4.1) ← 当前
 ```
 
 ## 大版本详情
@@ -495,6 +496,15 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **状态转换表 + 罚没服务端定**：`open_dispute` 经 `transition(Disputed)`（仅 Accepted/Running/Verifying/Rework 可争议，Open/Matched/终态拒绝）；`arbitrate` 改 `(dispute_id, arbitrator, guilty)`，仲裁者必填、重复仲裁拒绝、罚没由服务端规则定（作恶罚 100% 质押），guilty 退预算→Slashed，not_guilty→Accepted；两条罚没路径统一 `slash_stake_synced`；证据提升移到转换成功后。
 - **终局拒绝接线**：`reject_task` 通过 REST（`POST /tasks/{id}/reject`）、MarketActor（`RejectTask`）、MCP（`market_reject_task`）三处暴露。
 - **验证**：新增 `tests/v285_test.rs`（8 测试）与 `node.rs` `http_security_tests`（CORS/认证）；全量 0 failed，clippy `-D warnings` 无 warning（同步修 examples/market_demo.rs）。
+
+### v2.8.6 - MCP 校验接入生产传输/金额去浮点/签名载荷整数化（gsn-core 0.2.86）
+
+**核心问题**：《v2.8.2 增量审计》§3.5（MCP）/ §4.1——参数校验只接在零生产调用的 `McpServer`，两个真实传输（sse/stdio）直接 `bridge.call` 绕过校验，`amount:"lots"` 经 `get_money` 浮点截断落空后静默存 0 并返回 deposited；`guilty:1` 经 `unwrap_or(false)`；ACA Receipt 计量字段仍为 f64，跨语言签名载荷字节不一致。
+
+- **统一查找→校验入口并接入生产传输**：新增 `find_tool()`；`sse.rs`（生产 HTTP）在执行前接入 `find_tool→validate_arguments`，失败返 -32602（HTTP 400）；`stdio.rs`（Claude Desktop）用 match 块表达式接入同一校验，未知工具 isError。新增传输在结构上无法绕过校验。
+- **金额入口只接受整数**：`get_money` 与 REST `AccountDeposit` 删除 `as_f64().map(|f| f as i64)` 截断，只取 `as_i64()`（`"lots"`/`10.5`/`10.0` 均拒）；CLI 改 `parse::<i64>`。
+- **签名载荷整数化**：`ResourceMetering.bandwidth_mb`/`energy_joules` 由 f64 改 u64，规范载荷无浮点，三端逐字节一致。
+- **验证**：新增 `tests/v286_test.rs`（8 测试）；实证测试有效性（临时令校验返回 Ok 后 6 failed/2 passed，恢复后全过）；全量 0 failed，clippy `-D warnings` 退出 0。
 
 ## 小版本更新日志
 

@@ -26,7 +26,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v2.8.5");
+            println!("agent-universe v2.8.6");
             0
         }
         "help" | "--help" | "-h" => {
@@ -213,7 +213,8 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
         "deposit" if p.len() >= 2 => Some((
             "POST".into(),
             format!("/api/v1/accounts/{}/deposit", p[0]),
-            json!({"amount": p[1].parse::<f64>().unwrap_or(0.0)}).to_string(),
+            // v2.8.6（GAP §4.1）：金额只接受整数，parse 为 i64。
+            json!({"amount": p[1].parse::<i64>().unwrap_or(0)}).to_string(),
         )),
         "balance" if !p.is_empty() => Some((
             "GET".into(), format!("/api/v1/accounts/{}/balance", p[0]), String::new(),

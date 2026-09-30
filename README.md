@@ -336,6 +336,7 @@ npm install @twinsearth/agent-universe
 | v2.8.3 | **Ledger Hash Chain** | **账本日志加 SHA256 哈希链 + 锚定 head（tamper-evident），坏行显式报告、水位取逻辑记录数、append 失败不推进（GAP §3.1/§3.6）** |
 | v2.8.4 | **Restart Gate** | **重启恢复证据闸门/结果信封/信誉/质押：验证策略不回 None、winner_price 不满额兜底、结果信封与质押重启后存活，根治“重启即绕过”（GAP §3.2）** |
 | v2.8.5 | **REST Auth** | **REST 变更接口 fail-closed 认证（未配 token 默认 401）、CORS 白名单消除通配、请求体上限/读超时、状态转换表（Open/终态不能争议）、罚没金额服务端定、reject_task 经 REST/MCP 可达（GAP §3.5/§3.7/§3.8/§2.2.6）** |
+| v2.8.6 | **MCP Validate** | **MCP 参数校验接入两个生产传输（sse/stdio），非法金额/类型返 -32602 不再静默存 0；金额入口只接受整数（get_money/REST/CLI 去浮点）；ACA Receipt 计量整数化，规范签名载荷无浮点、三端一致（GAP §3.5/§4.1）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

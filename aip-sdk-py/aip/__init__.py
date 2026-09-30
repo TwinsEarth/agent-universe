@@ -1,4 +1,4 @@
-"""Agent Universe AIP SDK v2.8.5"""
+"""Agent Universe AIP SDK v2.8.6"""
 
 from .models import AgentCard, Task, TaskStatus, SkillSpec, Pricing
 from .dht_backend import MemoryDHT
@@ -28,7 +28,7 @@ from .aca import (
     verify_receipt_result,
 )
 
-__version__ = "2.8.5"
+__version__ = "2.8.6"
 __all__ = [
     # 数据模型
     "AgentCard", "Task", "TaskStatus", "SkillSpec", "Pricing",

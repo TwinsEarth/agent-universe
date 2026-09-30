@@ -300,9 +300,11 @@ pub async fn route(
         }
         Some(RouteTarget::AccountDeposit(account)) => {
             if method != "POST" { return method_not_allowed("POST"); }
+            // v2.8.6（GAP §4.1）：JSON body 金额只接受整数（i64），
+            // 拒绝浮点（10.5 截断、10.0 亦为 f64）；URL query 为字符串→解析整数。
             let amount = parsed_body.as_ref()
                 .and_then(|v| v.get("amount"))
-                .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
+                .and_then(|x| x.as_i64())
                 .or_else(|| q.get("amount").and_then(|s| s.parse::<i64>().ok()));
             if let Some(amount) = amount {
                 return from_mr(market.deposit(account, crate::marketplace::Money::new(amount)).await, 200);

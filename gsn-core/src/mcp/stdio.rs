@@ -9,7 +9,8 @@ use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
 use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
-use crate::mcp::tool::ToolDefinition;
+use crate::mcp::tool::{find_tool, validate_arguments, ToolDefinition};
+use crate::mcp::tool::ToolResult;
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -85,12 +86,32 @@ pub async fn run_stdio() -> anyhow::Result<()> {
             McpMethod::ToolsCall => {
                 let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
-                let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
-                    sb_bridge.call(name, &args).await
-                } else {
-                    bridge.call(name, &args).await
-                };
-                McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or(json!({})))
+                // v2.8.6（GAP §3.5）：统一在执行前定位 inputSchema 并校验，
+                // 缺必填 / 类型错误（amount="lots"）返回 -32602；未知工具 isError:true。
+                match find_tool(&tools, name) {
+                    Some(td) => {
+                        if let Err(msg) = validate_arguments(&td.input_schema, &args) {
+                            McpResponse::error(id, McpError::InvalidParams(msg))
+                        } else {
+                            let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
+                                sb_bridge.call(name, &args).await
+                            } else {
+                                bridge.call(name, &args).await
+                            };
+                            McpResponse::success(
+                                id,
+                                serde_json::to_value(tool_result).unwrap_or(json!({})),
+                            )
+                        }
+                    }
+                    None => {
+                        let tr = ToolResult::error(format!("未知工具: {name}"));
+                        McpResponse::success(
+                            id,
+                            serde_json::to_value(tr).unwrap_or(json!({})),
+                        )
+                    }
+                }
             }
             McpMethod::ResourcesList => McpResponse::success(id, json!({"resources": []})),
             McpMethod::ResourcesRead => McpResponse::error(

@@ -16,7 +16,7 @@ use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
 use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
-use crate::mcp::tool::ToolResult;
+use crate::mcp::tool::{find_tool, validate_arguments, ToolResult};
 use crate::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -137,6 +137,17 @@ pub async fn handle_post(
                     id,
                     serde_json::to_value(tr).unwrap_or(json!({})),
                 ));
+            }
+            // v2.8.6（GAP §3.5）：生产传输统一在进入执行器前校验 inputSchema，
+            // 缺必填 / 类型错误（如 amount="lots"、guilty=1）返回 -32602，
+            // 不再直接调 bridge 造成静默降级（存 0 返 deposited）。
+            if let Some(td) = find_tool(&tools, name) {
+                if let Err(msg) = validate_arguments(&td.input_schema, &args) {
+                    return jsonrpc_response(McpResponse::error(
+                        id,
+                        McpError::InvalidParams(msg),
+                    ));
+                }
             }
             let tool_result = if SandboxMcpBridge::is_sandbox_tool(name) {
                 sb_bridge.call(name, &args).await

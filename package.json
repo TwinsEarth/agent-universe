@@ -32,7 +32,6 @@
   },
   "homepage": "https://github.com/TwinsEarth/agent-universe#readme",
   "publishConfig": {
-    "registry": "https://registry.npmjs.org",
     "access": "public"
   },
   "engines": {

@@ -216,6 +216,46 @@ jobs:
 
       - name: Publish to npm
         if: steps.tok.outputs.ready == 'true'
-        run: npm publish --access public
+        run: npm publish --registry https://registry.npmjs.org --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  github-packages:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    # 同 npm-publish：只依赖 gate，不被 macOS runner 阻塞。
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://npm.pkg.github.com"
+
+      - name: Resolve version (tag push or manual dispatch)
+        id: ver
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VER="${{ github.event.inputs.version }}"
+          else
+            VER="${GITHUB_REF_NAME}"
+          fi
+          VER="${VER#v}"
+          echo "resolved=$VER" >> "$GITHUB_OUTPUT"
+
+      - name: Verify version matches
+        run: |
+          TAG="${{ steps.ver.outputs.resolved }}"
+          PKG=$(node -p "require('./package.json').version")
+          echo "expected=$TAG package=$PKG"
+          if [ "$TAG" != "$PKG" ]; then echo "::error::package.json version $PKG != $TAG"; exit 1; fi
+
+      - name: Publish to GitHub Packages
+        run: npm publish --registry https://npm.pkg.github.com
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

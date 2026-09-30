@@ -421,8 +421,18 @@ mod tests {
         for entry in d.unenforced() {
             assert!(!entry.reason.trim().is_empty());
         }
-        // 内存/进程数：Windows 用 Job、Unix 用 ulimit，均强制
-        assert!(d.enforces(Capability::MemoryLimit));
+        // 进程数：Windows 用 Job、Linux/macOS 用 ulimit，均强制
         assert!(d.enforces(Capability::ProcessCountLimit));
+        // 内存：Windows 用 Job、Linux 用 ulimit -v，强制；macOS 无 RLIMIT_AS，
+        // 诚实标为 unenforced（必有理由）。
+        if cfg!(target_os = "macos") {
+            assert!(!d.enforces(Capability::MemoryLimit));
+            assert!(d
+                .unenforced()
+                .iter()
+                .any(|e| e.boundary == Capability::MemoryLimit && !e.reason.trim().is_empty()));
+        } else {
+            assert!(d.enforces(Capability::MemoryLimit));
+        }
     }
 }

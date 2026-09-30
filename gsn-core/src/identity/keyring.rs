@@ -38,16 +38,27 @@ impl MemoryKeyring {
 #[async_trait]
 impl SecureKeyring for MemoryKeyring {
     async fn store(&self, key: &str, secret: &[u8]) -> Result<(), KeyringError> {
-        self.data.lock().unwrap().insert(key.to_string(), secret.to_vec());
+        self.data
+            .lock()
+            .map_err(|e| KeyringError::PlatformError(e.to_string()))?
+            .insert(key.to_string(), secret.to_vec());
         Ok(())
     }
 
     async fn load(&self, key: &str) -> Result<Option<Vec<u8>>, KeyringError> {
-        Ok(self.data.lock().unwrap().get(key).cloned())
+        Ok(self
+            .data
+            .lock()
+            .map_err(|e| KeyringError::PlatformError(e.to_string()))?
+            .get(key)
+            .cloned())
     }
 
     async fn delete(&self, key: &str) -> Result<(), KeyringError> {
-        self.data.lock().unwrap().remove(key);
+        self.data
+            .lock()
+            .map_err(|e| KeyringError::PlatformError(e.to_string()))?
+            .remove(key);
         Ok(())
     }
 }

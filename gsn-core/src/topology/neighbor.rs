@@ -31,8 +31,8 @@ impl NeighborManager {
     pub fn add_neighbor(&mut self, did: String, address: String, latency_ms: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         self.neighbors.insert(did.clone(), Neighbor {
             did,
@@ -49,8 +49,8 @@ impl NeighborManager {
             neighbor.failed_pings = 0;
             neighbor.last_seen = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
         }
     }
 

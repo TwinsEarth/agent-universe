@@ -38,8 +38,8 @@ impl ReputationSystem {
     pub fn register(&mut self, agent_did: String) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         
         self.records.insert(agent_did.clone(), ReputationRecord {
             agent_did,
@@ -63,8 +63,8 @@ impl ReputationSystem {
             
             record.last_updated = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
         }
     }
 
@@ -77,8 +77,8 @@ impl ReputationSystem {
             
             record.last_updated = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
         }
     }
 
@@ -89,8 +89,8 @@ impl ReputationSystem {
     pub fn apply_decay(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         for record in self.records.values_mut() {
             let elapsed = now - record.last_updated;

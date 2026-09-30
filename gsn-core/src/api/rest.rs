@@ -439,6 +439,15 @@ pub(crate) fn parse_committee_members(
         let pk: [u8; 32] = pk_bytes
             .try_into()
             .map_err(|_| "委员公钥必须为 32 字节")?;
+        // v2.8.9：弱公钥拒绝 + DID↔公钥绑定（GAP §2.2/§2.4 委员授权，防止自造密钥签票）
+        if crate::identity::is_weak_pubkey(&pk) {
+            return Err(format!("委员 {did} 公钥为弱公钥，拒绝"));
+        }
+        let parsed = crate::identity::Did::parse(&did)
+            .map_err(|_| format!("委员 {did} 的 DID 非法"))?;
+        if parsed.identifier() != crate::identity::Did::fingerprint(&pk) {
+            return Err(format!("委员 {did} 的 DID 与公钥指纹不匹配"));
+        }
         out.push((did, pk));
     }
     Ok(out)

@@ -91,7 +91,10 @@ impl SandboxMcpBridge {
         let mgr = self.manager.clone();
         let caller = caller.map(str::to_string);
         let result = tokio::task::spawn_blocking(move || {
-            let mut guard = mgr.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = mgr.lock().unwrap_or_else(|e| {
+                eprintln!("⚠️ sandbox: 管理器锁曾毒化，恢复后继续（请人工核查）");
+                e.into_inner()
+            });
             handle_sandbox_api(method, &path, &body, caller.as_deref(), &mut guard)
         })
         .await;

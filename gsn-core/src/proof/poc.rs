@@ -4,7 +4,7 @@
 //! 贡献越大，获得的信誉和奖励越多
 
 use sha2::{Sha256, Digest};
-use crate::identity::Ed25519Signer;
+use crate::identity::{is_weak_pubkey, Did, Ed25519Signer};
 
 #[derive(Debug, Clone)]
 pub struct ContributionRecord {
@@ -106,6 +106,15 @@ impl ProofOfContribution {
             .iter_mut()
             .find(|r| &r.hash == hash)
             .ok_or_else(|| "NOT_FOUND: 贡献记录不存在".to_string())?;
+
+        // v2.8.9（GAP §2.2）：DID 必须绑定到公钥，否则一把密钥可伪造不同 DID 绕过去重。
+        let parsed = Did::parse(verifier_did)?;
+        if parsed.identifier() != Did::fingerprint(verifier_pubkey) {
+            return Err("验证者 DID 与公钥指纹不匹配".to_string());
+        }
+        if is_weak_pubkey(verifier_pubkey) {
+            return Err("验证者公钥为弱公钥，拒绝".to_string());
+        }
 
         if verifier_did == record.agent_did {
             return Err("禁止自验：贡献者不能验证自己的贡献".to_string());

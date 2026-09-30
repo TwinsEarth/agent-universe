@@ -260,7 +260,8 @@ mod tests {
         assert_eq!(topo.local_did, Some("did:mac".to_string()));
         assert_eq!(topo.discovered.len(), 1);
         assert_eq!(topo.online.len(), 1);
-        assert!(!topo.nat_type.is_empty());
+        // v2.8.9（GAP §2.2）：守卫断言具体值，任何编造的 NAT 类型都会失败。
+        assert_eq!(topo.nat_type, "Unknown");
     }
 
     #[test]

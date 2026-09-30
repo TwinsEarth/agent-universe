@@ -16,7 +16,7 @@
 
 use std::collections::HashMap;
 
-use crate::identity::{Did, Ed25519Signer, Keypair};
+use crate::identity::{is_weak_pubkey, Did, Ed25519Signer, Keypair};
 
 use super::envelope::{PrivacyRequirement, TaskEnvelope};
 use super::manifest::AgentManifest;
@@ -181,6 +181,10 @@ impl AcaProcessor {
     ///
     /// 校验公钥的 DID 指纹与传入 DID 一致，不一致则拒绝注册。
     pub fn register_peer(&mut self, did: &str, pubkey: &[u8]) -> Result<(), String> {
+        // v2.8.9：拒绝弱公钥（全零/平凡/长度异常），GAP §2.2「弱公钥拒绝」真正接入。
+        if is_weak_pubkey(pubkey) {
+            return Err("拒绝注册弱公钥（全零/平凡/长度异常）".to_string());
+        }
         // v2.5.7：接受上游 did:aip 与本项目 did:nau，只要求公钥指纹（与方法无关）匹配。
         let parsed = Did::parse(did)?;
         let fingerprint = Did::fingerprint(pubkey);

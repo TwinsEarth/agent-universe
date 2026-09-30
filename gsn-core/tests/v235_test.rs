@@ -190,7 +190,8 @@ fn test_rest_full_market_lifecycle() {
             seed[0] = i + 20;
             let kp = gsn_core::Keypair::from_seed(&seed);
             let pk: [u8; 32] = kp.public_key().try_into().unwrap();
-            let did = format!("did:nau:qa-{}", i);
+            // v2.8.9：DID 必须由公钥派生（GAP §2.4），不再使用伪造的 qa-i
+            let did = format!("did:nau:{}", gsn_core::Did::fingerprint(&pk));
             members_json.push(json!({"did": did, "public_key": to_hex(&pk)}));
             if i <= 3 {
                 let sv = gsn_core::marketplace::SignedQaVote::sign(

@@ -69,7 +69,8 @@ v1.0.0 (Genesis)
                                                                                                                                                   └── v2.8.4 (Restart Gate - 重启恢复证据闸门/结果信封/信誉/质押，根治“重启即绕过” - GAP §3.2)
                                                                                                                                                         └── v2.8.5 (REST Auth - REST 认证闸门/CORS 白名单/请求体上限/状态转换表/罚没服务端定/终局拒绝可达 - GAP §3.5/§3.7/§3.8/§2.2.6)
                                                                                                                                                               └── v2.8.6 (MCP Validate - MCP 校验接入生产传输 sse/stdio/金额入口拒绝浮点/规范签名载荷整数化 - GAP §3.5/§4.1)
-                                                                                                                                                                    └── v2.8.7 (Sandbox Auth - 沙箱认证/所有权/资源限制/随机 id/孤儿清扫/Win Job Object - GAP §3.3) ← 当前
+                                                                                                                                                                    └── v2.8.7 (Sandbox Auth - 沙箱认证/所有权/资源限制/随机 id/孤儿清扫/Win Job Object - GAP §3.3)
+                                                                                                                                                                          └── v2.8.9 (Claim Verification - 弱公钥拒绝接入/贡献验证 DID 绑定/生产 panic 类型化/NAT 守卫锁值/纠删码真恢复/毒化告警 - GAP §2.2) ← 当前
 ```
 
 ## 大版本详情
@@ -516,6 +517,17 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **资源 / 输出上限**：stdout/stderr 有界读取截断到 1 MiB；请求体 env/initial_files/timeout/allowed_domains/resources 经 `config_from_body` 真正生效并校验；Windows 新增 Job Object（winjob.rs）强制内存/进程上限与进程树 kill。
 - **孤儿清扫 + 锁加固**：启动清扫残留 `au-sandbox-*`；锁改用 `into_inner()`。
 - **验证**：新增 `tests/v287_test.rs`（12 测试）；实证截断（改 MAX_OUTPUT 后失败）与认证（令 None 放行后失败）两项首次失败回归，恢复后全过；更新 v280 至新签名；全量 0 failed，clippy 零警告。
+
+### v2.8.9 - 修复“声明大量不成立”（gsn-core 0.2.89）
+
+**核心问题**：《v2.8.2 增量审计》§2.2——多条上游声称的修复在代码里没有支持：`is_weak_pubkey` 零生产调用、贡献验证只验签不绑定 DID↔公钥、生产时钟 panic 仍在、NAT 守卫 `!is_empty()` 任何编造值都能过、纠删码被指名测试把 6 分片全交回、`into_inner()` 毒化恢复静默无日志。
+
+- **弱公钥拒绝接入**：`identity/mod.rs` 导出 `is_weak_pubkey`；ACA `register_peer`、REST `parse_committee_members`、PoC `verify_contribution_signed` 三个真实入口均先拒绝弱公钥。
+- **贡献验证 DID 绑定**：`verify_contribution_signed` 验签前强制 DID 解析 + `Did::fingerprint(pubkey) == identifier`，杜绝一把密钥伪造不同 DID 绕过去重。
+- **生产 panic 类型化**：审计点名的时钟 panic 全部改为类型化错误；net/peer.rs 真实 libp2p 固定构造保留并诚实标注。
+- **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
+- **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
+- **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
 
 ## 小版本更新日志
 

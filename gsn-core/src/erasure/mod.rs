@@ -92,7 +92,8 @@ impl ErasureCoder {
 
         let mut result = Vec::with_capacity(original_size);
         for shard in present.iter().take(self.data_shards) {
-            result.extend_from_slice(shard.as_ref().expect("重建后应全部可用"));
+            let bytes = shard.as_ref().ok_or("reconstruct 后数据片仍缺失")?;
+            result.extend_from_slice(bytes);
         }
         result.truncate(original_size);
         Ok(result)

@@ -576,10 +576,9 @@ fn handle_peer_command(
         }
         PeerCommand::AddBootstrap { addr, reply } => {
             let result = peer.add_bootstrap_from_str(&addr);
-            if result.is_ok() {
-                eprintln!("✅ bootstrap 连接已发起: {}", addr);
-            } else {
-                eprintln!("⚠️ bootstrap 失败 [{}]: {}", addr, result.as_ref().err().unwrap());
+            match &result {
+                Ok(_) => eprintln!("✅ bootstrap 连接已发起: {}", addr),
+                Err(e) => eprintln!("⚠️ bootstrap 失败 [{}]: {}", addr, e),
             }
             let _ = reply.send(result);
         }
@@ -609,8 +608,8 @@ fn handle_peer_command(
                         }
                     }
                 }
-            } else {
-                eprintln!("⚠️ relay listen 失败 [{}]: {}", addr, result.as_ref().err().unwrap());
+            } else if let Err(e) = &result {
+                eprintln!("⚠️ relay listen 失败 [{}]: {}", addr, e);
             }
             let _ = reply.send(result);
         }
@@ -672,7 +671,7 @@ fn handle_peer_command(
                             let cls = if class.is_empty() {
                                 RelayClass::General
                             } else {
-                                class.parse().unwrap()
+                                class.parse().unwrap_or(RelayClass::General)
                             };
                             let relay = StoredRelay {
                                 relay_id: id,
@@ -1260,7 +1259,10 @@ async fn run_api_server(
                 let body_c = body.clone();
                 let caller = extract_caller(auth_header.as_deref());
                 let result = tokio::task::spawn_blocking(move || {
-                    let mut guard = mgr.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut guard = mgr.lock().unwrap_or_else(|e| {
+                        eprintln!("⚠️ sandbox: 管理器锁曾毒化，恢复后继续（请人工核查）");
+                        e.into_inner()
+                    });
                     crate::sandbox::handle_sandbox_api(
                         &method_c,
                         &path_c,

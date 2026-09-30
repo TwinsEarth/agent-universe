@@ -16,6 +16,13 @@ impl GsnClient {
     }
 
     pub fn peer_id(&self) -> String {
-        self.node.read().unwrap().peer_id.clone()
+        self.node
+            .read()
+            .unwrap_or_else(|e| {
+                eprintln!("⚠️ uniffi: 节点锁曾毒化，恢复后继续（请人工核查）");
+                e.into_inner()
+            })
+            .peer_id
+            .clone()
     }
 }

@@ -65,7 +65,7 @@ impl Deliberation {
         }
         tally
             .into_iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     pub fn proposal_count(&self) -> usize {
@@ -97,7 +97,7 @@ impl CrossModelMemory {
         self.entries
             .get(task_key)?
             .iter()
-            .max_by(|a, b| a.2.partial_cmp(&b.2).unwrap())
+            .max_by(|a, b| a.2.total_cmp(&b.2))
             .map(|(m, n, _)| (m.clone(), n.clone()))
     }
 

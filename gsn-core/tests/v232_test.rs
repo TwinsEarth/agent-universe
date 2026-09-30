@@ -381,18 +381,22 @@ fn test_protocol_object_lifecycle() {
 
 #[test]
 fn test_erasure_recover_from_parity() {
-    // 当前实现：所有 data shards 可用时可正常解码
-    // parity shards 用于完整性验证
+    // v2.8.9（GAP §2.2）：真正丢失数据片，仅靠校验片重建——
+    // 旧版把 6 个分片全交回，等于没测恢复。
     let coder = ErasureCoder::new(4, 2);
     let data = b"important data that needs redundancy";
     let shards = coder.encode(data);
 
-    // 所有分片都在
-    let recovered = coder.decode(&shards, data.len()).unwrap();
-    assert_eq!(recovered, data);
+    // 丢掉 2 个数据片（index 0、2），仅保留数据片 1、3 + 校验片 4、5 = 4 个存活
+    let surviving: Vec<DecodedShard> = shards
+        .into_iter()
+        .filter(|s| s.index != 0 && s.index != 2)
+        .collect();
+    assert_eq!(surviving.len(), 4);
 
-    // parity 校验通过
-    assert!(coder.verify_parity(&shards));
+    // 仅靠 2 个数据片 + 2 个校验片即可重建全部数据
+    let recovered = coder.decode(&surviving, data.len()).unwrap();
+    assert_eq!(recovered, data);
 }
 
 #[test]

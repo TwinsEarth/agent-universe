@@ -226,8 +226,8 @@ impl ReputationManager {
     fn now() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
     }
 
     /// v2.8.4: 导出全部信誉（GAP §3.2，持久化用）。

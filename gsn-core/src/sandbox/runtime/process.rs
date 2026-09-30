@@ -294,11 +294,7 @@ impl super::super::Sandbox for ProcessSandbox {
             // 覆盖最吃内存的 Node：与 Linux ulimit -v 对称地留足余量（至少
             // 2GB），否则高版本 Node 启动即 abort（134）。Node 的真实 JS 堆
             // 在 build_platform_command 用 --max-old-space-size 精确限制。
-            let effective_mem = cfg
-                .resources
-                .mem_mb
-                .max(1024)
-                .saturating_add(1024);
+            let effective_mem = cfg.resources.mem_mb.max(1024).saturating_add(1024);
             self.job = Some(
                 super::winjob::WinJob::new(effective_mem, cfg.resources.max_processes)
                     .map_err(SandboxError::Internal)?,

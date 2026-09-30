@@ -280,6 +280,19 @@ impl SandboxConfig {
                 reason("memory (RLIMIT_AS)"),
             ));
         }
+        // Windows Job Object 对普通进程不强制 CPU 时间与句柄数（仅内存/进程数），
+        // 而 default 资源配置会请求 CpuLimit/OpenFileLimit → 必须显式 waiver，
+        // 否则 create 在 Windows 上 PolicyNotEnforceable（v2.9.2 CI 首次暴露）。
+        if cfg!(target_os = "windows") {
+            cfg.waivers.push(Waiver::new(
+                Capability::CpuLimit,
+                reason("CPU time (Job Object)"),
+            ));
+            cfg.waivers.push(Waiver::new(
+                Capability::OpenFileLimit,
+                reason("open handle count (Job Object)"),
+            ));
+        }
         cfg
     }
 }

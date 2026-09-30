@@ -52,7 +52,13 @@ fn v277_run_javascript_hello() {
             "console.log('hello from node');\n",
         )
         .unwrap();
-    assert_eq!(r.exit_code, 0);
+    assert_eq!(
+        r.exit_code,
+        0,
+        "node abort: stdout=[{}] stderr=[{}]",
+        r.stdout,
+        r.stderr
+    );
     assert!(r.stdout.contains("hello from node"));
     s.destroy().unwrap();
 }

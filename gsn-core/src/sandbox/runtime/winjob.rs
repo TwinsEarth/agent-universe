@@ -4,7 +4,11 @@
 //! - `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：job 句柄关闭（含 daemon 崩溃/
 //!   正常销毁）时，整棵进程树被系统杀掉，杜绝孤儿；
 //! - `JOB_OBJECT_LIMIT_ACTIVE_PROCESS`：限制活动进程数（对应 max_processes）；
-//! - `JOB_OBJECT_LIMIT_PROCESS_MEMORY`：限制单进程提交内存（对应 mem_mb）。
+//! - `JOB_OBJECT_LIMIT_PROCESS_MEMORY`：限制单进程提交内存。**注意**：高版本
+//!   Node/V8 启动即会提交数百 MB，按裸 mem_mb（如 768）设置会令 Node 启动即
+//!   abort（退出码 134），因此调用方必须按运行程序计算"有效上限"（Node 与
+//!   Linux 的 ulimit -v 对称地留足余量）后传入；Node 的真实 JS 堆另由
+//!   `--max-old-space-size` 限制。
 //!
 //! 主动超时路径另走 taskkill /T /F（见 process.rs）；本模块是**被动**兜底。
 #![cfg(windows)]
@@ -23,8 +27,13 @@ pub struct WinJob {
 }
 
 impl WinJob {
-    /// 创建并配置 job
-    pub fn new(mem_mb: u32, max_processes: u32) -> Result<Self, String> {
+    /// 创建并配置 job。
+    ///
+    /// `effective_mem_mb` 是**单进程提交内存上限**，由调用方按运行程序计算：
+    /// Node 需在 mem_mb 之上留足启动余量（与 Linux ulimit -v 对称），否则
+    /// 高版本 Node 启动即 abort（134）；Python 可直接用 mem_mb。
+    /// `max_processes` 是活动进程数上限。
+    pub fn new(effective_mem_mb: u32, max_processes: u32) -> Result<Self, String> {
         // SAFETY: CreateJobObjectW 两个参数均为 null（默认安全属性、匿名 job），
         // 该调用本身安全；返回句柄已校验非 0 且非 INVALID_HANDLE_VALUE。
         // SetInformationJobObject 传入的 info 是全字段显式初始化的
@@ -42,7 +51,7 @@ impl WinJob {
                 | JOB_OBJECT_LIMIT_PROCESS_MEMORY;
             info.BasicLimitInformation.ActiveProcessLimit = max_processes;
             // 单进程提交内存上限（字节）
-            info.ProcessMemoryLimit = (mem_mb as usize).saturating_mul(1024 * 1024);
+            info.ProcessMemoryLimit = (effective_mem_mb as usize).saturating_mul(1024 * 1024);
 
             let ok = SetInformationJobObject(
                 job,

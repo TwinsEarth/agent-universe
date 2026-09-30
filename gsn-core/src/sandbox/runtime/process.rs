@@ -224,6 +224,12 @@ fn build_platform_command(
     cfg: &SandboxConfig,
 ) -> Result<std::process::Command, SandboxError> {
     let mut cmd = std::process::Command::new(resolved);
+    // Node：V8 flag 必须在脚本名之前。真实 JS 堆上限由 --max-old-space-size
+    // 精确限制（与 Linux 对称）；Job Object 的提交内存只作兜底余量。
+    if resolved == "node" {
+        let heap = u64::from(cfg.resources.mem_mb).saturating_sub(96).max(16);
+        cmd.arg(format!("--max-old-space-size={heap}"));
+    }
     cmd.args(args).current_dir(dir).env_clear();
     // python/node 通常已在 PATH；注入 PATH 保证能找到 .exe
     if let Some(p) = std::env::var_os("PATH") {
@@ -284,8 +290,17 @@ impl super::super::Sandbox for ProcessSandbox {
         // v2.8.7：Windows 建立 Job Object（内存/进程数上限 + 句柄关闭杀树）
         #[cfg(windows)]
         {
+            // Job 在 create 时建立、其后可跑 python/node，故提交内存上限须能
+            // 覆盖最吃内存的 Node：与 Linux ulimit -v 对称地留足余量（至少
+            // 2GB），否则高版本 Node 启动即 abort（134）。Node 的真实 JS 堆
+            // 在 build_platform_command 用 --max-old-space-size 精确限制。
+            let effective_mem = cfg
+                .resources
+                .mem_mb
+                .max(1024)
+                .saturating_add(1024);
             self.job = Some(
-                super::winjob::WinJob::new(cfg.resources.mem_mb, cfg.resources.max_processes)
+                super::winjob::WinJob::new(effective_mem, cfg.resources.max_processes)
                     .map_err(SandboxError::Internal)?,
             );
         }

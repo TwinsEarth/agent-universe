@@ -12,7 +12,6 @@ use std::time::Duration;
 pub struct DaemonHandle {
     pub child: Child,
     pub api_port: u16,
-    pub data_dir: PathBuf,
     pub bin: PathBuf,
 }
 
@@ -117,7 +116,6 @@ pub fn start_daemon(bin: &Path, data_dir: &Path, api_port: u16) -> std::io::Resu
     Ok(DaemonHandle {
         child,
         api_port,
-        data_dir: data_dir.to_path_buf(),
         bin: bin.to_path_buf(),
     })
 }

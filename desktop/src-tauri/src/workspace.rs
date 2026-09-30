@@ -135,6 +135,6 @@ pub fn load_config() -> AppConfig {
 pub fn save_config(cfg: &AppConfig) -> std::io::Result<()> {
     fs::create_dir_all(app_data_dir())?;
     let text = serde_json::to_string_pretty(cfg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        .map_err(std::io::Error::other)?;
     fs::write(config_file(), text)
 }

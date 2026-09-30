@@ -118,7 +118,8 @@ impl HeartbeatTracker {
 
     /// 可用 peers：Online + Suspicious（未确认离线）
     pub fn available_peers(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.peers
+        let mut v: Vec<String> = self
+            .peers
             .iter()
             .filter(|(_, s)| s.liveness != PeerLiveness::Offline)
             .map(|(id, _)| id.clone())
@@ -158,7 +159,10 @@ mod tests {
 
     #[test]
     fn miss_below_threshold_is_suspicious() {
-        let mut h = HeartbeatTracker::new(HeartbeatConfig { miss_threshold: 3, ..Default::default() });
+        let mut h = HeartbeatTracker::new(HeartbeatConfig {
+            miss_threshold: 3,
+            ..Default::default()
+        });
         h.register("peer-a");
         h.record_miss("peer-a");
         assert_eq!(h.liveness("peer-a"), Some(PeerLiveness::Suspicious));
@@ -168,7 +172,10 @@ mod tests {
 
     #[test]
     fn miss_at_threshold_is_offline() {
-        let mut h = HeartbeatTracker::new(HeartbeatConfig { miss_threshold: 3, ..Default::default() });
+        let mut h = HeartbeatTracker::new(HeartbeatConfig {
+            miss_threshold: 3,
+            ..Default::default()
+        });
         h.register("peer-a");
         h.record_miss("peer-a");
         h.record_miss("peer-a");
@@ -180,7 +187,10 @@ mod tests {
 
     #[test]
     fn pong_resets_miss_count() {
-        let mut h = HeartbeatTracker::new(HeartbeatConfig { miss_threshold: 3, ..Default::default() });
+        let mut h = HeartbeatTracker::new(HeartbeatConfig {
+            miss_threshold: 3,
+            ..Default::default()
+        });
         h.register("peer-a");
         h.record_miss("peer-a");
         h.record_miss("peer-a");

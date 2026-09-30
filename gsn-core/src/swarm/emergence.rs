@@ -1,5 +1,5 @@
 //! 涌现行为检测
-//! 
+//!
 //! 群体智能的核心：局部规则 → 全局涌现
 
 #[derive(Debug, Clone)]
@@ -51,13 +51,15 @@ impl EmergenceDetector {
     /// 检测涌现信号
     pub fn detect(&self) -> Vec<EmergenceSignal> {
         let mut signals = Vec::new();
-        
+
         if self.history.len() < self.window_size {
             return signals;
         }
 
         let recent: Vec<_> = self.history.iter().rev().take(self.window_size).collect();
-        let older: Vec<_> = self.history.iter()
+        let older: Vec<_> = self
+            .history
+            .iter()
             .rev()
             .skip(self.window_size)
             .take(self.window_size)
@@ -68,9 +70,11 @@ impl EmergenceDetector {
         }
 
         // 检测吞吐量增长
-        let recent_throughput: f64 = recent.iter().map(|(_, t, _)| t).sum::<f64>() / recent.len() as f64;
-        let older_throughput: f64 = older.iter().map(|(_, t, _)| t).sum::<f64>() / older.len() as f64;
-        
+        let recent_throughput: f64 =
+            recent.iter().map(|(_, t, _)| t).sum::<f64>() / recent.len() as f64;
+        let older_throughput: f64 =
+            older.iter().map(|(_, t, _)| t).sum::<f64>() / older.len() as f64;
+
         if older_throughput > 0.0 {
             let growth = (recent_throughput - older_throughput) / older_throughput;
             if growth > self.emergence_threshold {
@@ -83,16 +87,20 @@ impl EmergenceDetector {
         }
 
         // 检测延迟下降
-        let recent_latency: f64 = recent.iter().map(|(_, _, l)| l).sum::<f64>() / recent.len() as f64;
+        let recent_latency: f64 =
+            recent.iter().map(|(_, _, l)| l).sum::<f64>() / recent.len() as f64;
         let older_latency: f64 = older.iter().map(|(_, _, l)| l).sum::<f64>() / older.len() as f64;
-        
+
         if older_latency > 0.0 {
             let improvement = (older_latency - recent_latency) / older_latency;
             if improvement > self.emergence_threshold {
                 signals.push(EmergenceSignal {
                     signal_type: EmergenceType::LoadBalancing,
                     strength: improvement,
-                    description: format!("延迟下降 {:.1}%，检测到负载均衡涌现", improvement * 100.0),
+                    description: format!(
+                        "延迟下降 {:.1}%，检测到负载均衡涌现",
+                        improvement * 100.0
+                    ),
                 });
             }
         }

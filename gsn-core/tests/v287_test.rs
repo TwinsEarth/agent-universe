@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex};
 fn new_mgr(tag: &str) -> SandboxManager {
     let dir = std::env::temp_dir().join(format!("au-v287-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    SandboxManager::new(dir, SandboxConfig::default(), 0)
+    // v2.9.1：默认配置无 waiver 会被能力闸门拒绝；安全边界测试需真正创建，
+    // 使用显式 trusted_local（带理由）。
+    let cfg = SandboxConfig::trusted_local("v287 sandbox security boundary test");
+    SandboxManager::new(dir, cfg, 0)
 }
 
 fn create(mgr: &mut SandboxManager, caller: &str, body: &str) -> (u16, Value) {
@@ -212,7 +215,7 @@ fn mcp_bridge_ownership() {
     let _ = std::fs::remove_dir_all(&dir);
     let mgr = Arc::new(Mutex::new(SandboxManager::new(
         dir,
-        SandboxConfig::default(),
+        SandboxConfig::trusted_local("v287 mcp bridge ownership test"),
         0,
     )));
     let bridge = SandboxMcpBridge::new(mgr.clone());

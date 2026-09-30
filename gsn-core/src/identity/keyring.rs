@@ -1,6 +1,6 @@
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use async_trait::async_trait;
 
 #[async_trait]
 pub trait SecureKeyring: Send + Sync {

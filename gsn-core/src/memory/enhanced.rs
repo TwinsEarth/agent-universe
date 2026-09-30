@@ -46,7 +46,11 @@ pub struct EnhancedMemory {
 
 impl EnhancedMemory {
     pub fn new(capacity: usize) -> Self {
-        Self { store: HashMap::new(), capacity: capacity.max(1), clock: 0 }
+        Self {
+            store: HashMap::new(),
+            capacity: capacity.max(1),
+            clock: 0,
+        }
     }
 
     fn tick(&mut self) -> u64 {
@@ -58,7 +62,8 @@ impl EnhancedMemory {
     pub fn write(&mut self, mut m: RatedMemory) {
         if self.store.len() >= self.capacity && !self.store.contains_key(&m.key) {
             // 真 LRU：淘汰 last_used 最小（最久未访问）
-            let victim = self.store
+            let victim = self
+                .store
                 .iter()
                 .min_by_key(|(_, v)| v.last_used)
                 .map(|(k, _)| k.clone());
@@ -95,8 +100,12 @@ impl EnhancedMemory {
         self.store.get(key).filter(|m| m.score_bps >= min_score_bps)
     }
 
-    pub fn len(&self) -> usize { self.store.len() }
-    pub fn is_empty(&self) -> bool { self.store.is_empty() }
+    pub fn len(&self) -> usize {
+        self.store.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.store.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +145,9 @@ mod tests {
         m.write(RatedMemory::new("c", &["x"], "gamma", 5000));
         assert_eq!(m.len(), 2);
         assert!(m.store.contains_key("b"), "b 是最近使用，应保留");
-        assert!(!m.store.contains_key("a"), "a 最久未用，应被 LRU 淘汰（LFU 会错误保留 a）");
+        assert!(
+            !m.store.contains_key("a"),
+            "a 最久未用，应被 LRU 淘汰（LFU 会错误保留 a）"
+        );
     }
 }

@@ -49,13 +49,21 @@ fn shared_memory_improves_hit_rate_and_reduces_attempts() {
     println!("\n{}", r.summary());
 
     /* baseline 应贴近理论值：命中率≈B/K=0.30，首次≈1/K=0.10，尝试≈2.7。
-       这一步同时验证了随机/盲猜实现本身正确。 */
-    assert!((r.baseline.hit_rate() - 0.30).abs() < 0.03, "baseline hit {}", r.baseline.hit_rate());
+    这一步同时验证了随机/盲猜实现本身正确。 */
+    assert!(
+        (r.baseline.hit_rate() - 0.30).abs() < 0.03,
+        "baseline hit {}",
+        r.baseline.hit_rate()
+    );
     assert!((r.baseline.first_success_rate() - 0.10).abs() < 0.02);
     assert!((r.baseline.avg_attempts() - 2.7).abs() < 0.05);
 
     /* 核心主张：共享记忆组在三个指标上全面优于无记忆组。 */
-    assert!(r.shared.hit_rate() > r.baseline.hit_rate() + 0.4, "shared hit {}", r.shared.hit_rate());
+    assert!(
+        r.shared.hit_rate() > r.baseline.hit_rate() + 0.4,
+        "shared hit {}",
+        r.shared.hit_rate()
+    );
     assert!(r.shared.first_success_rate() > r.baseline.first_success_rate() + 0.5);
     assert!(r.shared.avg_attempts() < r.baseline.avg_attempts() - 1.0);
 
@@ -71,7 +79,12 @@ fn shared_memory_improves_hit_rate_and_reduces_attempts() {
     /* 冷启动 -> 高命中：最后一个智能体命中率远高于开拓者。 */
     let first = &r.per_agent.first().unwrap();
     let last = &r.per_agent.last().unwrap();
-    assert!(last.hit_rate > first.hit_rate + 0.5, "first {} last {}", first.hit_rate, last.hit_rate);
+    assert!(
+        last.hit_rate > first.hit_rate + 0.5,
+        "first {} last {}",
+        first.hit_rate,
+        last.hit_rate
+    );
     assert!(last.avg_attempts < first.avg_attempts - 1.0);
 }
 

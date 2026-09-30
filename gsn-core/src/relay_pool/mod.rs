@@ -100,7 +100,11 @@ pub struct CapacitySnapshot {
 }
 
 /// 纯函数：由已运行天数、手动扩容额度、当前池大小计算容量快照
-pub fn capacity_snapshot(elapsed_days: i64, manual_bonus: i64, current_size: i64) -> CapacitySnapshot {
+pub fn capacity_snapshot(
+    elapsed_days: i64,
+    manual_bonus: i64,
+    current_size: i64,
+) -> CapacitySnapshot {
     let days = elapsed_days.max(0) as f64;
     let elapsed_months = (days / DAYS_PER_MONTH).floor() as i64;
     // 运行年限：不满 1 年按 1 年计（保证初始阶段硬上限为 10 万，给月度增长留空间）
@@ -132,10 +136,7 @@ pub fn capacity_snapshot(elapsed_days: i64, manual_bonus: i64, current_size: i64
 /// 从候选中按「健康 + 分类优先级」选择一个替换 relay，排除正在使用的节点。
 ///
 /// 优先级：专用 > 自有 > 第三方 > 通用；同类中优先 fail_count 低者。
-pub fn select_replacement(
-    relays: &[StoredRelay],
-    in_use: &HashSet<String>,
-) -> Option<StoredRelay> {
+pub fn select_replacement(relays: &[StoredRelay], in_use: &HashSet<String>) -> Option<StoredRelay> {
     let mut best: Option<&StoredRelay> = None;
     for r in relays {
         if !r.healthy || in_use.contains(&r.relay_id) {

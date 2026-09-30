@@ -96,61 +96,82 @@ impl DomesticRegistry {
     pub fn new() -> Self {
         let mut endpoints = HashMap::new();
         // 豆包
-        endpoints.insert("doubao", LlmEndpoint {
-            family: "doubao",
-            base_url: "https://ark.cn-beijing.volces.com/api/v3",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "doubao",
+            LlmEndpoint {
+                family: "doubao",
+                base_url: "https://ark.cn-beijing.volces.com/api/v3",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // Kimi
-        endpoints.insert("kimi", LlmEndpoint {
-            family: "kimi",
-            base_url: "https://api.moonshot.cn/v1",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "kimi",
+            LlmEndpoint {
+                family: "kimi",
+                base_url: "https://api.moonshot.cn/v1",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // Qwen
-        endpoints.insert("qwen", LlmEndpoint {
-            family: "qwen",
-            base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "qwen",
+            LlmEndpoint {
+                family: "qwen",
+                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // Zhipu
-        endpoints.insert("zhipu", LlmEndpoint {
-            family: "zhipu",
-            base_url: "https://open.bigmodel.cn/api/paas/v4",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "zhipu",
+            LlmEndpoint {
+                family: "zhipu",
+                base_url: "https://open.bigmodel.cn/api/paas/v4",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // MiniMax
-        endpoints.insert("minimax", LlmEndpoint {
-            family: "minimax",
-            base_url: "https://api.minimax.chat/v1",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "minimax",
+            LlmEndpoint {
+                family: "minimax",
+                base_url: "https://api.minimax.chat/v1",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // Hunyuan
-        endpoints.insert("hunyuan", LlmEndpoint {
-            family: "hunyuan",
-            base_url: "https://api.hunyuan.cloud.tencent.com/v1",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "hunyuan",
+            LlmEndpoint {
+                family: "hunyuan",
+                base_url: "https://api.hunyuan.cloud.tencent.com/v1",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
         // Xiaomi
-        endpoints.insert("xiaomi", LlmEndpoint {
-            family: "xiaomi",
-            base_url: "https://api.xiaomi.com/v1",
-            region: NetworkRegion::Domestic,
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "xiaomi",
+            LlmEndpoint {
+                family: "xiaomi",
+                base_url: "https://api.xiaomi.com/v1",
+                region: NetworkRegion::Domestic,
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
 
         let mut health = HashMap::new();
         for k in endpoints.keys() {
@@ -168,7 +189,10 @@ impl DomesticRegistry {
     }
 
     pub fn healthy_count(&self) -> usize {
-        self.health.values().filter(|h| **h == EndpointHealth::Reachable).count()
+        self.health
+            .values()
+            .filter(|h| **h == EndpointHealth::Reachable)
+            .count()
     }
 
     pub fn all_families(&self) -> Vec<&&'static str> {
@@ -186,37 +210,49 @@ impl OverseasRegistry {
     pub fn new() -> Self {
         let mut endpoints = HashMap::new();
         // OpenAI
-        endpoints.insert("openai", LlmEndpoint {
-            family: "openai",
-            base_url: "https://api.openai.com/v1",
-            region: NetworkRegion::Overseas,
-            requires_proxy_from_china: true,
-            china_proxy_url: Some("https://api.openai.com/v1-proxy"), // 国内镜像/代理占位
-        });
+        endpoints.insert(
+            "openai",
+            LlmEndpoint {
+                family: "openai",
+                base_url: "https://api.openai.com/v1",
+                region: NetworkRegion::Overseas,
+                requires_proxy_from_china: true,
+                china_proxy_url: Some("https://api.openai.com/v1-proxy"), // 国内镜像/代理占位
+            },
+        );
         // Gemini
-        endpoints.insert("gemini", LlmEndpoint {
-            family: "gemini",
-            base_url: "https://generativelanguage.googleapis.com/v1beta",
-            region: NetworkRegion::Overseas,
-            requires_proxy_from_china: true,
-            china_proxy_url: Some("https://generativelanguage.googleapis.com/v1beta-proxy"),
-        });
+        endpoints.insert(
+            "gemini",
+            LlmEndpoint {
+                family: "gemini",
+                base_url: "https://generativelanguage.googleapis.com/v1beta",
+                region: NetworkRegion::Overseas,
+                requires_proxy_from_china: true,
+                china_proxy_url: Some("https://generativelanguage.googleapis.com/v1beta-proxy"),
+            },
+        );
         // Anthropic
-        endpoints.insert("anthropic", LlmEndpoint {
-            family: "anthropic",
-            base_url: "https://api.anthropic.com/v1",
-            region: NetworkRegion::Overseas,
-            requires_proxy_from_china: true,
-            china_proxy_url: Some("https://api.anthropic.com/v1-proxy"),
-        });
+        endpoints.insert(
+            "anthropic",
+            LlmEndpoint {
+                family: "anthropic",
+                base_url: "https://api.anthropic.com/v1",
+                region: NetworkRegion::Overseas,
+                requires_proxy_from_china: true,
+                china_proxy_url: Some("https://api.anthropic.com/v1-proxy"),
+            },
+        );
         // DeepSeek（国内可直连，归到海外组做对照）
-        endpoints.insert("deepseek", LlmEndpoint {
-            family: "deepseek",
-            base_url: "https://api.deepseek.com/v1",
-            region: NetworkRegion::Domestic, // DeepSeek 是国内模型
-            requires_proxy_from_china: false,
-            china_proxy_url: None,
-        });
+        endpoints.insert(
+            "deepseek",
+            LlmEndpoint {
+                family: "deepseek",
+                base_url: "https://api.deepseek.com/v1",
+                region: NetworkRegion::Domestic, // DeepSeek 是国内模型
+                requires_proxy_from_china: false,
+                china_proxy_url: None,
+            },
+        );
 
         let mut health = HashMap::new();
         for k in endpoints.keys() {
@@ -234,7 +270,10 @@ impl OverseasRegistry {
     }
 
     pub fn healthy_count(&self) -> usize {
-        self.health.values().filter(|h| **h == EndpointHealth::Reachable).count()
+        self.health
+            .values()
+            .filter(|h| **h == EndpointHealth::Reachable)
+            .count()
     }
 
     /// 从国内网络访问时，哪些国外端点需要切换到代理 URL。
@@ -299,23 +338,20 @@ impl NetworkRouter {
     pub fn probe_all(&mut self) {
         let region = self.current_region;
         let domestic_keys: Vec<&'static str> = self.domestic.endpoints.keys().copied().collect();
-        let domestic_reachable: Vec<bool> = domestic_keys
-            .iter()
-            .map(|k| self.domestic.endpoint(k).unwrap().reachable_from(region))
-            .collect();
-        for (k, reachable) in domestic_keys.into_iter().zip(domestic_reachable) {
-            if reachable {
-                self.domestic.mark_reachable(k);
+        for k in domestic_keys {
+            // endpoint(k) 对 keys() 中的键理论上必然存在；用 if-let 避免 panic
+            if let Some(ep) = self.domestic.endpoint(k) {
+                if ep.reachable_from(region) {
+                    self.domestic.mark_reachable(k);
+                }
             }
         }
         let overseas_keys: Vec<&'static str> = self.overseas.endpoints.keys().copied().collect();
-        let overseas_reachable: Vec<bool> = overseas_keys
-            .iter()
-            .map(|k| self.overseas.endpoint(k).unwrap().reachable_from(region))
-            .collect();
-        for (k, reachable) in overseas_keys.into_iter().zip(overseas_reachable) {
-            if reachable {
-                self.overseas.mark_reachable(k);
+        for k in overseas_keys {
+            if let Some(ep) = self.overseas.endpoint(k) {
+                if ep.reachable_from(region) {
+                    self.overseas.mark_reachable(k);
+                }
             }
         }
     }
@@ -506,7 +542,11 @@ mod downgrade_tests {
     use crate::collaboration::hetero_llm::Proposal;
 
     fn m(id: &str, family: &str, weight: f64) -> LlmModel {
-        LlmModel { id: id.into(), family: family.into(), weight }
+        LlmModel {
+            id: id.into(),
+            family: family.into(),
+            weight,
+        }
     }
 
     #[test]
@@ -555,9 +595,24 @@ mod downgrade_tests {
 
         r.downgrade_to_domestic();
         let mut d = r.build_deliberation();
-        d.propose(Proposal { model_id: "qwen-1".into(), answer: "A".into(), confidence: 0.9 }).unwrap();
-        d.propose(Proposal { model_id: "kimi-1".into(), answer: "A".into(), confidence: 0.85 }).unwrap();
-        d.propose(Proposal { model_id: "glm-1".into(), answer: "B".into(), confidence: 0.7 }).unwrap();
+        d.propose(Proposal {
+            model_id: "qwen-1".into(),
+            answer: "A".into(),
+            confidence: 0.9,
+        })
+        .unwrap();
+        d.propose(Proposal {
+            model_id: "kimi-1".into(),
+            answer: "A".into(),
+            confidence: 0.85,
+        })
+        .unwrap();
+        d.propose(Proposal {
+            model_id: "glm-1".into(),
+            answer: "B".into(),
+            confidence: 0.7,
+        })
+        .unwrap();
 
         let (winner, _) = d.vote().unwrap();
         assert_eq!(winner, "A");

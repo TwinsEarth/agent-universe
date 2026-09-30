@@ -5,7 +5,7 @@
 //! - 上下文窗口预算分配（system 优先保留，历史从旧往新截断）
 //! - 超预算时报错或按策略截断
 
-use super::recipe::{DsChatRequest, DsMessage, DeepSeekModel};
+use super::recipe::{DeepSeekModel, DsChatRequest, DsMessage};
 
 /// 估算一段文本的 token 数（启发式，非真 BPE）。
 ///
@@ -43,12 +43,17 @@ pub struct ContextBudget {
 
 impl ContextBudget {
     pub fn new(model: DeepSeekModel, reserved_output: u32) -> Self {
-        Self { model, reserved_output }
+        Self {
+            model,
+            reserved_output,
+        }
     }
 
     /// 输入可用窗口 = 模型上下文窗口 - 预留输出 tokens。
     pub fn input_budget(&self) -> u32 {
-        self.model.context_window().saturating_sub(self.reserved_output)
+        self.model
+            .context_window()
+            .saturating_sub(self.reserved_output)
     }
 
     /// 计算整条请求的 token 占用。
@@ -95,7 +100,7 @@ impl ContextBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deepseek::recipe::{Recipe, DsSampling};
+    use crate::deepseek::recipe::{DsSampling, Recipe};
 
     #[test]
     fn estimate_tokens_ascii_and_cjk() {

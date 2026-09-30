@@ -14,15 +14,14 @@
 use super::super::config::{IsolationLevel, SandboxConfig};
 use super::super::error::SandboxError;
 use super::super::state::{LifecycleAction, SandboxState};
-use super::super::SandboxResult;
 use super::super::Sandbox;
+use super::super::SandboxResult;
 use super::CodeLanguage;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// 单次执行 stdout/stderr 最大捕获字节数（v2.8.7，防父进程内存 DoS）
 const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MiB
-
 
 /// 进程级隔离沙箱
 pub struct ProcessSandbox {
@@ -61,20 +60,21 @@ impl ProcessSandbox {
 
     fn apply(&mut self, action: LifecycleAction) -> Result<(), SandboxError> {
         let from = self.state;
-        self.state = from.transition(action).map_err(|_| {
-            SandboxError::InvalidLifecycle {
+        self.state = from
+            .transition(action)
+            .map_err(|_| SandboxError::InvalidLifecycle {
                 from: from.label().to_string(),
                 action: action.label().to_string(),
-            }
-        })?;
+            })?;
         Ok(())
     }
 
     /// 在沙箱工作目录内写文件（相对路径，拒绝逃逸）
     pub fn write_file(&self, relative: &str, content: &str) -> Result<(), SandboxError> {
-        let dir = self.work_dir.as_ref().ok_or(SandboxError::NotFound(
-            "sandbox not created".into(),
-        ))?;
+        let dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(SandboxError::NotFound("sandbox not created".into()))?;
         let target = safe_join(dir, relative)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| SandboxError::Internal(e.to_string()))?;
@@ -84,9 +84,10 @@ impl ProcessSandbox {
 
     /// 读沙箱内文件（相对路径）
     pub fn read_file(&self, relative: &str) -> Result<String, SandboxError> {
-        let dir = self.work_dir.as_ref().ok_or(SandboxError::NotFound(
-            "sandbox not created".into(),
-        ))?;
+        let dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(SandboxError::NotFound("sandbox not created".into()))?;
         let target = safe_join(dir, relative)?;
         std::fs::read_to_string(&target).map_err(|e| SandboxError::Internal(e.to_string()))
     }
@@ -124,12 +125,14 @@ impl ProcessSandbox {
         program: &str,
         args: &[String],
     ) -> Result<std::process::Command, SandboxError> {
-        let cfg = self.cfg.as_ref().ok_or(SandboxError::NotFound(
-            "sandbox not configured".into(),
-        ))?;
-        let dir = self.work_dir.as_ref().ok_or(SandboxError::NotFound(
-            "sandbox not created".into(),
-        ))?;
+        let cfg = self
+            .cfg
+            .as_ref()
+            .ok_or(SandboxError::NotFound("sandbox not configured".into()))?;
+        let dir = self
+            .work_dir
+            .as_ref()
+            .ok_or(SandboxError::NotFound("sandbox not created".into()))?;
 
         // 仅允许白名单解释器；shell 需显式 allow_shell
         let resolved = resolve_program(program, cfg)?;
@@ -148,8 +151,21 @@ fn build_platform_command(
     cfg: &SandboxConfig,
 ) -> Result<std::process::Command, SandboxError> {
     let mut inner = String::new();
-    inner.push_str(&format!("ulimit -u {}; ", cfg.resources.max_processes));
-    inner.push_str(&format!("ulimit -n {}; ", cfg.resources.max_open_files));
+    // 每条资源限制失败即中止（exit 200），绝不静默不受限地 exec 目标。
+    // 地址空间（-v）单位 KB；内存 MB → KB
+    let vmem_kb = u64::from(cfg.resources.mem_mb) * 1024;
+    // CPU 时间（-t）单位秒，毫秒向上取整，至少 1 秒
+    let cpu_secs = u64::from(cfg.resources.cpu_millis).div_ceil(1_000).max(1);
+    inner.push_str(&format!("ulimit -v {vmem_kb} || exit 200; "));
+    inner.push_str(&format!("ulimit -t {cpu_secs} || exit 200; "));
+    inner.push_str(&format!(
+        "ulimit -u {} || exit 200; ",
+        cfg.resources.max_processes
+    ));
+    inner.push_str(&format!(
+        "ulimit -n {} || exit 200; ",
+        cfg.resources.max_open_files
+    ));
     // exec 替换 bash 为目标程序，最终只有一个进程（pid 即 bash），
     // Rust 侧 kill 该 pid 即可无孤儿地强杀。
     inner.push_str("exec ");
@@ -212,6 +228,13 @@ impl super::super::Sandbox for ProcessSandbox {
         if let Err(errs) = cfg.validate() {
             return Err(SandboxError::InvalidConfig(errs.join("; ")));
         }
+        // 能力校验（v2.9.1）：逐条检查配置要求的边界，进程后端无法强制的
+        // （网络拒绝/文件系统子树限制/磁盘配额）必须显式豁免（带理由），
+        // 否则具名拒绝——绝不静默接受一个做不到的隔离策略。
+        let declaration = super::super::capability::process_declaration();
+        for cap in cfg.required_boundaries() {
+            declaration.check(cap, &cfg.waivers)?;
+        }
         let id = if cfg.sandbox_id.is_empty() {
             self.id.clone()
         } else {
@@ -220,10 +243,7 @@ impl super::super::Sandbox for ProcessSandbox {
         self.id = id;
         self.apply(LifecycleAction::Create)?;
 
-        let base = cfg
-            .work_dir_base
-            .clone()
-            .unwrap_or_else(std::env::temp_dir);
+        let base = cfg.work_dir_base.clone().unwrap_or_else(std::env::temp_dir);
         let dir = base.join(format!("au-sandbox-{}", self.id));
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError::Internal(e.to_string()))?;
         // 写入初始文件
@@ -288,12 +308,8 @@ impl super::super::Sandbox for ProcessSandbox {
         // 写满后不再读，管道缓冲反压会让子进程阻塞，等超时被 kill）
         let mut stdout_pipe = child.stdout.take();
         let mut stderr_pipe = child.stderr.take();
-        let stdout_handle = std::thread::spawn(move || {
-            read_bounded(&mut stdout_pipe)
-        });
-        let stderr_handle = std::thread::spawn(move || {
-            read_bounded(&mut stderr_pipe)
-        });
+        let stdout_handle = std::thread::spawn(move || read_bounded(&mut stdout_pipe));
+        let stderr_handle = std::thread::spawn(move || read_bounded(&mut stderr_pipe));
 
         // 轮询等待；超时由 Rust 侧强杀整棵进程树（不依赖外部 timeout/gtimeout）
         let timeout = cfg.resources.timeout_ms;
@@ -323,7 +339,9 @@ impl super::super::Sandbox for ProcessSandbox {
                     kill_process_tree(&mut child);
                     let _ = stdout_handle.join();
                     let _ = stderr_handle.join();
-                    return Err(SandboxError::Internal(format!("等待子进程失败并已清理: {e}")));
+                    return Err(SandboxError::Internal(format!(
+                        "等待子进程失败并已清理: {e}"
+                    )));
                 }
             }
         }
@@ -409,7 +427,10 @@ fn safe_join(base: &Path, relative: &str) -> Result<PathBuf, SandboxError> {
         )));
     }
     let rel = Path::new(relative);
-    if rel.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+    if rel
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
         return Err(SandboxError::IsolationViolation(format!(
             "路径逃逸沙箱: {relative}"
         )));

@@ -2,10 +2,10 @@
 //!
 //! 任务执行后的可验证收据
 
-use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use crate::identity::Ed25519Signer;
 use super::crypto::{canonical_payload, sign_hex, verify_hex};
+use crate::identity::Ed25519Signer;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// 收据状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,11 +56,7 @@ pub struct Receipt {
 }
 
 impl Receipt {
-    pub fn new(
-        task_id: String,
-        executor_did: String,
-        result: &[u8],
-    ) -> Self {
+    pub fn new(task_id: String, executor_did: String, result: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(result);
         let result_hash: [u8; 32] = hasher.finalize().into();

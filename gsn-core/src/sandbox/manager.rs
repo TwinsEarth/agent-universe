@@ -13,8 +13,8 @@
 use super::config::SandboxConfig;
 use super::error::SandboxError;
 use super::runtime::ProcessSandbox;
-use super::state::SandboxState;
 use super::security::{AuditLog, EvidenceGrade, NetworkGuard, PermissionChecker};
+use super::state::SandboxState;
 use super::Sandbox;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -114,9 +114,7 @@ impl SandboxManager {
     pub fn bind_owner(&mut self, id: &str, owner: &str) -> Result<(), SandboxError> {
         let owner = owner.trim();
         if owner.is_empty() {
-            return Err(SandboxError::IsolationViolation(
-                "不能绑定空所有者".into(),
-            ));
+            return Err(SandboxError::IsolationViolation("不能绑定空所有者".into()));
         }
         let m = self
             .sandboxes
@@ -136,9 +134,7 @@ impl SandboxManager {
         let caller = caller
             .map(str::trim)
             .filter(|c| !c.is_empty())
-            .ok_or_else(|| {
-                SandboxError::IsolationViolation("未认证调用（缺少调用主体）".into())
-            })?;
+            .ok_or_else(|| SandboxError::IsolationViolation("未认证调用（缺少调用主体）".into()))?;
         let m = self
             .sandboxes
             .get(id)
@@ -332,7 +328,11 @@ impl SandboxManager {
     }
 
     /// Fork：从源（活沙箱或 checkpoint）复制出一个新沙箱，从同一起点继续
-    pub fn fork_from(&mut self, source: &str, new_id: Option<String>) -> Result<String, SandboxError> {
+    pub fn fork_from(
+        &mut self,
+        source: &str,
+        new_id: Option<String>,
+    ) -> Result<String, SandboxError> {
         let new_id = new_id.unwrap_or_else(|| self.next_id());
         let dest = self.base_dir.join(format!("au-sandbox-{}", new_id));
 

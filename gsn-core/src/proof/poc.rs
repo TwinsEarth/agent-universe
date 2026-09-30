@@ -1,10 +1,10 @@
 //! Proof of Contribution（贡献证明）
-//! 
+//!
 //! 不同于 PoW 的计算浪费，PoC 证明你为网络做了实际有用的贡献
 //! 贡献越大，获得的信誉和奖励越多
 
-use sha2::{Sha256, Digest};
 use crate::identity::{is_weak_pubkey, Did, Ed25519Signer};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct ContributionRecord {
@@ -137,14 +137,16 @@ impl ProofOfContribution {
     }
 
     pub fn is_valid(&self, hash: &[u8; 32]) -> bool {
-        self.records.iter()
+        self.records
+            .iter()
             .find(|r| &r.hash == hash)
             .map(|r| r.verification_count >= self.min_verifications)
             .unwrap_or(false)
     }
 
     pub fn total_contributions(&self, agent_did: &str) -> u64 {
-        self.records.iter()
+        self.records
+            .iter()
             .filter(|r| r.agent_did == agent_did && r.verification_count >= self.min_verifications)
             .map(|r| r.value)
             .sum()
@@ -155,7 +157,8 @@ impl ProofOfContribution {
     }
 
     pub fn verified_count(&self) -> usize {
-        self.records.iter()
+        self.records
+            .iter()
             .filter(|r| r.verification_count >= self.min_verifications)
             .count()
     }

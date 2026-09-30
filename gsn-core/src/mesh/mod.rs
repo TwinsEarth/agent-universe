@@ -9,14 +9,14 @@
 //! - 临时 SN（session number）：每次会话分配唯一识别码
 //! - 永久 DID 绑定：临时 SN ↔ 永久 DID 映射
 
-pub mod heartbeat;
 pub mod discovery;
+pub mod heartbeat;
 pub mod session;
 // mesh/mesh.rs 与模块目录同名（常见组织方式），允许 module_inception。
 #[allow(clippy::module_inception)]
 pub mod mesh;
 
-pub use heartbeat::{HeartbeatConfig, HeartbeatTracker, PeerLiveness};
 pub use discovery::{DiscoveryAnnouncement, DiscoveryTable, LocalSniffer};
-pub use session::{SessionId, SessionRegistry, PermanentDid};
+pub use heartbeat::{HeartbeatConfig, HeartbeatTracker, PeerLiveness};
 pub use mesh::{MeshConfig, MeshNode, MeshTopology};
+pub use session::{PermanentDid, SessionId, SessionRegistry};

@@ -6,15 +6,16 @@ use gsn_core::*;
 
 #[test]
 fn test_collaboration_group_creation() {
-    let mut mgr = CollaborationManager::new(
-        "agent_001".to_string(),
-        AgentTier::EndAgent,
-    );
+    let mut mgr = CollaborationManager::new("agent_001".to_string(), AgentTier::EndAgent);
 
     let group_id = mgr.create_group("智能家居组".to_string(), SceneType::Home);
     assert!(group_id.starts_with("grp_"));
 
-    mgr.join_group(group_id.clone(), "agent_002".to_string(), AgentTier::RouteAgent);
+    mgr.join_group(
+        group_id.clone(),
+        "agent_002".to_string(),
+        AgentTier::RouteAgent,
+    );
     mgr.join_group(group_id, "agent_003".to_string(), AgentTier::EndAgent);
 
     let groups = mgr.get_groups();

@@ -9,18 +9,12 @@
 //! 付款方余额不足一律拒绝（不凭空铸币），守恒为精确相等。
 
 use gsn_core::marketplace::{
-    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, MarketAgentCard, Money,
-    Pricing, PricingModel, QaCommittee, QaVote, ResultEnvelope, Sla,
-    TaskSpec, TaskState, VerificationPolicy,
+    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, MarketAgentCard, Money, Pricing,
+    PricingModel, QaCommittee, QaVote, ResultEnvelope, Sla, TaskSpec, TaskState,
+    VerificationPolicy,
 };
 
-fn make_agent(
-    id: &str,
-    name: &str,
-    skill: &str,
-    price: i64,
-    stake: i64,
-) -> MarketAgentCard {
+fn make_agent(id: &str, name: &str, skill: &str, price: i64, stake: i64) -> MarketAgentCard {
     MarketAgentCard {
         agent_id: id.to_string(),
         version: "1.0.0".to_string(),
@@ -84,9 +78,15 @@ fn main() {
     market.deposit("agent-writer", Money::new(100)).unwrap();
     market.deposit("agent-pro", Money::new(150)).unwrap();
     market.deposit("agent-data", Money::new(200)).unwrap();
-    market.register_agent(make_agent("agent-writer", "文案师", "writing", 10, 100)).unwrap();
-    market.register_agent(make_agent("agent-pro", "高级文案", "writing", 8, 150)).unwrap();
-    market.register_agent(make_agent("agent-data", "数据师", "analysis", 20, 200)).unwrap();
+    market
+        .register_agent(make_agent("agent-writer", "文案师", "writing", 10, 100))
+        .unwrap();
+    market
+        .register_agent(make_agent("agent-pro", "高级文案", "writing", 8, 150))
+        .unwrap();
+    market
+        .register_agent(make_agent("agent-data", "数据师", "analysis", 20, 200))
+        .unwrap();
     println!("  已注册 Agent 数量：{}", market.agent_count());
 
     // 验证：质押不足被拒绝（钱仍留在自有账户，未锁定）
@@ -102,7 +102,10 @@ fn main() {
     let writers = market.discover_by_skill("writing");
     println!("  技能 'writing' 下发现 {} 个 Agent：", writers.len());
     for a in writers {
-        println!("    - {}（报价 {}，质押 {}）", a.name, a.pricing.price, a.stake);
+        println!(
+            "    - {}（报价 {}，质押 {}）",
+            a.name, a.pricing.price, a.stake
+        );
     }
 
     // ===== 步骤 3：需求方充值 =====
@@ -112,28 +115,43 @@ fn main() {
 
     // ===== 步骤 4：发布任务（发布即托管预算 30）=====
     println!("\n【步骤 4】发布写作任务（预算 30，发布即锁定到托管账户）");
-    market.publish_task(make_task("task-1", "撰写一篇科技短文", "writing", 30, "requester-1")).unwrap();
+    market
+        .publish_task(make_task(
+            "task-1",
+            "撰写一篇科技短文",
+            "writing",
+            30,
+            "requester-1",
+        ))
+        .unwrap();
     let task = market.get_task("task-1").unwrap();
     println!("  任务状态：{}", task.state.label());
-    println!("  托管账户余额：{}，需求方余额：{}",
-        market.balance("__escrow__:task-1"), market.balance("requester-1"));
+    println!(
+        "  托管账户余额：{}，需求方余额：{}",
+        market.balance("__escrow__:task-1"),
+        market.balance("requester-1")
+    );
 
     // ===== 步骤 5：两个 Agent 投标 =====
     println!("\n【步骤 5】Agent 投标");
-    market.submit_bid(Bid {
-        agent_id: "agent-writer".to_string(),
-        task_id: "task-1".to_string(),
-        proposed_price: Money::new(10),
-        estimated_latency_ms: 800,
-        score: 0.0,
-    }).unwrap();
-    market.submit_bid(Bid {
-        agent_id: "agent-pro".to_string(),
-        task_id: "task-1".to_string(),
-        proposed_price: Money::new(8),
-        estimated_latency_ms: 1200,
-        score: 0.0,
-    }).unwrap();
+    market
+        .submit_bid(Bid {
+            agent_id: "agent-writer".to_string(),
+            task_id: "task-1".to_string(),
+            proposed_price: Money::new(10),
+            estimated_latency_ms: 800,
+            score: 0.0,
+        })
+        .unwrap();
+    market
+        .submit_bid(Bid {
+            agent_id: "agent-pro".to_string(),
+            task_id: "task-1".to_string(),
+            proposed_price: Money::new(8),
+            estimated_latency_ms: 1200,
+            score: 0.0,
+        })
+        .unwrap();
     println!("  agent-writer 与 agent-pro 均已投标");
 
     // ===== 步骤 6：匹配（性价比最高） =====
@@ -141,8 +159,12 @@ fn main() {
     let winner = market.match_task("task-1").unwrap();
     println!("  中标 Agent：{}", winner);
     let task = market.get_task("task-1").unwrap();
-    println!("  任务状态：{}，负责人：{:?}，中标价：{}",
-        task.state.label(), task.owner, task.winner_price.unwrap_or(Money::ZERO));
+    println!(
+        "  任务状态：{}，负责人：{:?}，中标价：{}",
+        task.state.label(),
+        task.owner,
+        task.winner_price.unwrap_or(Money::ZERO)
+    );
 
     // ===== 步骤 7：提交执行结果 =====
     println!("\n【步骤 7】提交执行结果");
@@ -204,45 +226,84 @@ fn main() {
     // ===== 场景二：作恶 Agent 被仲裁罚没 =====
     println!("\n【场景二】作恶 Agent → 争议 → 仲裁 → 罚没");
 
-    market.publish_task(make_task("task-2", "数据分析报告", "analysis", 20, "requester-1")).unwrap();
-    market.submit_bid(Bid {
-        agent_id: "agent-data".to_string(),
-        task_id: "task-2".to_string(),
-        proposed_price: Money::new(20),
-        estimated_latency_ms: 500,
-        score: 0.0,
-    }).unwrap();
+    market
+        .publish_task(make_task(
+            "task-2",
+            "数据分析报告",
+            "analysis",
+            20,
+            "requester-1",
+        ))
+        .unwrap();
+    market
+        .submit_bid(Bid {
+            agent_id: "agent-data".to_string(),
+            task_id: "task-2".to_string(),
+            proposed_price: Money::new(20),
+            estimated_latency_ms: 500,
+            score: 0.0,
+        })
+        .unwrap();
     let data_winner = market.match_task("task-2").unwrap();
     println!("  task-2 中标：{}", data_winner);
 
     // 数据师提交了低质量结果
-    market.submit_result(ResultEnvelope {
-        task_id: "task-2".to_string(),
-        agent_id: data_winner.clone(),
-        report: "{}".to_string(),
-        confidence: 0.3,
-        error_type: ErrorType::LowConfidence,
-        trace_ref: "trace://task-2".to_string(),
-        evidence_grade: EvidenceGrade::Unverified,
-        latency_ms: 1800,
-    }).unwrap();
+    market
+        .submit_result(ResultEnvelope {
+            task_id: "task-2".to_string(),
+            agent_id: data_winner.clone(),
+            report: "{}".to_string(),
+            confidence: 0.3,
+            error_type: ErrorType::LowConfidence,
+            trace_ref: "trace://task-2".to_string(),
+            evidence_grade: EvidenceGrade::Unverified,
+            latency_ms: 1800,
+        })
+        .unwrap();
 
     // 需求方发起争议
-    market.open_dispute("dispute-1", "task-2", "requester-1", "结果质量不合格，疑似虚假交付").unwrap();
-    println!("  争议已发起，任务状态：{}", market.get_task("task-2").unwrap().state.label());
+    market
+        .open_dispute(
+            "dispute-1",
+            "task-2",
+            "requester-1",
+            "结果质量不合格，疑似虚假交付",
+        )
+        .unwrap();
+    println!(
+        "  争议已发起，任务状态：{}",
+        market.get_task("task-2").unwrap().state.label()
+    );
 
     // 仲裁：有罪，罚没金额由服务端规则决定（全部质押），托管预算全额退回需求方
     let (verdict, slashed) = market.arbitrate("dispute-1", "arbiter-1", true).unwrap();
     println!("  仲裁结果：{}，罚没：{}", verdict, slashed.as_i64());
-    println!("  任务状态：{}", market.get_task("task-2").unwrap().state.label());
-    println!("  需求方余额（已退托管预算）：{}", market.balance("requester-1"));
+    println!(
+        "  任务状态：{}",
+        market.get_task("task-2").unwrap().state.label()
+    );
+    println!(
+        "  需求方余额（已退托管预算）：{}",
+        market.balance("requester-1")
+    );
 
     // 最终守恒
     let final_report = market.conservation_check();
-    println!("\n  最终守恒检查：{}", if final_report.conserved { "成立" } else { "失败" });
-    println!("  总充值 {} / 总支付 {} / 总罚没 {} / 余额总和 {}",
-        final_report.total_deposits, final_report.total_paid,
-        final_report.total_slashed, final_report.balance_sum);
+    println!(
+        "\n  最终守恒检查：{}",
+        if final_report.conserved {
+            "成立"
+        } else {
+            "失败"
+        }
+    );
+    println!(
+        "  总充值 {} / 总支付 {} / 总罚没 {} / 余额总和 {}",
+        final_report.total_deposits,
+        final_report.total_paid,
+        final_report.total_slashed,
+        final_report.balance_sum
+    );
 
     // ===== 统计汇总 =====
     line('=');

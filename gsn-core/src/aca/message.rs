@@ -2,13 +2,13 @@
 //!
 //! 兼容 A2A（Agent-to-Agent）协议的消息格式
 
+use super::crypto::{canonical_payload, sign_hex, verify_hex};
+use super::envelope::TaskEnvelope;
+use super::manifest::AgentManifest;
+use super::receipt::Receipt;
+use crate::identity::Ed25519Signer;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::identity::Ed25519Signer;
-use super::crypto::{canonical_payload, sign_hex, verify_hex};
-use super::manifest::AgentManifest;
-use super::envelope::TaskEnvelope;
-use super::receipt::Receipt;
 
 /// 消息类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,7 +55,12 @@ pub struct AcaMessage {
 }
 
 impl AcaMessage {
-    pub fn new(msg_type: MessageType, from_did: String, to_did: String, payload: serde_json::Value) -> Self {
+    pub fn new(
+        msg_type: MessageType,
+        from_did: String,
+        to_did: String,
+        payload: serde_json::Value,
+    ) -> Self {
         Self {
             message_id: Uuid::new_v4().to_string(),
             msg_type,
@@ -70,17 +75,30 @@ impl AcaMessage {
     /// 创建握手消息（携带 Manifest）
     pub fn handshake(from: String, manifest: AgentManifest) -> Result<Self, serde_json::Error> {
         let payload = serde_json::to_value(&manifest)?;
-        Ok(Self::new(MessageType::Handshake, from, "*".to_string(), payload))
+        Ok(Self::new(
+            MessageType::Handshake,
+            from,
+            "*".to_string(),
+            payload,
+        ))
     }
 
     /// 创建任务提议
-    pub fn propose_task(from: String, to: String, envelope: TaskEnvelope) -> Result<Self, serde_json::Error> {
+    pub fn propose_task(
+        from: String,
+        to: String,
+        envelope: TaskEnvelope,
+    ) -> Result<Self, serde_json::Error> {
         let payload = serde_json::to_value(&envelope)?;
         Ok(Self::new(MessageType::TaskProposal, from, to, payload))
     }
 
     /// 创建任务结果（携带 Receipt）
-    pub fn deliver_receipt(from: String, to: String, receipt: Receipt) -> Result<Self, serde_json::Error> {
+    pub fn deliver_receipt(
+        from: String,
+        to: String,
+        receipt: Receipt,
+    ) -> Result<Self, serde_json::Error> {
         let payload = serde_json::to_value(&receipt)?;
         Ok(Self::new(MessageType::Receipt, from, to, payload))
     }

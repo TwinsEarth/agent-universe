@@ -26,7 +26,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v2.9.0");
+            println!("agent-universe v2.9.1");
             0
         }
         "help" | "--help" | "-h" => {
@@ -37,7 +37,10 @@ async fn main() {
             let args = node::parse_daemon_args(&argv[1..]);
             match node::run_daemon(args).await {
                 Ok(_) => 0,
-                Err(e) => { eprintln!("daemon 错误: {e}"); 1 }
+                Err(e) => {
+                    eprintln!("daemon 错误: {e}");
+                    1
+                }
             }
         }
         "mcp" => run_mcp(&argv[1..]).await,
@@ -77,7 +80,12 @@ async fn run_mcp(args: &[String]) -> i32 {
     while i < args.len() {
         match args[i].as_str() {
             "--transport" => {
-                if i + 1 < args.len() { transport = args[i + 1].as_str(); i += 2; } else { i += 1; }
+                if i + 1 < args.len() {
+                    transport = args[i + 1].as_str();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
             }
             "--help" | "-h" => {
                 println!("用法: gsn mcp [--transport stdio]");
@@ -91,10 +99,15 @@ async fn run_mcp(args: &[String]) -> i32 {
     match transport {
         "stdio" => match gsn_core::mcp::stdio::run_stdio().await {
             Ok(_) => 0,
-            Err(e) => { eprintln!("mcp 错误: {e}"); 1 }
+            Err(e) => {
+                eprintln!("mcp 错误: {e}");
+                1
+            }
         },
         other => {
-            eprintln!("错误: 不支持的 MCP 传输 '{other}'（远程请用节点的 http://<host>:4002/api/v1/mcp）");
+            eprintln!(
+                "错误: 不支持的 MCP 传输 '{other}'（远程请用节点的 http://<host>:4002/api/v1/mcp）"
+            );
             1
         }
     }
@@ -104,11 +117,19 @@ async fn run_mcp(args: &[String]) -> i32 {
 
 fn run_identity() -> i32 {
     let keypair = Keypair::generate();
-    let pubkey_hex: String = keypair.public_key().iter().map(|b| format!("{:02x}", b)).collect();
+    let pubkey_hex: String = keypair
+        .public_key()
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect();
     // peer id：公钥 SHA256 的前 16 字节 hex
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(keypair.public_key());
-    let peer_id: String = digest.iter().take(16).map(|b| format!("{:02x}", b)).collect();
+    let peer_id: String = digest
+        .iter()
+        .take(16)
+        .map(|b| format!("{:02x}", b))
+        .collect();
     println!("✅ 已生成新身份（Ed25519）");
     println!("   Peer ID (短): {}", peer_id);
     println!("   公钥 (hex): {}", pubkey_hex);
@@ -159,7 +180,11 @@ async fn run_market(args: &[String]) -> i32 {
                 Ok(v) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or(text)),
                 Err(_) => println!("{}", text),
             }
-            if (200..300).contains(&status) { 0 } else { 1 }
+            if (200..300).contains(&status) {
+                0
+            } else {
+                1
+            }
         }
         Err(e) => {
             eprintln!("请求节点 {} 失败: {}", api, e);
@@ -217,25 +242,35 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             json!({"amount": p[1].parse::<i64>().unwrap_or(0)}).to_string(),
         )),
         "balance" if !p.is_empty() => Some((
-            "GET".into(), format!("/api/v1/accounts/{}/balance", p[0]), String::new(),
+            "GET".into(),
+            format!("/api/v1/accounts/{}/balance", p[0]),
+            String::new(),
         )),
-        "register" if !p.is_empty() => Some((
-            "POST".into(), "/api/v1/agents".into(), read_json_arg(&p[0]),
-        )),
+        "register" if !p.is_empty() => {
+            Some(("POST".into(), "/api/v1/agents".into(), read_json_arg(&p[0])))
+        }
         "get" if !p.is_empty() => Some((
-            "GET".into(), format!("/api/v1/agents/{}", p[0]), String::new(),
+            "GET".into(),
+            format!("/api/v1/agents/{}", p[0]),
+            String::new(),
         )),
         "discover" if !p.is_empty() => Some((
-            "GET".into(), format!("/api/v1/agents?skill={}", p[0]), String::new(),
+            "GET".into(),
+            format!("/api/v1/agents?skill={}", p[0]),
+            String::new(),
         )),
         "search" if !p.is_empty() => Some((
-            "GET".into(), format!("/api/v1/agents?q={}", p[0]), String::new(),
+            "GET".into(),
+            format!("/api/v1/agents?q={}", p[0]),
+            String::new(),
         )),
-        "publish" if !p.is_empty() => Some((
-            "POST".into(), "/api/v1/tasks".into(), read_json_arg(&p[0]),
-        )),
+        "publish" if !p.is_empty() => {
+            Some(("POST".into(), "/api/v1/tasks".into(), read_json_arg(&p[0])))
+        }
         "task" if !p.is_empty() => Some((
-            "GET".into(), format!("/api/v1/tasks/{}", p[0]), String::new(),
+            "GET".into(),
+            format!("/api/v1/tasks/{}", p[0]),
+            String::new(),
         )),
         "bid" if !p.is_empty() => {
             // bid JSON 需含 task_id；若只给 agent/task/price 则组装
@@ -246,14 +281,22 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             task_id.map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/bids", tid), body))
         }
         "match" if !p.is_empty() => Some((
-            "POST".into(), format!("/api/v1/tasks/{}/match", p[0]), String::new(),
+            "POST".into(),
+            format!("/api/v1/tasks/{}/match", p[0]),
+            String::new(),
         )),
         "result" if !p.is_empty() => {
             let body = read_json_arg(&p[0]);
             let task_id = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("task_id").and_then(|x| x.as_str()).map(String::from));
-            task_id.map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/results", tid), body))
+            task_id.map(|tid| {
+                (
+                    "POST".into(),
+                    format!("/api/v1/tasks/{}/results", tid),
+                    body,
+                )
+            })
         }
         "verify" if !p.is_empty() => {
             // v2.5.9 认证式：载荷文件含 members（固定委员集）与 signed_votes（签名票）
@@ -269,10 +312,14 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             ))
         }
         "settle" if !p.is_empty() => Some((
-            "POST".into(), format!("/api/v1/tasks/{}/settle", p[0]), String::new(),
+            "POST".into(),
+            format!("/api/v1/tasks/{}/settle", p[0]),
+            String::new(),
         )),
         "dispute" if !p.is_empty() => Some((
-            "POST".into(), "/api/v1/disputes".into(), read_json_arg(&p[0]),
+            "POST".into(),
+            "/api/v1/disputes".into(),
+            read_json_arg(&p[0]),
         )),
         "arbitrate" if p.len() >= 2 => {
             let guilty = p[1] == "guilty" || p[1] == "true";
@@ -287,7 +334,11 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
         "audit" => Some(("GET".into(), "/api/v1/audit".into(), String::new())),
         "leaderboard" => {
             let limit = p.first().map(|s| s.as_str()).unwrap_or("10");
-            Some(("GET".into(), format!("/api/v1/leaderboard?limit={}", limit), String::new()))
+            Some((
+                "GET".into(),
+                format!("/api/v1/leaderboard?limit={}", limit),
+                String::new(),
+            ))
         }
         "stats" => Some(("GET".into(), "/api/v1/stats".into(), String::new())),
         _ => None,
@@ -306,7 +357,9 @@ async fn http_call(
     // 解析 host:port
     let after_proto = base.split("://").nth(1).unwrap_or(base);
     let host_port = after_proto.split('/').next().unwrap_or("127.0.0.1:4002");
-    let (host, port) = host_port.split_once(':').map(|(h, p)| (h, p.parse::<u16>().unwrap_or(80)))
+    let (host, port) = host_port
+        .split_once(':')
+        .map(|(h, p)| (h, p.parse::<u16>().unwrap_or(80)))
         .unwrap_or((host_port, 80));
 
     let mut stream = tokio::net::TcpStream::connect((host, port)).await?;
@@ -324,7 +377,9 @@ async fn http_call(
     tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut response).await?;
 
     let text = String::from_utf8_lossy(&response).to_string();
-    let status = text.lines().next()
+    let status = text
+        .lines()
+        .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(0);

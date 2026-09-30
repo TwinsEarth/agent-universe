@@ -4,9 +4,9 @@
 //! `gsn daemon` 子命令复用，避免逻辑重复。
 
 use crate::api::market_actor::MarketActorHandle;
-use crate::sandbox::SandboxManager;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
+use crate::sandbox::SandboxManager;
 use crate::storage::{PersistentStore, StoredAgent, StoredRelay};
 use crate::NodeMode;
 use libp2p::{Multiaddr, PeerId};
@@ -20,32 +20,71 @@ use tokio::sync::{mpsc, oneshot};
 
 #[allow(dead_code)]
 pub enum PeerCommand {
-    GetInfo { reply: oneshot::Sender<PeerInfo> },
-    DhtPut { key: String, value: Vec<u8> },
-    Subscribe { topic: String },
-    Publish { topic: String, data: Vec<u8> },
+    GetInfo {
+        reply: oneshot::Sender<PeerInfo>,
+    },
+    DhtPut {
+        key: String,
+        value: Vec<u8>,
+    },
+    Subscribe {
+        topic: String,
+    },
+    Publish {
+        topic: String,
+        data: Vec<u8>,
+    },
     /// v2.5.3: 主动连接 bootstrap 节点
-    AddBootstrap { addr: String, reply: oneshot::Sender<Result<(), String>> },
+    AddBootstrap {
+        addr: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// v2.5.3: 列出已连接对等节点 peer_id
-    ListPeers { reply: oneshot::Sender<Vec<String>> },
+    ListPeers {
+        reply: oneshot::Sender<Vec<String>>,
+    },
     /// v2.5.4: 连接公共 libp2p bootstrap/relay 网络
-    BootstrapPublic { reply: oneshot::Sender<Vec<String>> },
+    BootstrapPublic {
+        reply: oneshot::Sender<Vec<String>>,
+    },
     /// v2.5.4: 获取 AutoNAT 检测的 NAT 状态
-    NatStatus { reply: oneshot::Sender<String> },
+    NatStatus {
+        reply: oneshot::Sender<String>,
+    },
     /// v2.5.4: 经 Circuit Relay 中继监听（listen_on /p2p-circuit，建立并持有 reservation）
-    ListenRelay { addr: String, reply: oneshot::Sender<Result<(), String>> },
+    ListenRelay {
+        addr: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// v2.5.5: 探测候选 relay 是否提供 hop（dial + Identify 协议判定）
-    ProbeRelay { addr: String, reply: oneshot::Sender<Result<bool, String>> },
+    ProbeRelay {
+        addr: String,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
     /// v2.5.5: relay 池报告（列表 + 容量快照 + 当前活跃通道）
-    ListRelayPool { reply: oneshot::Sender<serde_json::Value> },
+    ListRelayPool {
+        reply: oneshot::Sender<serde_json::Value>,
+    },
     /// v2.5.5: 手动加入 relay
-    AddRelay { addr: String, class: String, reply: oneshot::Sender<Result<(), String>> },
+    AddRelay {
+        addr: String,
+        class: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// v2.5.5: 移除 relay（并关闭其通道）
-    RemoveRelayCmd { target: String, reply: oneshot::Sender<Result<(), String>> },
+    RemoveRelayCmd {
+        target: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     /// v2.5.5: 手动扩容（manual_bonus += amount），返回新有效上限
-    ExpandCapacity { amount: i64, reply: oneshot::Sender<Result<i64, String>> },
+    ExpandCapacity {
+        amount: i64,
+        reply: oneshot::Sender<Result<i64, String>>,
+    },
     /// v2.5.5: 维持/补齐多通道到目标数（自动选择 + listen），返回活跃 relay
-    EnsureChannels { reply: oneshot::Sender<Vec<String>> },
+    EnsureChannels {
+        reply: oneshot::Sender<Vec<String>>,
+    },
     /// v2.5.5: 触发 DHT 随机发现（扩充 hop 候选）
     DiscoverRelays,
 }
@@ -109,7 +148,11 @@ pub fn expand_tilde(p: PathBuf) -> PathBuf {
             .map(PathBuf::from)
         {
             let rest = rest.trim_start_matches('/');
-            return if rest.is_empty() { home } else { home.join(rest) };
+            return if rest.is_empty() {
+                home
+            } else {
+                home.join(rest)
+            };
         }
     }
     p
@@ -143,11 +186,26 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--listen" => { d.listen = require_value(args, i, "--listen"); i += 2; }
-            "--port" => { d.port = require_value(args, i, "--port").parse().unwrap_or(4001); i += 2; }
-            "--api-port" => { d.api_port = require_value(args, i, "--api-port").parse().unwrap_or(4002); i += 2; }
-            "--data-dir" => { d.data_dir = PathBuf::from(require_value(args, i, "--data-dir")); i += 2; }
-            "--mode" => { d.mode = require_value(args, i, "--mode"); i += 2; }
+            "--listen" => {
+                d.listen = require_value(args, i, "--listen");
+                i += 2;
+            }
+            "--port" => {
+                d.port = require_value(args, i, "--port").parse().unwrap_or(4001);
+                i += 2;
+            }
+            "--api-port" => {
+                d.api_port = require_value(args, i, "--api-port").parse().unwrap_or(4002);
+                i += 2;
+            }
+            "--data-dir" => {
+                d.data_dir = PathBuf::from(require_value(args, i, "--data-dir"));
+                i += 2;
+            }
+            "--mode" => {
+                d.mode = require_value(args, i, "--mode");
+                i += 2;
+            }
             "--bootstrap" => {
                 while i + 1 < args.len() && !args[i + 1].starts_with("--") {
                     d.bootstrap.push(args[i + 1].clone());
@@ -155,8 +213,14 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                 }
                 i += 1;
             }
-            "--help" | "-h" => { print_daemon_help(); std::process::exit(0); }
-            _ => { eprintln!("错误: 未知选项 {}", args[i]); std::process::exit(1); }
+            "--help" | "-h" => {
+                print_daemon_help();
+                std::process::exit(0);
+            }
+            _ => {
+                eprintln!("错误: 未知选项 {}", args[i]);
+                std::process::exit(1);
+            }
         }
     }
     d.data_dir = expand_tilde(d.data_dir);
@@ -193,6 +257,10 @@ async fn run_swarm_actor(
     loop {
         tokio::select! {
             event = peer.next_event() => {
+                let event = match event {
+                    Some(e) => e,
+                    None => continue, // swarm 事件流结束（理论上不可达）
+                };
                 log_swarm_event(&event);
                 let need_ensure = process_swarm_event(
                     &mut peer, &event, &store,
@@ -285,13 +353,18 @@ fn build_relay_multiaddr(peer_id: &PeerId, info: &libp2p::identify::Info) -> Opt
             return Some(format!("{}/p2p/{}", s, peer_id));
         }
     }
-    info.listen_addrs.first().map(|a| format!("{}/p2p/{}", a, peer_id))
+    info.listen_addrs
+        .first()
+        .map(|a| format!("{}/p2p/{}", a, peer_id))
 }
 
 /// Identify 发现支持 hop 的公网节点：自动纳入 relay 池（DHT 发现扩充）
 fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: &PersistentStore) {
     let id = peer_id.to_string();
-    let exists = store.load_relays().map(|v| v.iter().any(|r| r.relay_id == id)).unwrap_or(false);
+    let exists = store
+        .load_relays()
+        .map(|v| v.iter().any(|r| r.relay_id == id))
+        .unwrap_or(false);
     if exists {
         let _ = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso());
         return;
@@ -340,7 +413,9 @@ fn process_swarm_event(
                 need_ensure = true;
             }
         }
-        OutgoingConnectionError { peer_id: Some(pid), .. } => {
+        OutgoingConnectionError {
+            peer_id: Some(pid), ..
+        } => {
             if connecting.remove(pid) {
                 let id = pid.to_string();
                 active.remove(&id);
@@ -356,7 +431,12 @@ fn process_swarm_event(
             match bev {
                 RelayClient(rc) => {
                     use libp2p::relay::client::Event as RcEvent;
-                    if let RcEvent::ReservationReqAccepted { relay_peer_id, renewal, limit } = rc {
+                    if let RcEvent::ReservationReqAccepted {
+                        relay_peer_id,
+                        renewal,
+                        limit,
+                    } = rc
+                    {
                         let id = relay_peer_id.to_string();
                         connecting.remove(relay_peer_id);
                         let (dur, data) = match limit {
@@ -366,15 +446,11 @@ fn process_swarm_event(
                             ),
                             None => (0, 0),
                         };
-                        let _ = store.set_relay_status(
-                            &id,
-                            true,
-                            "active",
-                            dur,
-                            data,
-                            &now_iso(),
+                        let _ = store.set_relay_status(&id, true, "active", dur, data, &now_iso());
+                        eprintln!(
+                            "✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)",
+                            id, renewal, dur, data
                         );
-                        eprintln!("✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)", id, renewal, dur, data);
                     }
                 }
                 Identify(libp2p::identify::Event::Received { peer_id, info, .. }) => {
@@ -426,24 +502,22 @@ fn ensure_channels(
     while held.len() < target && guard < 20 {
         guard += 1;
         match relay_pool::select_replacement(&relays, &in_use) {
-            Some(r) => {
-                match peer.listen_via_relay(&r.multiaddr) {
-                    Ok(_) => {
-                        eprintln!("🛰️ 发起 relay 通道: {}", r.relay_id);
-                        held.insert(r.relay_id.clone());
-                        in_use.insert(r.relay_id.clone());
-                        active.insert(r.relay_id.clone(), r.multiaddr.clone());
-                        if let Ok(pid) = r.relay_id.parse::<PeerId>() {
-                            connecting.insert(pid);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
-                        let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
-                        in_use.insert(r.relay_id.clone());
+            Some(r) => match peer.listen_via_relay(&r.multiaddr) {
+                Ok(_) => {
+                    eprintln!("🛰️ 发起 relay 通道: {}", r.relay_id);
+                    held.insert(r.relay_id.clone());
+                    in_use.insert(r.relay_id.clone());
+                    active.insert(r.relay_id.clone(), r.multiaddr.clone());
+                    if let Ok(pid) = r.relay_id.parse::<PeerId>() {
+                        connecting.insert(pid);
                     }
                 }
-            }
+                Err(e) => {
+                    eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
+                    let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                    in_use.insert(r.relay_id.clone());
+                }
+            },
             None => break, // 无更多健康候选
         }
     }
@@ -460,7 +534,14 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
     let candidates = store.load_relays().unwrap_or_default();
     for r in candidates.iter().filter(|x| !x.healthy) {
         let (tx, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::ProbeRelay { addr: r.multiaddr.clone(), reply: tx }).await.is_err() {
+        if cmd_tx
+            .send(PeerCommand::ProbeRelay {
+                addr: r.multiaddr.clone(),
+                reply: tx,
+            })
+            .await
+            .is_err()
+        {
             continue;
         }
         match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
@@ -479,7 +560,11 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
 
     // 3. 补齐多通道
     let (tx, rx) = oneshot::channel();
-    if cmd_tx.send(PeerCommand::EnsureChannels { reply: tx }).await.is_ok() {
+    if cmd_tx
+        .send(PeerCommand::EnsureChannels { reply: tx })
+        .await
+        .is_ok()
+    {
         if let Ok(chans) = tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
             eprintln!("🛰️ 当前多通道: {:?}", chans.unwrap_or_default());
         }
@@ -496,16 +581,27 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
 fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent>) {
     use libp2p::swarm::SwarmEvent::*;
     match event {
-        ConnectionEstablished { peer_id, endpoint, established_in, .. } => {
+        ConnectionEstablished {
+            peer_id,
+            endpoint,
+            established_in,
+            ..
+        } => {
             eprintln!("已连接 {peer_id} ({endpoint:?}, {established_in:?})");
         }
-        ConnectionClosed { peer_id, endpoint, .. } => {
+        ConnectionClosed {
+            peer_id, endpoint, ..
+        } => {
             eprintln!("连接关闭 {peer_id} ({endpoint:?})");
         }
         OutgoingConnectionError { peer_id, error, .. } => {
             eprintln!("出站连接失败 peer={peer_id:?}: {error:?}");
         }
-        IncomingConnectionError { send_back_addr, error, .. } => {
+        IncomingConnectionError {
+            send_back_addr,
+            error,
+            ..
+        } => {
             eprintln!("入站连接失败 {send_back_addr}: {error:?}");
         }
         NewExternalAddrCandidate { address } => {
@@ -601,8 +697,8 @@ fn handle_peer_command(
                 if let Ok(base) = addr.parse::<Multiaddr>() {
                     if let Some(id) = crate::net::peer::extract_relay_peer_id(&base) {
                         active.insert(id, addr.clone());
-                        if let Some(pid) =
-                            crate::net::peer::extract_relay_peer_id(&base).and_then(|s| s.parse::<PeerId>().ok())
+                        if let Some(pid) = crate::net::peer::extract_relay_peer_id(&base)
+                            .and_then(|s| s.parse::<PeerId>().ok())
                         {
                             connecting.insert(pid);
                         }
@@ -656,43 +752,41 @@ fn handle_peer_command(
         PeerCommand::AddRelay { addr, class, reply } => {
             let base: Result<Multiaddr, _> = addr.parse();
             match base {
-                Ok(base) => {
-                    match crate::net::peer::extract_relay_peer_id(&base) {
-                        Some(id) => {
-                            let cap = current_capacity(store);
-                            let exists = store
-                                .load_relays()
-                                .map(|v| v.iter().any(|r| r.relay_id == id))
-                                .unwrap_or(false);
-                            if !exists && cap.remaining <= 0 {
-                                let _ = reply.send(Err("relay_pool_full".to_string()));
-                                return;
-                            }
-                            let cls = if class.is_empty() {
-                                RelayClass::General
-                            } else {
-                                class.parse().unwrap_or(RelayClass::General)
-                            };
-                            let relay = StoredRelay {
-                                relay_id: id,
-                                multiaddr: addr,
-                                class: cls.as_str().to_string(),
-                                status: "unknown".to_string(),
-                                healthy: false,
-                                fail_count: 0,
-                                limit_sec: 0,
-                                data_bytes: 0,
-                                last_check: now_iso(),
-                                created_at: now_iso(),
-                            };
-                            let res = store.upsert_relay(&relay).map_err(|e| e.to_string());
-                            let _ = reply.send(res);
+                Ok(base) => match crate::net::peer::extract_relay_peer_id(&base) {
+                    Some(id) => {
+                        let cap = current_capacity(store);
+                        let exists = store
+                            .load_relays()
+                            .map(|v| v.iter().any(|r| r.relay_id == id))
+                            .unwrap_or(false);
+                        if !exists && cap.remaining <= 0 {
+                            let _ = reply.send(Err("relay_pool_full".to_string()));
+                            return;
                         }
-                        None => {
-                            let _ = reply.send(Err("addr 缺少 /p2p/<peer_id>".to_string()));
-                        }
+                        let cls = if class.is_empty() {
+                            RelayClass::General
+                        } else {
+                            class.parse().unwrap_or(RelayClass::General)
+                        };
+                        let relay = StoredRelay {
+                            relay_id: id,
+                            multiaddr: addr,
+                            class: cls.as_str().to_string(),
+                            status: "unknown".to_string(),
+                            healthy: false,
+                            fail_count: 0,
+                            limit_sec: 0,
+                            data_bytes: 0,
+                            last_check: now_iso(),
+                            created_at: now_iso(),
+                        };
+                        let res = store.upsert_relay(&relay).map_err(|e| e.to_string());
+                        let _ = reply.send(res);
                     }
-                }
+                    None => {
+                        let _ = reply.send(Err("addr 缺少 /p2p/<peer_id>".to_string()));
+                    }
+                },
                 Err(e) => {
                     let _ = reply.send(Err(format!("addr 解析失败: {}", e)));
                 }
@@ -746,9 +840,7 @@ fn compute_cors(origin: Option<&str>) -> String {
     let allowed = std::env::var("REST_ALLOWED_ORIGINS").unwrap_or_default();
     let mut out = String::new();
     if let Some(origin) = origin {
-        if !origin.is_empty()
-            && allowed.split(',').map(|s| s.trim()).any(|s| s == origin)
-        {
+        if !origin.is_empty() && allowed.split(',').map(|s| s.trim()).any(|s| s == origin) {
             out.push_str(&format!("Access-Control-Allow-Origin: {origin}\r\n"));
             out.push_str("Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n");
             out.push_str("Access-Control-Allow-Headers: Content-Type, Authorization\r\n");
@@ -805,7 +897,9 @@ fn rest_authorize(
     if matches!(m.as_str(), "GET" | "HEAD" | "OPTIONS") {
         return Ok(());
     }
-    let expected = std::env::var("REST_BEARER_TOKEN").ok().filter(|s| !s.is_empty());
+    let expected = std::env::var("REST_BEARER_TOKEN")
+        .ok()
+        .filter(|s| !s.is_empty());
     if let Some(expected) = expected {
         let provided = auth_header
             .and_then(|h| {
@@ -841,7 +935,13 @@ fn rest_authorize(
     ))
 }
 
-pub fn http_response(status: u16, status_text: &str, body: String, content_type: &str, extra: &str) -> String {
+pub fn http_response(
+    status: u16,
+    status_text: &str,
+    body: String,
+    content_type: &str,
+    extra: &str,
+) -> String {
     format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n{}",
         status, status_text, content_type, body.len(), body
@@ -873,37 +973,70 @@ async fn handle_network_api(
     if method == "GET" && (path == "/peers" || path == "/peers/") {
         let (reply, rx) = oneshot::channel();
         if cmd_tx.send(PeerCommand::ListPeers { reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(peers) => (200, serde_json::json!({"peers": peers, "count": peers.len()}).to_string()),
+            Ok(peers) => (
+                200,
+                serde_json::json!({"peers": peers, "count": peers.len()}).to_string(),
+            ),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
     }
     // GET /info
     else if method == "GET" && (path == "/info" || path.is_empty() || path == "/") {
         match fetch_peer_info(cmd_tx).await {
-            Some(info) => (200, serde_json::to_string(&info).unwrap_or_else(|_| "{}".into())),
-            None => (500, serde_json::json!({"error":"peer_unavailable"}).to_string()),
+            Some(info) => (
+                200,
+                serde_json::to_string(&info).unwrap_or_else(|_| "{}".into()),
+            ),
+            None => (
+                500,
+                serde_json::json!({"error":"peer_unavailable"}).to_string(),
+            ),
         }
     }
     // POST /bootstrap
     else if method == "POST" && (path == "/bootstrap" || path == "/bootstrap/") {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
         let addr = match parsed {
-            Ok(v) => v.get("addr").and_then(|a| a.as_str()).map(|s| s.to_string()),
+            Ok(v) => v
+                .get("addr")
+                .and_then(|a| a.as_str())
+                .map(|s| s.to_string()),
             Err(_) => None,
         };
         let addr = match addr {
             Some(a) => a,
-            None => return (400, serde_json::json!({"error":"missing_or_invalid_addr"}).to_string()),
+            None => {
+                return (
+                    400,
+                    serde_json::json!({"error":"missing_or_invalid_addr"}).to_string(),
+                )
+            }
         };
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::AddBootstrap { addr: addr.clone(), reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::AddBootstrap {
+                addr: addr.clone(),
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(Ok(())) => (201, serde_json::json!({"status":"bootstrap_initiated","addr":addr}).to_string()),
+            Ok(Ok(())) => (
+                201,
+                serde_json::json!({"status":"bootstrap_initiated","addr":addr}).to_string(),
+            ),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
@@ -911,15 +1044,26 @@ async fn handle_network_api(
     // v2.5.4: POST /bootstrap-public — 连接公共 libp2p 中继网络
     else if method == "POST" && (path == "/bootstrap-public" || path == "/bootstrap-public/") {
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::BootstrapPublic { reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::BootstrapPublic { reply })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(initiated) => (201, serde_json::json!({
-                "status":"public_network_bootstrap_initiated",
-                "initiated": initiated,
-                "count": initiated.len()
-            }).to_string()),
+            Ok(initiated) => (
+                201,
+                serde_json::json!({
+                    "status":"public_network_bootstrap_initiated",
+                    "initiated": initiated,
+                    "count": initiated.len()
+                })
+                .to_string(),
+            ),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
     }
@@ -927,7 +1071,10 @@ async fn handle_network_api(
     else if method == "GET" && (path == "/nat" || path == "/nat/") {
         let (reply, rx) = oneshot::channel();
         if cmd_tx.send(PeerCommand::NatStatus { reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
             Ok(status) => (200, serde_json::json!({"nat_status": status}).to_string()),
@@ -939,19 +1086,40 @@ async fn handle_network_api(
     else if method == "POST" && (path == "/relay-listen" || path == "/relay-listen/") {
         let parsed: Result<serde_json::Value, _> = serde_json::from_str(body);
         let addr = match parsed {
-            Ok(v) => v.get("addr").and_then(|a| a.as_str()).map(|s| s.to_string()),
+            Ok(v) => v
+                .get("addr")
+                .and_then(|a| a.as_str())
+                .map(|s| s.to_string()),
             Err(_) => None,
         };
         let addr = match addr {
             Some(a) => a,
-            None => return (400, serde_json::json!({"error":"missing_or_invalid_addr"}).to_string()),
+            None => {
+                return (
+                    400,
+                    serde_json::json!({"error":"missing_or_invalid_addr"}).to_string(),
+                )
+            }
         };
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::ListenRelay { addr: addr.clone(), reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::ListenRelay {
+                addr: addr.clone(),
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(Ok(())) => (201, serde_json::json!({"status":"relay_listen_initiated","addr":addr}).to_string()),
+            Ok(Ok(())) => (
+                201,
+                serde_json::json!({"status":"relay_listen_initiated","addr":addr}).to_string(),
+            ),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
@@ -959,8 +1127,15 @@ async fn handle_network_api(
     // v2.5.5: GET /relays — relay 池报告（列表 + 容量快照 + 活跃通道）
     else if method == "GET" && (path == "/relays" || path == "/relays/") {
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::ListRelayPool { reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::ListRelayPool { reply })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
             Ok(v) => (200, v.to_string()),
@@ -970,17 +1145,39 @@ async fn handle_network_api(
     // v2.5.5: POST /relays/add — 手动加入 relay（body: {"addr":"...","class":"general"}）
     else if method == "POST" && (path == "/relays/add" || path == "/relays/add/") {
         let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-        let addr = v.get("addr").and_then(|a| a.as_str()).unwrap_or("").to_string();
-        let class = v.get("class").and_then(|a| a.as_str()).unwrap_or("general").to_string();
+        let addr = v
+            .get("addr")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .to_string();
+        let class = v
+            .get("class")
+            .and_then(|a| a.as_str())
+            .unwrap_or("general")
+            .to_string();
         if addr.is_empty() {
             return (400, serde_json::json!({"error":"missing_addr"}).to_string());
         }
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::AddRelay { addr: addr.clone(), class, reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::AddRelay {
+                addr: addr.clone(),
+                class,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(Ok(())) => (201, serde_json::json!({"status":"relay_added","addr":addr}).to_string()),
+            Ok(Ok(())) => (
+                201,
+                serde_json::json!({"status":"relay_added","addr":addr}).to_string(),
+            ),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
@@ -988,16 +1185,36 @@ async fn handle_network_api(
     // v2.5.5: POST /relays/remove — 移除 relay 并关闭通道（body: {"target":"<peer_id 或 addr>"}）
     else if method == "POST" && (path == "/relays/remove" || path == "/relays/remove/") {
         let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
-        let target = v.get("target").and_then(|a| a.as_str()).unwrap_or("").to_string();
+        let target = v
+            .get("target")
+            .and_then(|a| a.as_str())
+            .unwrap_or("")
+            .to_string();
         if target.is_empty() {
-            return (400, serde_json::json!({"error":"missing_target"}).to_string());
+            return (
+                400,
+                serde_json::json!({"error":"missing_target"}).to_string(),
+            );
         }
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::RemoveRelayCmd { target: target.clone(), reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::RemoveRelayCmd {
+                target: target.clone(),
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(Ok(())) => (200, serde_json::json!({"status":"relay_removed","target":target}).to_string()),
+            Ok(Ok(())) => (
+                200,
+                serde_json::json!({"status":"relay_removed","target":target}).to_string(),
+            ),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
@@ -1007,14 +1224,27 @@ async fn handle_network_api(
         let v: serde_json::Value = serde_json::from_str(body).unwrap_or(serde_json::Value::Null);
         let amount = v.get("amount").and_then(|a| a.as_i64()).unwrap_or(0);
         if amount == 0 {
-            return (400, serde_json::json!({"error":"missing_or_zero_amount"}).to_string());
+            return (
+                400,
+                serde_json::json!({"error":"missing_or_zero_amount"}).to_string(),
+            );
         }
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::ExpandCapacity { amount, reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::ExpandCapacity { amount, reply })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(Ok(cap)) => (200, serde_json::json!({"status":"capacity_expanded","effective_cap":cap}).to_string()),
+            Ok(Ok(cap)) => (
+                200,
+                serde_json::json!({"status":"capacity_expanded","effective_cap":cap}).to_string(),
+            ),
             Ok(Err(e)) => (400, serde_json::json!({"error":e}).to_string()),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
@@ -1022,23 +1252,41 @@ async fn handle_network_api(
     // v2.5.5: POST /relays/discover — 触发 DHT relay 候选发现
     else if method == "POST" && (path == "/relays/discover" || path == "/relays/discover/") {
         if cmd_tx.send(PeerCommand::DiscoverRelays).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
-        (202, serde_json::json!({"status":"relay_discovery_initiated"}).to_string())
+        (
+            202,
+            serde_json::json!({"status":"relay_discovery_initiated"}).to_string(),
+        )
     }
     // v2.5.5: POST /relays/ensure — 立即补齐多通道
     else if method == "POST" && (path == "/relays/ensure" || path == "/relays/ensure/") {
         let (reply, rx) = oneshot::channel();
-        if cmd_tx.send(PeerCommand::EnsureChannels { reply }).await.is_err() {
-            return (500, serde_json::json!({"error":"peer_actor_unavailable"}).to_string());
+        if cmd_tx
+            .send(PeerCommand::EnsureChannels { reply })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
         }
         match rx.await {
-            Ok(chans) => (200, serde_json::json!({"active":chans,"count":chans.len()}).to_string()),
+            Ok(chans) => (
+                200,
+                serde_json::json!({"active":chans,"count":chans.len()}).to_string(),
+            ),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
         }
-    }
-    else {
-        (404, serde_json::json!({"error":"not_found","path":path}).to_string())
+    } else {
+        (
+            404,
+            serde_json::json!({"error":"not_found","path":path}).to_string(),
+        )
     }
 }
 
@@ -1129,7 +1377,8 @@ async fn run_api_server(
                                     early_err = Some((
                                         413,
                                         "Payload Too Large",
-                                        serde_json::json!({ "error": "请求体超过上限" }).to_string(),
+                                        serde_json::json!({ "error": "请求体超过上限" })
+                                            .to_string(),
                                     ));
                                     break;
                                 }
@@ -1138,13 +1387,20 @@ async fn run_api_server(
                                     early_err = Some((
                                         413,
                                         "Payload Too Large",
-                                        serde_json::json!({ "error": "请求体超过上限" }).to_string(),
+                                        serde_json::json!({ "error": "请求体超过上限" })
+                                            .to_string(),
                                     ));
                                     break;
                                 }
-                                if body_bytes >= len || len == 0 { break; }
-                            } else { break; }
-                        } else { break; }
+                                if body_bytes >= len || len == 0 {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
                     }
                     Ok(Err(_)) => return,
                 }
@@ -1210,11 +1466,23 @@ async fn run_api_server(
                     )
                     .await
                 } else {
-                    let response = http_response(405, "Method Not Allowed", String::new(), "text/plain", &cors_headers);
+                    let response = http_response(
+                        405,
+                        "Method Not Allowed",
+                        String::new(),
+                        "text/plain",
+                        &cors_headers,
+                    );
                     let _ = stream.write_all(response.as_bytes()).await;
                     return;
                 };
-                let response = http_response(mcp.status, mcp.status_text, mcp.body, &mcp.content_type, &cors_headers);
+                let response = http_response(
+                    mcp.status,
+                    mcp.status_text,
+                    mcp.body,
+                    &mcp.content_type,
+                    &cors_headers,
+                );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (MCP {})", method, path_part, mcp.status);
@@ -1224,7 +1492,13 @@ async fn run_api_server(
             // ───── REST 变更类接口认证闸门（v2.8.5，GAP §3.5；MCP 已独立认证） ─────
             // CORS 预检（OPTIONS）直接返回 204 与 CORS 头。
             if method == "OPTIONS" {
-                let resp = http_response(204, "No Content", String::new(), "text/plain", &cors_headers);
+                let resp = http_response(
+                    204,
+                    "No Content",
+                    String::new(),
+                    "text/plain",
+                    &cors_headers,
+                );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 return;
@@ -1239,10 +1513,32 @@ async fn run_api_server(
 
             // ───── v2.5.3 网络增强端点 ─────
             if path_part.starts_with("/api/v1/network/") || path_part.starts_with("/network/") {
-                let net_path = path_part.trim_start_matches("/api/v1").trim_start_matches("/network").to_string();
-                let net_resp = handle_network_api(&method, &net_path, &body, &peer_cmd_tx, &start).await;
-                let ct = if net_resp.1 == "application/json" { "application/json" } else { "text/plain" };
-                let resp = http_response(net_resp.0, if net_resp.0 == 200 { "OK" } else if net_resp.0 == 201 { "Created" } else if net_resp.0 == 400 { "Bad Request" } else { "Not Found" }, net_resp.1, ct, &cors_headers);
+                let net_path = path_part
+                    .trim_start_matches("/api/v1")
+                    .trim_start_matches("/network")
+                    .to_string();
+                let net_resp =
+                    handle_network_api(&method, &net_path, &body, &peer_cmd_tx, &start).await;
+                let ct = if net_resp.1 == "application/json" {
+                    "application/json"
+                } else {
+                    "text/plain"
+                };
+                let resp = http_response(
+                    net_resp.0,
+                    if net_resp.0 == 200 {
+                        "OK"
+                    } else if net_resp.0 == 201 {
+                        "Created"
+                    } else if net_resp.0 == 400 {
+                        "Bad Request"
+                    } else {
+                        "Not Found"
+                    },
+                    net_resp.1,
+                    ct,
+                    &cors_headers,
+                );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
@@ -1313,26 +1609,42 @@ async fn run_api_server(
             let routed = rest::route(&method, &raw_path, &body, &market, &info).await;
 
             // 注册 agent 落 SQLite + DHT
-            if method == "POST" && (path_part == "/api/v1/agents" || path_part == "/agents") && routed.status == 201 {
+            if method == "POST"
+                && (path_part == "/api/v1/agents" || path_part == "/agents")
+                && routed.status == 201
+            {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                     let agent_id = v.get("agent_id").and_then(|x| x.as_str()).unwrap_or("");
                     let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let skills = v.get("skills").and_then(|x| x.as_array())
-                        .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(","))
+                    let skills = v
+                        .get("skills")
+                        .and_then(|x| x.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str())
+                                .collect::<Vec<_>>()
+                                .join(",")
+                        })
                         .unwrap_or_default();
-                    let stake = v.get("stake")
+                    let stake = v
+                        .get("stake")
                         .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
                         .unwrap_or(0);
                     let stored = StoredAgent {
-                        agent_id: agent_id.to_string(), name: name.to_string(),
-                        skills, stake, reputation: 0.0,
+                        agent_id: agent_id.to_string(),
+                        name: name.to_string(),
+                        skills,
+                        stake,
+                        reputation: 0.0,
                         created_at: chrono::Utc::now().to_rfc3339(),
                     };
                     let _ = store.upsert_agent(&stored);
-                    let _ = peer_cmd_tx.send(PeerCommand::DhtPut {
-                        key: format!("/aip/agent/{}", agent_id),
-                        value: body.as_bytes().to_vec(),
-                    }).await;
+                    let _ = peer_cmd_tx
+                        .send(PeerCommand::DhtPut {
+                            key: format!("/aip/agent/{}", agent_id),
+                            value: body.as_bytes().to_vec(),
+                        })
+                        .await;
                 }
             }
 
@@ -1341,11 +1653,24 @@ async fn run_api_server(
             } else {
                 serde_json::to_string(&routed.body).unwrap_or_default()
             };
-            let content_type = if routed.body.is_null() { "text/plain" } else { "application/json" };
-            let response = http_response(routed.status, routed.status_text, response_body, content_type, &cors_headers);
+            let content_type = if routed.body.is_null() {
+                "text/plain"
+            } else {
+                "application/json"
+            };
+            let response = http_response(
+                routed.status,
+                routed.status_text,
+                response_body,
+                content_type,
+                &cors_headers,
+            );
             let _ = stream.write_all(response.as_bytes()).await;
             let _ = stream.flush().await;
-            eprintln!("← {} {} ({} {})", method, path_part, routed.status, routed.status_text);
+            eprintln!(
+                "← {} {} ({} {})",
+                method, path_part, routed.status, routed.status_text
+            );
         });
     }
 }
@@ -1369,10 +1694,20 @@ const COMMUNITY_RELAY_CANDIDATES: &[&str] = &[
 
 /// v2.5.5: 初始化 relay 池——元数据（start_time/manual_bonus）+ 种子 relay
 fn init_relay_pool(store: &PersistentStore) {
-    if store.get_meta("relay_pool:start_time").ok().flatten().is_none() {
+    if store
+        .get_meta("relay_pool:start_time")
+        .ok()
+        .flatten()
+        .is_none()
+    {
         let _ = store.set_meta("relay_pool:start_time", &now_iso());
     }
-    if store.get_meta("relay_pool:manual_bonus").ok().flatten().is_none() {
+    if store
+        .get_meta("relay_pool:manual_bonus")
+        .ok()
+        .flatten()
+        .is_none()
+    {
         let _ = store.set_meta("relay_pool:manual_bonus", "0");
     }
     if store.relay_count().unwrap_or(0) == 0 {
@@ -1499,18 +1834,48 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     println!("✅ Agent Market actor 已启动（账本持久化，重启可恢复）");
 
     // v2.8.0：Agent Sandbox 管理器（沙箱目录在 data-dir 下）
+    // v2.9.1：后端选择。进程后端无法强制网络/FS/磁盘边界：
+    //   - GSN_SANDBOX_BACKEND=process（默认）：operator 显式承认这些局限，
+    //     用 trusted_local（带理由 waiver，写入审计），沙箱开箱即用；
+    //   - GSN_SANDBOX_BACKEND=none：沙箱禁用（严格默认，create 会被拒绝）；
+    //   - 任何拼错的值：拒绝（安全配置的 typo 绝不能静默选中更弱的后端）。
     let sb_dir = crate::sandbox::default_sandbox_dir(&args.data_dir);
+    let backend = std::env::var("GSN_SANDBOX_BACKEND").unwrap_or_else(|_| "process".to_string());
+    let sb_cfg = match backend.as_str() {
+        "process" | "real" => {
+            let cfg = crate::sandbox::config::SandboxConfig::trusted_local(
+                "daemon operator selected process backend; host has no egress/FS/quota primitive",
+            );
+            println!("✅ Agent Sandbox：process 后端（已显式承认 网络/FS/磁盘 边界由宿主承担）");
+            cfg
+        }
+        "none" | "off" | "null" | "disabled" => {
+            println!("⚠️ Agent Sandbox：已禁用（GSN_SANDBOX_BACKEND=none），create 将被拒绝");
+            crate::sandbox::config::SandboxConfig::default()
+        }
+        other => {
+            eprintln!(
+                "⚠️ 未知 GSN_SANDBOX_BACKEND={other}（有效值: process/none）；沙箱按禁用处理"
+            );
+            crate::sandbox::config::SandboxConfig::default()
+        }
+    };
     let sandbox_mgr = Arc::new(std::sync::Mutex::new(SandboxManager::new(
-        sb_dir,
-        crate::sandbox::config::SandboxConfig::default(),
-        0,
+        sb_dir, sb_cfg, 0,
     )));
     println!("✅ Agent Sandbox manager 已启动（/api/v1/sandboxes）");
     println!("✅ gsn-daemon 启动完成");
 
     run_api_server(
-        args.listen.clone(), args.api_port, args.mode.clone(),
-        args.port, Instant::now(), store, peer_cmd_tx, market, sandbox_mgr,
+        args.listen.clone(),
+        args.api_port,
+        args.mode.clone(),
+        args.port,
+        Instant::now(),
+        store,
+        peer_cmd_tx,
+        market,
+        sandbox_mgr,
     )
     .await?;
 
@@ -1531,8 +1896,7 @@ mod http_security_tests {
             "REST_BEARER_TOKEN",
             "REST_ALLOW_UNAUTHENTICATED",
         ];
-        let before: Vec<Option<String>> =
-            keys.iter().map(|k| std::env::var(k).ok()).collect();
+        let before: Vec<Option<String>> = keys.iter().map(|k| std::env::var(k).ok()).collect();
 
         // ── compute_cors：白名单命中才回显，否则空 ──
         std::env::set_var(

@@ -7,15 +7,15 @@
 //! - 群体智能飞轮 `Flywheel`（v2.4.6）
 
 pub mod agent_memory;
-pub mod shared_memory;
-pub mod layered;
 pub mod enhanced;
-pub mod handoff;
 pub mod flywheel;
+pub mod handoff;
+pub mod layered;
+pub mod shared_memory;
 
 pub use agent_memory::AgentMemory;
-pub use shared_memory::SwarmMemory;
-pub use layered::{LayeredMemory, IntergenMemory};
 pub use enhanced::{EnhancedMemory, RatedMemory};
-pub use handoff::{TransferBundle, EvidenceGrade, TraceLedger};
 pub use flywheel::Flywheel;
+pub use handoff::{EvidenceGrade, TraceLedger, TransferBundle};
+pub use layered::{IntergenMemory, LayeredMemory};
+pub use shared_memory::SwarmMemory;

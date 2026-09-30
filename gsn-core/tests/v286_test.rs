@@ -70,7 +70,11 @@ fn deposit_amount_string_rejected() {
         assert_eq!(r.status, 400);
         assert!(r.body.contains("-32602"), "应返回 -32602: {}", r.body);
         // 关键：旧缺陷会存 0 并返回 deposited；现在不能进入成功分支。
-        assert!(!r.body.contains("deposited"), "不得对非法金额静默存 0: {}", r.body);
+        assert!(
+            !r.body.contains("deposited"),
+            "不得对非法金额静默存 0: {}",
+            r.body
+        );
     });
 }
 
@@ -187,12 +191,17 @@ fn receipt_metering_integers_no_float_in_payload() {
         energy_joules: 500,
         ..ResourceMetering::default()
     };
-    let receipt = Receipt::new("t".to_string(), "did".to_string(), b"data")
-        .with_metering(metering);
+    let receipt = Receipt::new("t".to_string(), "did".to_string(), b"data").with_metering(metering);
     let payload = receipt.signing_payload().unwrap();
     let text = String::from_utf8(payload).unwrap();
-    assert!(text.contains("\"bandwidth_mb\":100"), "带宽应为整数: {text}");
-    assert!(text.contains("\"energy_joules\":500"), "能量应为整数: {text}");
+    assert!(
+        text.contains("\"bandwidth_mb\":100"),
+        "带宽应为整数: {text}"
+    );
+    assert!(
+        text.contains("\"energy_joules\":500"),
+        "能量应为整数: {text}"
+    );
     // 不应出现浮点写法
     assert!(!text.contains("100.0"));
     assert!(!text.contains("500.0"));

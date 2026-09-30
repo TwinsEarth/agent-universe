@@ -40,6 +40,10 @@ pub mod error;
 pub mod identity;
 pub mod state;
 
+/// 能力声明：后端实际能强制什么，无法强制的边界变成拒绝或显式豁免。
+pub mod capability;
+pub use capability::{process_declaration, Capability, CapabilityDeclaration, Waiver};
+
 pub mod docker;
 pub mod firecracker;
 
@@ -56,8 +60,7 @@ pub use api::{default_sandbox_dir, handle_api as handle_sandbox_api, is_sandbox_
 
 pub mod k8s;
 pub use k8s::{
-    crd_manifest, example_instance, reconcile_outline, CRD_GROUP, CRD_KIND, CRD_PLURAL,
-    CRD_VERSION,
+    crd_manifest, example_instance, reconcile_outline, CRD_GROUP, CRD_KIND, CRD_PLURAL, CRD_VERSION,
 };
 
 // 兼容旧导出（v2.4.0 名称），逐步迁移到 config:: 命名空间

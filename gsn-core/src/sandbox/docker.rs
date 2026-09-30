@@ -76,7 +76,10 @@ mod tests {
     fn env_blocked_when_no_daemon() {
         let d = DockerSandbox::new("sb");
         if !d.daemon_available() {
-            assert!(matches!(d.ensure_available(), Err(SandboxError::EnvBlocked(_))));
+            assert!(matches!(
+                d.ensure_available(),
+                Err(SandboxError::EnvBlocked(_))
+            ));
         }
     }
 }

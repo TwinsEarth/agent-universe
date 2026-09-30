@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 /// Agent 身份卡
 #[derive(Debug, Clone, Serialize, Deserialize)]

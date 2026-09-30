@@ -46,7 +46,10 @@ fn cross_language_identity_and_signature() {
         "stake": 100,
         "signature": ""
     });
-    assert_eq!(canonical_payload(&obj).unwrap(), UPSTREAM_PAYLOAD.as_bytes());
+    assert_eq!(
+        canonical_payload(&obj).unwrap(),
+        UPSTREAM_PAYLOAD.as_bytes()
+    );
 
     // Ed25519 确定性 + canonical 一致 → Rust 签名逐字节命中上游签名
     let signer = Ed25519Signer::new(&keypair);

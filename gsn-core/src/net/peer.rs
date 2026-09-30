@@ -3,11 +3,10 @@
 //! 使用 libp2p 0.54 实现：TCP + Noise 加密 + Yamux 多路复用 + Kademlia DHT + GossipSub
 
 use futures::StreamExt;
+use libp2p::core::transport::ListenerId;
 use libp2p::{
     autonat, dcutr,
-    gossipsub::{
-        self, ConfigBuilder as GossipsubConfigBuilder, IdentTopic, MessageAuthenticity,
-    },
+    gossipsub::{self, ConfigBuilder as GossipsubConfigBuilder, IdentTopic, MessageAuthenticity},
     identify::{self, Config as IdentifyConfig},
     identity,
     kad::{self, store::MemoryStore, Config as KadConfig, Quorum, Record, RecordKey},
@@ -15,7 +14,6 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
-use libp2p::core::transport::ListenerId;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
@@ -124,21 +122,14 @@ impl P2pPeer {
             .with_dns()?
             // v2.5.4: 叠加 WebSocket（/ws、/wss），与 TCP 共存（or_transport）。
             // wss 走 443 端口 + 域名，在受限/国内网络下抗干扰，用于经 relay 稳定建立 reservation。
-            .with_websocket(
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )
+            .with_websocket(libp2p::noise::Config::new, libp2p::yamux::Config::default)
             .await?
             // v2.5.4: 启用 Circuit Relay v2 客户端，支持通过中继跨 NAT
-            .with_relay_client(
-                libp2p::noise::Config::new,
-                libp2p::yamux::Config::default,
-            )?
+            .with_relay_client(libp2p::noise::Config::new, libp2p::yamux::Config::default)?
             .with_behaviour(|key, relay_client| {
                 // Kademlia DHT（在 Config 上设置查询超时）
                 let store = MemoryStore::new(peer_id);
-                let mut kad_config =
-                    KadConfig::new(libp2p::StreamProtocol::new("/ipfs/kad/1.0.0"));
+                let mut kad_config = KadConfig::new(libp2p::StreamProtocol::new("/ipfs/kad/1.0.0"));
                 kad_config.set_query_timeout(Duration::from_secs(30));
                 let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
@@ -146,12 +137,12 @@ impl P2pPeer {
                 let gossipsub_config = GossipsubConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(10))
                     .build()
-                    .expect("valid gossipsub config");
+                    .map_err(|e| anyhow::anyhow!("invalid gossipsub config: {e}"))?;
                 let gossipsub = gossipsub::Behaviour::new(
                     MessageAuthenticity::Signed(key.clone()),
                     gossipsub_config,
                 )
-                .expect("valid gossipsub");
+                .map_err(|e| anyhow::anyhow!("invalid gossipsub: {e}"))?;
 
                 // Identify
                 let identify = identify::Behaviour::new(IdentifyConfig::new(
@@ -176,7 +167,7 @@ impl P2pPeer {
                     ping::Config::new().with_interval(Duration::from_secs(15)),
                 );
 
-                PeerBehaviour {
+                Ok(PeerBehaviour {
                     kademlia,
                     gossipsub,
                     identify,
@@ -184,7 +175,7 @@ impl P2pPeer {
                     autonat,
                     dcutr,
                     ping,
-                }
+                })
             })?
             .build();
 
@@ -265,10 +256,7 @@ impl P2pPeer {
 
     /// 主动查找节点（DHT 节点发现）
     pub fn find_peer(&mut self, peer: PeerId) {
-        self.swarm
-            .behaviour_mut()
-            .kademlia
-            .get_closest_peers(peer);
+        self.swarm.behaviour_mut().kademlia.get_closest_peers(peer);
     }
 
     /// v2.5.5: 触发一次 DHT 随机节点发现（随机 Peer 查 closest peers），
@@ -280,9 +268,9 @@ impl P2pPeer {
             .get_closest_peers(PeerId::random());
     }
 
-    /// 轮询一次 swarm 事件
-    pub async fn next_event(&mut self) -> SwarmEvent<PeerEvent> {
-        self.swarm.next().await.expect("swarm stream never ends")
+    /// 轮询一次 swarm 事件（swarm 由 &mut self 持有，事件流结束仅理论上可能）
+    pub async fn next_event(&mut self) -> Option<SwarmEvent<PeerEvent>> {
+        self.swarm.next().await
     }
 
     /// 当前已连接的 peer 数
@@ -304,10 +292,7 @@ impl P2pPeer {
 
     /// 本机监听地址列表
     pub fn listen_addrs(&self) -> Vec<String> {
-        self.swarm
-            .listeners()
-            .map(|a| a.to_string())
-            .collect()
+        self.swarm.listeners().map(|a| a.to_string()).collect()
     }
 
     /// 已发起 bootstrap 连接的地址列表
@@ -345,7 +330,10 @@ impl P2pPeer {
         // 该 relay 已有 listener（续期场景）→ 先移除，保证每个 relay 恒为 1 个 listener
         if let Some(old) = self.relay_listeners.remove(&relay_key) {
             let removed = self.swarm.remove_listener(old);
-            eprintln!("🧹 移除 relay {} 旧 listener (removed={})", relay_key, removed);
+            eprintln!(
+                "🧹 移除 relay {} 旧 listener (removed={})",
+                relay_key, removed
+            );
         }
         let listener_id = self
             .swarm

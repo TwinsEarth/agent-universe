@@ -95,7 +95,9 @@ mod tests {
     struct AlwaysFail;
     impl Serialize for AlwaysFail {
         fn serialize<S: Serializer>(&self, _s: S) -> Result<S::Ok, S::Error> {
-            Err(serde::ser::Error::custom("intentional serialization failure"))
+            Err(serde::ser::Error::custom(
+                "intentional serialization failure",
+            ))
         }
     }
 
@@ -120,7 +122,10 @@ mod tests {
         root.insert("a".to_string(), serde_json::json!(1));
         // 内层对象与内层数组里的对象都带 signature
         let mut inner = BTreeMap::new();
-        inner.insert("signature".to_string(), serde_json::json!("should-be-removed"));
+        inner.insert(
+            "signature".to_string(),
+            serde_json::json!("should-be-removed"),
+        );
         inner.insert("keep".to_string(), serde_json::json!(7));
         root.insert("inner".to_string(), serde_json::to_value(&inner).unwrap());
         root.insert(
@@ -130,7 +135,10 @@ mod tests {
 
         let bytes = canonical_payload(&root).unwrap();
         let text = String::from_utf8(bytes).unwrap();
-        assert!(!text.contains("signature"), "嵌套 signature 未被剥离: {text}");
+        assert!(
+            !text.contains("signature"),
+            "嵌套 signature 未被剥离: {text}"
+        );
         assert!(!text.contains("should-be-removed"));
         assert!(text.contains("\"keep\":7"));
     }

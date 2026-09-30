@@ -82,10 +82,7 @@ impl TaskState {
 
     /// 是否终态
     pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            TaskState::Settled | TaskState::Slashed
-        )
+        matches!(self, TaskState::Settled | TaskState::Slashed)
     }
 
     /// 状态机合法转移表。
@@ -145,11 +142,7 @@ impl TaskState {
         if self.can_transition_to(to) {
             Ok(to)
         } else {
-            Err(format!(
-                "非法状态转移：{} → {}",
-                self.label(),
-                to.label()
-            ))
+            Err(format!("非法状态转移：{} → {}", self.label(), to.label()))
         }
     }
 }

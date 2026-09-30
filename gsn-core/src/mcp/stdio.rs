@@ -7,10 +7,10 @@
 
 use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
-use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
-use crate::mcp::tool::{find_tool, validate_arguments, ToolDefinition};
+use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::tool::ToolResult;
+use crate::mcp::tool::{find_tool, validate_arguments, ToolDefinition};
 use crate::sandbox::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,10 @@ pub async fn run_stdio() -> anyhow::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin).lines();
 
-    eprintln!("[gsn-mcp] stdio server 启动，{} 个市场工具可用", tools.len());
+    eprintln!(
+        "[gsn-mcp] stdio server 启动，{} 个市场工具可用",
+        tools.len()
+    );
 
     while let Some(line) = reader.next_line().await? {
         let line = line.trim().to_string();
@@ -45,10 +48,8 @@ pub async fn run_stdio() -> anyhow::Result<()> {
         let raw: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                let resp = McpResponse::error(
-                    RequestId::Number(0),
-                    McpError::ParseError(e.to_string()),
-                );
+                let resp =
+                    McpResponse::error(RequestId::Number(0), McpError::ParseError(e.to_string()));
                 write_line(&resp).await?;
                 continue;
             }
@@ -84,7 +85,11 @@ pub async fn run_stdio() -> anyhow::Result<()> {
                 McpResponse::success(id, result)
             }
             McpMethod::ToolsCall => {
-                let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                let name = req
+                    .params
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
                 // v2.8.6（GAP §3.5）：统一在执行前定位 inputSchema 并校验，
                 // 缺必填 / 类型错误（amount="lots"）返回 -32602；未知工具 isError:true。
@@ -107,27 +112,21 @@ pub async fn run_stdio() -> anyhow::Result<()> {
                     }
                     None => {
                         let tr = ToolResult::error(format!("未知工具: {name}"));
-                        McpResponse::success(
-                            id,
-                            serde_json::to_value(tr).unwrap_or(json!({})),
-                        )
+                        McpResponse::success(id, serde_json::to_value(tr).unwrap_or(json!({})))
                     }
                 }
             }
             McpMethod::ResourcesList => McpResponse::success(id, json!({"resources": []})),
-            McpMethod::ResourcesRead => McpResponse::error(
-                id,
-                McpError::InvalidRequest("resource 不存在".to_string()),
-            ),
+            McpMethod::ResourcesRead => {
+                McpResponse::error(id, McpError::InvalidRequest("resource 不存在".to_string()))
+            }
             McpMethod::PromptsList => McpResponse::success(id, json!({"prompts": []})),
-            McpMethod::PromptsGet => McpResponse::error(
-                id,
-                McpError::InvalidRequest("prompt 不存在".to_string()),
-            ),
-            McpMethod::Custom => McpResponse::error(
-                id,
-                McpError::MethodNotFound(req.method.clone()),
-            ),
+            McpMethod::PromptsGet => {
+                McpResponse::error(id, McpError::InvalidRequest("prompt 不存在".to_string()))
+            }
+            McpMethod::Custom => {
+                McpResponse::error(id, McpError::MethodNotFound(req.method.clone()))
+            }
         };
 
         write_line(&response).await?;

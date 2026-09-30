@@ -32,12 +32,24 @@ pub struct TransferBundle {
 impl TransferBundle {
     /// 机械校验：六字段均非空，Owner 不得为空。失败不静默转移责任。
     pub fn validate(&self) -> Result<(), String> {
-        if self.goal.is_empty() { return Err("goal empty".into()); }
-        if self.context.is_empty() { return Err("context empty".into()); }
-        if self.done.is_empty() { return Err("done empty".into()); }
-        if self.todo.is_empty() { return Err("todo empty".into()); }
-        if self.trace.is_empty() { return Err("trace empty".into()); }
-        if self.owner.is_empty() { return Err("owner empty".into()); }
+        if self.goal.is_empty() {
+            return Err("goal empty".into());
+        }
+        if self.context.is_empty() {
+            return Err("context empty".into());
+        }
+        if self.done.is_empty() {
+            return Err("done empty".into());
+        }
+        if self.todo.is_empty() {
+            return Err("todo empty".into());
+        }
+        if self.trace.is_empty() {
+            return Err("trace empty".into());
+        }
+        if self.owner.is_empty() {
+            return Err("owner empty".into());
+        }
         Ok(())
     }
 }
@@ -52,7 +64,10 @@ pub struct TraceLedger {
 
 impl TraceLedger {
     pub fn new() -> Self {
-        Self { chain: Vec::new(), prev: "genesis".into() }
+        Self {
+            chain: Vec::new(),
+            prev: "genesis".into(),
+        }
     }
 
     /// 追加一条执行记录；环哈希 = sha256(prev + payload)（v2.6.7 真 SHA-256）。
@@ -62,10 +77,17 @@ impl TraceLedger {
         self.prev = h;
     }
 
-    pub fn len(&self) -> usize { self.chain.len() }
-    pub fn is_empty(&self) -> bool { self.chain.is_empty() }
+    pub fn len(&self) -> usize {
+        self.chain.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty()
+    }
     pub fn verified_count(&self) -> usize {
-        self.chain.iter().filter(|(_, _, g)| *g == EvidenceGrade::Verified).count()
+        self.chain
+            .iter()
+            .filter(|(_, _, g)| *g == EvidenceGrade::Verified)
+            .count()
     }
 
     /// 重算整条链，返回首个断裂环索引；一致则 Ok(())。
@@ -89,8 +111,12 @@ mod tests {
     #[test]
     fn bundle_rejects_missing_field() {
         let b = TransferBundle {
-            goal: "do x".into(), context: "c".into(), done: "".into(),
-            todo: "t".into(), trace: "tr".into(), owner: "o".into(),
+            goal: "do x".into(),
+            context: "c".into(),
+            done: "".into(),
+            todo: "t".into(),
+            trace: "tr".into(),
+            owner: "o".into(),
             grade: EvidenceGrade::CpuProto,
         };
         assert!(b.validate().is_err());
@@ -99,8 +125,12 @@ mod tests {
     #[test]
     fn bundle_accepts_complete() {
         let b = TransferBundle {
-            goal: "g".into(), context: "c".into(), done: "d".into(),
-            todo: "t".into(), trace: "tr".into(), owner: "o".into(),
+            goal: "g".into(),
+            context: "c".into(),
+            done: "d".into(),
+            todo: "t".into(),
+            trace: "tr".into(),
+            owner: "o".into(),
             grade: EvidenceGrade::Verified,
         };
         assert!(b.validate().is_ok());

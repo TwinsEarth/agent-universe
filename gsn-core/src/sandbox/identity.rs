@@ -64,7 +64,10 @@ impl ExecutionToken {
     /// 校验令牌是否绑定该沙箱、未过期、具备所需能力
     pub fn authorize(&self, sandbox_id: &str, scope: &str, now_ms: u64) -> Result<(), String> {
         if self.sandbox_id != sandbox_id {
-            return Err(format!("令牌绑定沙箱 {} 与当前 {} 不符", self.sandbox_id, sandbox_id));
+            return Err(format!(
+                "令牌绑定沙箱 {} 与当前 {} 不符",
+                self.sandbox_id, sandbox_id
+            ));
         }
         if self.is_expired(now_ms) {
             return Err("执行令牌已过期".to_string());
@@ -96,8 +99,12 @@ mod tests {
     #[test]
     fn token_wrong_sandbox_denied() {
         let t = ExecutionToken {
-            token_id: "t".into(), sandbox_id: "sb1".into(), agent_did: "d".into(),
-            scopes: vec!["x".into()], issued_ms: 0, expires_ms: 100,
+            token_id: "t".into(),
+            sandbox_id: "sb1".into(),
+            agent_did: "d".into(),
+            scopes: vec!["x".into()],
+            issued_ms: 0,
+            expires_ms: 100,
         };
         assert!(t.authorize("sb2", "x", 0).is_err());
     }
@@ -105,8 +112,12 @@ mod tests {
     #[test]
     fn token_expired_denied() {
         let t = ExecutionToken {
-            token_id: "t".into(), sandbox_id: "sb1".into(), agent_did: "d".into(),
-            scopes: vec!["x".into()], issued_ms: 0, expires_ms: 100,
+            token_id: "t".into(),
+            sandbox_id: "sb1".into(),
+            agent_did: "d".into(),
+            scopes: vec!["x".into()],
+            issued_ms: 0,
+            expires_ms: 100,
         };
         assert!(t.authorize("sb1", "x", 100).is_err());
     }
@@ -114,8 +125,12 @@ mod tests {
     #[test]
     fn token_missing_scope_denied() {
         let t = ExecutionToken {
-            token_id: "t".into(), sandbox_id: "sb1".into(), agent_did: "d".into(),
-            scopes: vec!["a".into()], issued_ms: 0, expires_ms: 100,
+            token_id: "t".into(),
+            sandbox_id: "sb1".into(),
+            agent_did: "d".into(),
+            scopes: vec!["a".into()],
+            issued_ms: 0,
+            expires_ms: 100,
         };
         assert!(t.authorize("sb1", "b", 0).is_err());
     }

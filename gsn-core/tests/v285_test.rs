@@ -188,7 +188,11 @@ fn test_duplicate_arbitration_rejected() {
 fn test_arbitration_missing_dispute_not_found() {
     let mut m = AgentMarket::new();
     let err = m.arbitrate("nope", "arb-1", true).unwrap_err();
-    assert!(err.contains("NOT_FOUND"), "错误信息应指明 NOT_FOUND: {}", err);
+    assert!(
+        err.contains("NOT_FOUND"),
+        "错误信息应指明 NOT_FOUND: {}",
+        err
+    );
 }
 
 // ===== 5. 仲裁无过：不罚没，任务回到 Accepted =====
@@ -212,7 +216,11 @@ fn test_arbitration_not_guilty_no_slash() {
 fn test_open_state_cannot_dispute() {
     let mut m = AgentMarket::new();
     fund_and_register(&mut m, "a1", 100);
-    fund_and_publish(&mut m, make_task("t1", 50, "u1", VerificationPolicy::None), 50);
+    fund_and_publish(
+        &mut m,
+        make_task("t1", 50, "u1", VerificationPolicy::None),
+        50,
+    );
 
     // 刚发布，Open 状态
     assert_eq!(m.get_task("t1").unwrap().state, TaskState::Open);
@@ -226,7 +234,11 @@ fn test_open_state_cannot_dispute() {
 fn test_settled_state_cannot_dispute() {
     let mut m = AgentMarket::new();
     fund_and_register(&mut m, "a1", 100);
-    fund_and_publish(&mut m, make_task("t1", 50, "u1", VerificationPolicy::None), 50);
+    fund_and_publish(
+        &mut m,
+        make_task("t1", 50, "u1", VerificationPolicy::None),
+        50,
+    );
     match_and_accept(&mut m, "t1", "a1", 10);
     m.settle_task("t1").unwrap();
     assert_eq!(m.get_task("t1").unwrap().state, TaskState::Settled);
@@ -242,7 +254,11 @@ fn test_settled_state_cannot_dispute() {
 fn test_reject_task_transition_and_slash_rate() {
     let mut m = AgentMarket::new();
     fund_and_register(&mut m, "a1", 100);
-    fund_and_publish(&mut m, make_task("t1", 50, "u1", VerificationPolicy::BftLite { n: 4, f: 1 }), 50);
+    fund_and_publish(
+        &mut m,
+        make_task("t1", 50, "u1", VerificationPolicy::BftLite { n: 4, f: 1 }),
+        50,
+    );
     m.submit_bid(make_bid("a1", "t1", 10)).unwrap();
     m.match_task("t1").unwrap();
 

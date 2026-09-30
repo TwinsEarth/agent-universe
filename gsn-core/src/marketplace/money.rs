@@ -14,9 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// 精确整数金额（最小货币单位）
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Money(pub i64);
 
@@ -60,7 +58,11 @@ impl Money {
 
     /// 取较小者
     pub fn min(self, other: Money) -> Money {
-        if self <= other { self } else { other }
+        if self <= other {
+            self
+        } else {
+            other
+        }
     }
 }
 
@@ -102,7 +104,10 @@ mod tests {
         assert!(Money::new(i64::MIN).checked_sub(Money::new(1)).is_err());
         // 注意：0-1 在整数运算中合法得到 -1（由 deposit/transfer 业务层拒绝负数），
         // 并非算术溢出；checked_* 只负责检测真正的溢出。
-        assert_eq!(Money::new(0).checked_sub(Money::new(1)).unwrap(), Money::new(-1));
+        assert_eq!(
+            Money::new(0).checked_sub(Money::new(1)).unwrap(),
+            Money::new(-1)
+        );
     }
 
     #[test]

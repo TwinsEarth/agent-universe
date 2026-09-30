@@ -8,8 +8,8 @@
 //!   （TCP/QUIC/WS + Noise + Yamux + Kademlia + GossipSub + Relay/DCUtR）
 //! - [`crate::node`]：节点运行时（中继预约、DCUtR 直连、组网编排）
 
-use std::collections::HashMap;
 use crate::agent::AgentCard;
+use std::collections::HashMap;
 
 /// 进程内节点替身：仅在本地保存/检索 Agent 卡片，不联网。
 pub struct InMemoryNode {
@@ -42,7 +42,8 @@ impl InMemoryNode {
 
     /// 仅在本地卡片中按能力过滤，不进行真实网络发现。
     pub fn discover_by_capability(&self, capability: &str) -> Vec<&AgentCard> {
-        self.cards.values()
+        self.cards
+            .values()
             .filter(|c| c.capabilities.iter().any(|cap| cap == capability))
             .collect()
     }

@@ -14,8 +14,8 @@
 
 use crate::api::market_actor::MarketActorHandle;
 use crate::mcp::market_tools::MarketMcpBridge;
-use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::protocol::*;
+use crate::mcp::sandbox_tools::SandboxMcpBridge;
 use crate::mcp::tool::{find_tool, validate_arguments, ToolResult};
 use crate::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
@@ -128,7 +128,11 @@ pub async fn handle_post(
         McpMethod::Ping => McpResponse::success(id, json!({})),
         McpMethod::ToolsList => McpResponse::success(id, json!({"tools": tools})),
         McpMethod::ToolsCall => {
-            let name = req.params.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let name = req
+                .params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let args = req.params.get("arguments").cloned().unwrap_or(json!({}));
             // v2.6.8（GAP §8.4）：未知工具返回正常 result + isError:true，而非协议级错误。
             if !is_known_tool(name) {
@@ -143,10 +147,7 @@ pub async fn handle_post(
             // 不再直接调 bridge 造成静默降级（存 0 返 deposited）。
             if let Some(td) = find_tool(&tools, name) {
                 if let Err(msg) = validate_arguments(&td.input_schema, &args) {
-                    return jsonrpc_response(McpResponse::error(
-                        id,
-                        McpError::InvalidParams(msg),
-                    ));
+                    return jsonrpc_response(McpResponse::error(id, McpError::InvalidParams(msg)));
                 }
             }
             // MCP 已通过 Bearer 认证，据此派生沙箱所有权主体（与 REST 同一逻辑）
@@ -159,19 +160,14 @@ pub async fn handle_post(
             McpResponse::success(id, serde_json::to_value(tool_result).unwrap_or(json!({})))
         }
         McpMethod::ResourcesList => McpResponse::success(id, json!({"resources": []})),
-        McpMethod::ResourcesRead => McpResponse::error(
-            id,
-            McpError::InvalidRequest("resource 不存在".to_string()),
-        ),
+        McpMethod::ResourcesRead => {
+            McpResponse::error(id, McpError::InvalidRequest("resource 不存在".to_string()))
+        }
         McpMethod::PromptsList => McpResponse::success(id, json!({"prompts": []})),
-        McpMethod::PromptsGet => McpResponse::error(
-            id,
-            McpError::InvalidRequest("prompt 不存在".to_string()),
-        ),
-        McpMethod::Custom => McpResponse::error(
-            id,
-            McpError::MethodNotFound(req.method.clone()),
-        ),
+        McpMethod::PromptsGet => {
+            McpResponse::error(id, McpError::InvalidRequest("prompt 不存在".to_string()))
+        }
+        McpMethod::Custom => McpResponse::error(id, McpError::MethodNotFound(req.method.clone())),
     };
 
     jsonrpc_response(response)
@@ -200,8 +196,12 @@ fn is_mutating_tool(name: &str) -> bool {
 }
 
 fn is_known_tool(name: &str) -> bool {
-    MarketMcpBridge::tool_definitions().iter().any(|t| t.name == name)
-        || SandboxMcpBridge::tool_definitions().iter().any(|t| t.name == name)
+    MarketMcpBridge::tool_definitions()
+        .iter()
+        .any(|t| t.name == name)
+        || SandboxMcpBridge::tool_definitions()
+            .iter()
+            .any(|t| t.name == name)
 }
 
 /// 处理 GET /api/v1/mcp（SSE 流的首帧说明）
@@ -218,10 +218,7 @@ pub fn handle_get() -> McpHttp {
         "tool_count": tools.len(),
         "tools": tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>(),
     });
-    let stream = format!(
-        "event: ready\ndata: {}\n\nretry: 3000\n",
-        init_data
-    );
+    let stream = format!("event: ready\ndata: {}\n\nretry: 3000\n", init_data);
     McpHttp {
         status: 200,
         status_text: "OK",
@@ -233,7 +230,11 @@ pub fn handle_get() -> McpHttp {
 fn jsonrpc_response(resp: McpResponse) -> McpHttp {
     McpHttp {
         status: if resp.is_success() { 200 } else { 400 },
-        status_text: if resp.is_success() { "OK" } else { "Bad Request" },
+        status_text: if resp.is_success() {
+            "OK"
+        } else {
+            "Bad Request"
+        },
         content_type: "application/json".to_string(),
         body: serde_json::to_string(&resp).unwrap_or_default(),
     }

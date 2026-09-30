@@ -72,7 +72,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                     └── v2.8.7 (Sandbox Auth - 沙箱认证/所有权/资源限制/随机 id/孤儿清扫/Win Job Object - GAP §3.3)
                                                                                                                                                                           ├── v2.8.9 (Claim Verification - 弱公钥拒绝接入/贡献验证 DID 绑定/生产 panic 类型化/NAT 守卫锁值/纠删码真恢复/毒化告警 - GAP §2.2)
                                                                                                                                                                           │     （v2.8.8 按用户指示跳过）
-                                                                                                                                                                          └── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2) ← 当前
+                                                                                                                                                                          ├── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2)
+                                                                                                                                                                          └── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡) ← 当前
 ```
 
 ## 大版本详情
@@ -530,6 +531,22 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v2.9.1 - 沙箱能力声明闸门 + 生产 panic 归零（gsn-core 0.2.91）
+
+**核心原则**：边界要么由代码强制执行，要么让请求失败——绝不接受一个策略然后静默忽略它。
+
+- **能力声明系统**：新增 `sandbox/capability.rs`，12 项 Capability、显式带理由的 Waiver、
+  `CapabilityDeclaration.check` 唯一消费点；进程后端按平台声明真实能力，无法强制且无 waiver 即
+  `PolicyNotEnforceable`（422）；默认配置不执行，trusted_local 才本地执行；Unix 加
+  `ulimit -v/-t/-u/-n`；mem_mb 默认 768 兼容 Node V8；daemon 读 `GSN_SANDBOX_BACKEND`，拼错值按禁用。
+- **生产 panic 归零**：12 站点（market_actor / erasure Result 化 / llm / marketplace / net/peer /
+  scheduler / swarm），消除 `unwrap`/`expect`/NaN 路径。
+- **快照持久化告警**：5 处快照 `let _ =` 改 `warn_persist`，不静默吞掉落盘失败。
+- **CI**：rust-test 加 `cargo fmt --check`；v2.9.1 矩阵 ubuntu/macos。
+- **unsafe**：winjob.rs 3 个 unsafe 块全部补 `// SAFETY:`。
+- **验证**：clippy 零警告、全量测试通过（0 failed / 0 ignored）；v278/v280/v287 改显式 trusted_local。
+- **边界**：Windows 矩阵与静态关卡（panic/unsafe 机械检查）在 v2.9.2 接入。
 
 ### v2.9.0 - 桌面工作台大版本（gsn-core 0.2.90）
 

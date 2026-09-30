@@ -96,7 +96,9 @@ impl GeminiClient for MockGeminiClient {
             candidates: vec![GeCandidate {
                 content: GeContent {
                     role: "model".into(),
-                    parts: vec![GePart { text: self.answer.clone() }],
+                    parts: vec![GePart {
+                        text: self.answer.clone(),
+                    }],
                 },
                 finish_reason: "STOP".into(),
             }],
@@ -128,9 +130,15 @@ mod tests {
             }],
             system_instruction: Some(GeContent {
                 role: "user".into(),
-                parts: vec![GePart { text: "you are helpful".into() }],
+                parts: vec![GePart {
+                    text: "you are helpful".into(),
+                }],
             }),
-            generation_config: GeGenConfig { temperature: 0.7, top_p: 0.9, max_output_tokens: 512 },
+            generation_config: GeGenConfig {
+                temperature: 0.7,
+                top_p: 0.9,
+                max_output_tokens: 512,
+            },
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("system_instruction"));
@@ -139,11 +147,17 @@ mod tests {
 
     #[test]
     fn mock_returns_answer() {
-        let client = MockGeminiClient { answer: "42".into() };
+        let client = MockGeminiClient {
+            answer: "42".into(),
+        };
         let req = GeRequest {
             contents: vec![],
             system_instruction: None,
-            generation_config: GeGenConfig { temperature: 0.7, top_p: 0.9, max_output_tokens: 256 },
+            generation_config: GeGenConfig {
+                temperature: 0.7,
+                top_p: 0.9,
+                max_output_tokens: 256,
+            },
         };
         let resp = client.generate(&req).unwrap();
         assert_eq!(resp.candidates[0].content.parts[0].text, "42");

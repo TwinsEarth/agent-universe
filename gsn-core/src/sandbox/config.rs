@@ -7,6 +7,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use super::capability::{Capability, Waiver};
+
 /// 隔离级别（如实标注，不得静默升级/降级）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IsolationLevel {
@@ -40,17 +42,23 @@ impl IsolationLevel {
 /// 资源上限（全部为硬上限，超限即终止并回收）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResourceLimits {
-    /// CPU 配额（毫核，1000 = 1 vCPU）
+    /// CPU 时间上限（毫秒；进程后端按 `ulimit -t` 向上取整到秒，容器按 cgroup）。
+    /// 注意这是**累计 CPU 时间**而非"毫核速率"——速率配额在普通进程上无法强制。
     pub cpu_millis: u32,
-    /// 内存上限（MB）
+    /// 内存/地址空间上限（MB）。
+    /// 进程后端 Unix 用 `ulimit -v` 限制**虚拟地址空间**（不是 RSS）：
+    /// 普通进程没有可用的 RSS 硬上限（`ulimit -m` 在现代 Linux 已不生效），
+    /// 虚拟地址空间上限是唯一可跨 Unix 的原语。它对 Python 用 256MB 即可，
+    /// 但 V8/Node 会预留较大的 CodeRange，实测 Node 需 ≥768MB 才能启动。
+    /// Windows 用 Job Object 限制实际提交内存。
     pub mem_mb: u32,
-    /// 临时磁盘上限（MB）
+    /// 临时磁盘上限（MB）——进程后端无文件系统配额，此条需容器或豁免
     pub disk_mb: u32,
     /// 最大子进程/线程数
     pub max_processes: u32,
     /// 最大文件句柄数
     pub max_open_files: u32,
-    /// 执行超时（毫秒），到点强杀
+    /// 执行墙钟超时（毫秒），到点强杀整棵进程树
     pub timeout_ms: u64,
 }
 
@@ -58,8 +66,11 @@ impl Default for ResourceLimits {
     /// 最小权限默认值
     fn default() -> Self {
         Self {
-            cpu_millis: 1000,
-            mem_mb: 256,
+            // 累计 CPU 时间上限 10 秒（配合 30 秒墙钟）；向上取整到秒
+            cpu_millis: 10_000,
+            // 虚拟地址空间上限 768MB：Python 256MB 即够，但 V8/Node 需预留
+            // CodeRange（实测 ≥768MB 才能启动）；取 768 兼容两种运行时。
+            mem_mb: 768,
             disk_mb: 128,
             // 现代运行时（V8/node 等）启动即需 worker 线程，64 会 abort；
             // 512 覆盖解释器自身线程，仍限制子进程无限扩张
@@ -130,6 +141,10 @@ pub struct SandboxConfig {
     pub env: Vec<(String, String)>,
     /// 沙箱工作目录的父目录（None = 系统临时目录）。管理器统一编排时指定。
     pub work_dir_base: Option<PathBuf>,
+    /// 显式豁免的边界（必须带非空理由，记入审计）。
+    /// 进程后端无法强制网络拒绝/文件系统子树限制/磁盘配额，默认配置要求这些时
+    /// 会被拒绝，除非在此显式声明放弃——这迫使调用方明确"这段代码可信"。
+    pub waivers: Vec<Waiver>,
 }
 
 impl Default for SandboxConfig {
@@ -145,6 +160,7 @@ impl Default for SandboxConfig {
             allow_shell: false,
             env: Vec::new(),
             work_dir_base: None,
+            waivers: Vec::new(),
         }
     }
 }
@@ -163,7 +179,9 @@ impl SandboxConfig {
             errs.push("timeout_ms 必须 > 0".to_string());
         }
         if self.network.allow_egress && self.network.egress_allowlist.is_empty() {
-            errs.push("允许出站但白名单为空，等同全放开；至少给一个目标或显式标 deny_raw_ip".to_string());
+            errs.push(
+                "允许出站但白名单为空，等同全放开；至少给一个目标或显式标 deny_raw_ip".to_string(),
+            );
         }
         if self.template.trim().is_empty() {
             errs.push("template 不能为空".to_string());
@@ -179,5 +197,82 @@ impl SandboxConfig {
         } else {
             Err(errs)
         }
+    }
+
+    /// 该配置隐含的**必须由后端强制**的边界集合。
+    ///
+    /// 后端在 create 时逐条 [`CapabilityDeclaration::check`]：强制了，或被带理由
+    /// 的豁免覆盖，否则具名拒绝。这保证"请求了隔离"不会被一个做不到隔离的后端
+    /// 静默接受。
+    pub fn required_boundaries(&self) -> Vec<Capability> {
+        use Capability::*;
+        let mut required = Vec::new();
+
+        // 所有沙箱都强制的基础边界
+        required.push(EnvAllowlist);
+        required.push(OutputCap);
+        required.push(WorkDirIsolation);
+
+        // 网络
+        if self.network.allow_egress {
+            if !self.network.egress_allowlist.is_empty() {
+                required.push(NetworkAllowList);
+            }
+        } else {
+            // 默认拒绝出站 → 需要真正的网络拒绝能力
+            required.push(NetworkDenyAll);
+        }
+
+        // 文件系统：默认只读根（仅 tmp 可写）→ 需要子树限制
+        if self.filesystem.read_only_root {
+            required.push(FilesystemConfinement);
+        }
+
+        // 资源上限
+        let r = &self.resources;
+        if r.timeout_ms > 0 {
+            required.push(Timeout);
+        }
+        if r.mem_mb > 0 {
+            required.push(MemoryLimit);
+        }
+        if r.cpu_millis > 0 {
+            required.push(CpuLimit);
+        }
+        if r.disk_mb > 0 {
+            required.push(DiskQuota);
+        }
+        if r.max_processes > 0 {
+            required.push(ProcessCountLimit);
+        }
+        if r.max_open_files > 0 {
+            required.push(OpenFileLimit);
+        }
+
+        required
+    }
+
+    /// 构造一个"本地可信执行"配置：显式豁免进程后端在所有平台都无法强制的
+    /// 三条边界（网络拒绝、文件系统子树限制、磁盘配额）。
+    ///
+    /// 仅在 operator 明确信任宿主机与待执行代码时使用（例如本机开发、单机部署，
+    /// 且 API 已要求认证 + 所有权）。豁免会被写入审计日志，**绝不能作为默认值**。
+    pub fn trusted_local(justification: &str) -> Self {
+        let mut cfg = Self::default();
+        let reason = |what: &str| {
+            format!(
+                "process backend has no primitive for {what} on this platform; \
+                 operator accepts a host-level boundary [{justification}]"
+            )
+        };
+        cfg.waivers = vec![
+            Waiver::new(Capability::NetworkDenyAll, reason("network egress denial")),
+            Waiver::new(
+                Capability::FilesystemConfinement,
+                reason("filesystem subtree confinement"),
+            ),
+            Waiver::new(Capability::DiskQuota, reason("disk quota")),
+        ];
+        cfg
     }
 }

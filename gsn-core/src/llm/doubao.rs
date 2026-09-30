@@ -150,7 +150,11 @@ impl DoubaoClient for MockDoubaoClient {
                 },
                 finish_reason: "stop".into(),
             }],
-            usage: DbUsage { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30 },
+            usage: DbUsage {
+                prompt_tokens: 20,
+                completion_tokens: 10,
+                total_tokens: 30,
+            },
         })
     }
 }
@@ -161,7 +165,10 @@ mod tests {
 
     #[test]
     fn model_strings_and_windows() {
-        assert_eq!(DoubaoModel::Seed21Pro.as_str(), "doubao-seed-2-1-pro-260915");
+        assert_eq!(
+            DoubaoModel::Seed21Pro.as_str(),
+            "doubao-seed-2-1-pro-260915"
+        );
         assert_eq!(DoubaoModel::Seed21Pro.context_window(), 1_024_000);
         assert!(DoubaoModel::Seed21Pro.supports_reasoning());
         assert!(!DoubaoModel::Doubao15Pro32k.supports_reasoning());
@@ -171,12 +178,17 @@ mod tests {
     fn thinking_field_serialized_when_enabled() {
         let req = DbChatRequest {
             model: "doubao-seed-2-1-pro-260915".into(),
-            messages: vec![DbMessage { role: DbRole::User, content: "hi".into() }],
+            messages: vec![DbMessage {
+                role: DbRole::User,
+                content: "hi".into(),
+            }],
             temperature: 0.7,
             top_p: 1.0,
             max_tokens: 4096,
             stream: false,
-            thinking: Some(DbThinking { ty: DbThinkingType::Enabled }),
+            thinking: Some(DbThinking {
+                ty: DbThinkingType::Enabled,
+            }),
         };
         let json = serde_json::to_string(&req).unwrap();
         assert!(json.contains("\"thinking\""));
@@ -188,7 +200,10 @@ mod tests {
         let req = DbChatRequest {
             model: "doubao-1-5-pro-32k-250115".into(),
             messages: vec![],
-            temperature: 0.7, top_p: 1.0, max_tokens: 4096, stream: false,
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens: 4096,
+            stream: false,
             thinking: None,
         };
         let json = serde_json::to_string(&req).unwrap();
@@ -204,12 +219,20 @@ mod tests {
         let req = DbChatRequest {
             model: "doubao-seed-2-1-pro-260915".into(),
             messages: vec![],
-            temperature: 0.7, top_p: 1.0, max_tokens: 4096, stream: false,
-            thinking: Some(DbThinking { ty: DbThinkingType::Enabled }),
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens: 4096,
+            stream: false,
+            thinking: Some(DbThinking {
+                ty: DbThinkingType::Enabled,
+            }),
         };
         let resp = client.chat(&req).unwrap();
         assert_eq!(resp.choices[0].message.content, "答案");
-        assert_eq!(resp.choices[0].message.reasoning_content, Some("思考过程...".into()));
+        assert_eq!(
+            resp.choices[0].message.reasoning_content,
+            Some("思考过程...".into())
+        );
         assert_eq!(resp.model, "doubao-seed-2-1-pro-260915");
     }
 }

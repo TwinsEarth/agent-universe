@@ -15,7 +15,10 @@ fn base_dir(tag: &str) -> std::path::PathBuf {
 fn mk_manager(tag: &str, warm: usize) -> SandboxManager {
     let dir = base_dir(tag);
     let _ = std::fs::remove_dir_all(&dir);
-    SandboxManager::new(dir, SandboxConfig::default(), warm)
+    // v2.9.1：默认配置无 waiver 会被能力闸门拒绝（G1 设计意图）；
+    // 生命周期测试需要真正创建沙箱，使用显式 trusted_local（带理由）。
+    let cfg = SandboxConfig::trusted_local("v278 manager lifecycle test");
+    SandboxManager::new(dir, cfg, warm)
 }
 
 #[test]
@@ -83,7 +86,10 @@ fn v278_checkpoint_creates_snapshot() {
     let cp_id = mgr.checkpoint(&id).unwrap();
     assert!(cp_id.contains(&id));
     // 快照目录存在且含文件
-    let cp_path = base_dir("cp").join("checkpoints").join(&cp_id).join("state.txt");
+    let cp_path = base_dir("cp")
+        .join("checkpoints")
+        .join(&cp_id)
+        .join("state.txt");
     assert!(cp_path.exists());
     mgr.shutdown().unwrap();
 }

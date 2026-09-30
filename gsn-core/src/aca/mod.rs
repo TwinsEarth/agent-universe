@@ -3,8 +3,8 @@
 //! 四个协议对象：Agent Manifest → Task Envelope → Receipt → Reputation
 //! 五级验证分层：L0 抽样 → L1 冗余 → L2 TEE → L3 zkML → L4 委员会仲裁
 
-pub mod crypto;
 pub mod clock;
+pub mod crypto;
 pub mod manifest;
 
 /// 协议规范版本（GAP §4.5）。
@@ -18,17 +18,19 @@ pub mod manifest;
 /// 重放保护由 [`crate::marketplace`] 的 nonce + 时间戳 + `verify_fresh` 承担。
 pub const PROTOCOL_VERSION: &str = "nau/1";
 pub mod envelope;
+pub mod message;
 pub mod receipt;
 pub mod reputation;
-pub mod verification;
-pub mod message;
 pub mod runtime;
+pub mod verification;
 
 pub use crypto::{canonical_payload, sign_hex, verify_hex};
+pub use envelope::{PrivacyRequirement, TaskEnvelope, TaskPriority};
 pub use manifest::{AgentManifest, HardwareProfile, VerificationMode};
-pub use envelope::{TaskEnvelope, PrivacyRequirement, TaskPriority};
+pub use message::{AcaMessage, MessageType};
 pub use receipt::{Receipt, ReceiptStatus, ResourceMetering};
 pub use reputation::{MultiReputation, ReputationDimension};
-pub use verification::{QaCommitteeSpec, VerificationLevel, VerificationPolicy, VerificationResult};
-pub use message::{AcaMessage, MessageType};
-pub use runtime::{AcaProcessor, AcaDecision, ProcessOutcome};
+pub use runtime::{AcaDecision, AcaProcessor, ProcessOutcome};
+pub use verification::{
+    QaCommitteeSpec, VerificationLevel, VerificationPolicy, VerificationResult,
+};

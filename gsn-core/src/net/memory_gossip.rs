@@ -36,12 +36,16 @@ impl InMemoryGossip {
     }
 
     pub fn publish(&mut self, topic: &str, message: Vec<u8>) {
-        self.messages.entry(topic.to_string())
+        self.messages
+            .entry(topic.to_string())
             .or_default()
             .push(message);
     }
 
     pub fn get_messages(&self, topic: &str) -> &[Vec<u8>] {
-        self.messages.get(topic).map(|v| v.as_slice()).unwrap_or(&[])
+        self.messages
+            .get(topic)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }

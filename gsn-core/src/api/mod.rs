@@ -8,4 +8,4 @@
 pub mod market_actor;
 pub mod rest;
 
-pub use market_actor::{MarketCommand, MarketActorHandle, MarketResponse};
+pub use market_actor::{MarketActorHandle, MarketCommand, MarketResponse};

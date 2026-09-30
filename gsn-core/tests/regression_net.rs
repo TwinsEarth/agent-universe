@@ -21,8 +21,7 @@ async fn reg_subscribe_then_publish_does_not_panic() {
         .expect("with_identity 应能构造节点");
 
     // subscribe 曾因 new(t) 自引用编译失败；走到这里即说明已修复
-    peer
-        .subscribe("gsn.test.regression")
+    peer.subscribe("gsn.test.regression")
         .expect("subscribe 应成功");
 
     match peer.publish("gsn.test.regression", b"regression".to_vec()) {

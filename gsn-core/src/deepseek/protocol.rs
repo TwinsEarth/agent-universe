@@ -110,11 +110,14 @@ impl Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::deepseek::recipe::{Recipe, DeepSeekModel};
+    use crate::deepseek::recipe::{DeepSeekModel, Recipe};
 
     #[test]
     fn gsn_ds_roundtrip_preserves_role_and_content() {
-        let g = GsnMessage { role: "user".into(), content: "hello".into() };
+        let g = GsnMessage {
+            role: "user".into(),
+            content: "hello".into(),
+        };
         let ds = Protocol::gsn_to_ds(&g).unwrap();
         assert_eq!(ds.role, DsRole::User);
         assert_eq!(ds.content, "hello");
@@ -124,7 +127,10 @@ mod tests {
 
     #[test]
     fn unknown_role_rejected() {
-        let g = GsnMessage { role: "wizard".into(), content: "x".into() };
+        let g = GsnMessage {
+            role: "wizard".into(),
+            content: "x".into(),
+        };
         assert!(Protocol::gsn_to_ds(&g).is_err());
     }
 
@@ -135,7 +141,12 @@ mod tests {
             DeepSeekModel::Chat,
             sys,
             vec![Recipe::user("hi")],
-            DsSampling { temperature: 0.7, top_p: 0.9, max_tokens: 512, stop: vec![] },
+            DsSampling {
+                temperature: 0.7,
+                top_p: 0.9,
+                max_tokens: 512,
+                stop: vec![],
+            },
         );
         let oai = Protocol::ds_to_oai(&req);
         assert_eq!(oai.temperature, 0.7);

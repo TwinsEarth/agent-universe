@@ -69,8 +69,8 @@ mod tests {
     fn flywheel_closes_loop() {
         let mut f = Flywheel::new();
         assert!(!f.is_spinning());
-        f.collaborate(4);       // ① ≥3 独立模型
-        f.ingest(100);          // ③ 经验入库
+        f.collaborate(4); // ① ≥3 独立模型
+        f.ingest(100); // ③ 经验入库
         f.optimize_structure(); // ④ 反哺结构
         assert!(f.is_spinning());
         let (k, rounds, exp, opt) = f.status();

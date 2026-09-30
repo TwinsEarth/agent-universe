@@ -51,7 +51,10 @@ impl SessionRegistry {
     pub fn allocate_session(&mut self, code: &str) -> SessionId {
         let number = self.next_number;
         self.next_number += 1;
-        SessionId { number, code: code.to_string() }
+        SessionId {
+            number,
+            code: code.to_string(),
+        }
     }
 
     /// 将临时 SN 绑定到永久 DID

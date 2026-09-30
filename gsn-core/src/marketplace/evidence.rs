@@ -8,8 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// 证据等级
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum EvidenceGrade {
     /// 可复跑测试验证
     Verified,
@@ -40,4 +39,3 @@ impl std::fmt::Display for EvidenceGrade {
         write!(f, "{}", self.label())
     }
 }
-

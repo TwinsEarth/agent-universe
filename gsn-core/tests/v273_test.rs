@@ -31,12 +31,7 @@ fn info() -> NodeInfo {
     }
 }
 
-async fn rest(
-    market: &MarketActorHandle,
-    method: &str,
-    path: &str,
-    body: &str,
-) -> (u16, Value) {
+async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
     let r = route(method, path, body, market, &info()).await;
     (r.status, r.body)
 }
@@ -175,7 +170,13 @@ fn test_unverified_result_authenticated_verify_then_settle() {
             "estimated_latency_ms": 500,
             "score": 0.9
         });
-        let (s, _) = rest(&market, "POST", "/api/v1/tasks/task-1/bids", &bid.to_string()).await;
+        let (s, _) = rest(
+            &market,
+            "POST",
+            "/api/v1/tasks/task-1/bids",
+            &bid.to_string(),
+        )
+        .await;
         assert_eq!(s, 201);
 
         let (s, body) = rest(&market, "POST", "/api/v1/tasks/task-1/match", "").await;

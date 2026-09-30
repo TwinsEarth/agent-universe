@@ -16,13 +16,25 @@ pub struct Routed {
 
 impl Routed {
     fn ok(body: Value) -> Self {
-        Routed { status: 200, status_text: "OK", body }
+        Routed {
+            status: 200,
+            status_text: "OK",
+            body,
+        }
     }
     fn bad_request(msg: &str) -> Self {
-        Routed { status: 400, status_text: "Bad Request", body: json!({"error": msg}) }
+        Routed {
+            status: 400,
+            status_text: "Bad Request",
+            body: json!({"error": msg}),
+        }
     }
     fn not_found(path: &str) -> Self {
-        Routed { status: 404, status_text: "Not Found", body: json!({"error": "not_found", "path": path}) }
+        Routed {
+            status: 404,
+            status_text: "Not Found",
+            body: json!({"error": "not_found", "path": path}),
+        }
     }
 }
 
@@ -31,8 +43,16 @@ fn from_mr(r: crate::api::market_actor::MarketResponse, success_status: u16) -> 
     use crate::api::market_actor::MarketResponse::*;
     match r {
         Ok(v) => {
-            let text = if success_status == 201 { "Created" } else { "OK" };
-            Routed { status: success_status, status_text: text, body: v }
+            let text = if success_status == 201 {
+                "Created"
+            } else {
+                "OK"
+            };
+            Routed {
+                status: success_status,
+                status_text: text,
+                body: v,
+            }
         }
         Err(e) => classify_error(&e),
     }
@@ -43,13 +63,29 @@ fn from_mr(r: crate::api::market_actor::MarketResponse, success_status: u16) -> 
 /// 未知前缀统一 422（语义错误）。错误体原样回传，前缀即机器可读错误码。
 fn classify_error(e: &str) -> Routed {
     if let Some(rest) = e.strip_prefix("NOT_FOUND:") {
-        Routed { status: 404, status_text: "Not Found", body: json!({"error": "not_found", "message": rest}) }
+        Routed {
+            status: 404,
+            status_text: "Not Found",
+            body: json!({"error": "not_found", "message": rest}),
+        }
     } else if e.starts_with("CONFLICT:") {
-        Routed { status: 409, status_text: "Conflict", body: json!({"error": e}) }
+        Routed {
+            status: 409,
+            status_text: "Conflict",
+            body: json!({"error": e}),
+        }
     } else if e.starts_with("BAD_REQUEST:") {
-        Routed { status: 400, status_text: "Bad Request", body: json!({"error": e}) }
+        Routed {
+            status: 400,
+            status_text: "Bad Request",
+            body: json!({"error": e}),
+        }
     } else {
-        Routed { status: 422, status_text: "Unprocessable Entity", body: json!({"error": e}) }
+        Routed {
+            status: 422,
+            status_text: "Unprocessable Entity",
+            body: json!({"error": e}),
+        }
     }
 }
 
@@ -67,9 +103,7 @@ fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     for pair in q.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
-            let decoded = |s: &str| {
-                url_decode(s)
-            };
+            let decoded = |s: &str| url_decode(s);
             map.insert(decoded(k), decoded(v));
         }
     }
@@ -94,8 +128,14 @@ fn url_decode(s: &str) -> String {
                 out.push(bytes[i]);
                 i += 1;
             }
-            b'+' => { out.push(b' '); i += 1; }
-            b => { out.push(b); i += 1; }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
         }
     }
     String::from_utf8_lossy(&out).to_string()
@@ -128,7 +168,11 @@ pub async fn route(
 
     // ───── CORS 预检 ─────
     if method == "OPTIONS" {
-        return Routed { status: 204, status_text: "No Content", body: Value::Null };
+        return Routed {
+            status: 204,
+            status_text: "No Content",
+            body: Value::Null,
+        };
     }
 
     // ───── 节点级（向后兼容旧路径） ─────
@@ -214,7 +258,9 @@ pub async fn route(
             return from_mr(market.get_task(id).await, 200);
         }
         Some(RouteTarget::TaskBids(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             if let Some(mut v) = parsed_body {
                 // 注入 task_id
                 if let Some(obj) = v.as_object_mut() {
@@ -222,24 +268,30 @@ pub async fn route(
                 }
                 return from_mr(market.submit_bid(v).await, 201);
             }
-            return Routed::bad_request("缺少投标数据")
+            return Routed::bad_request("缺少投标数据");
         }
         Some(RouteTarget::TaskMatch(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             return from_mr(market.match_task(id).await, 200);
         }
         Some(RouteTarget::TaskResults(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             if let Some(mut v) = parsed_body {
                 if let Some(obj) = v.as_object_mut() {
                     obj.insert("task_id".to_string(), json!(id));
                 }
                 return from_mr(market.submit_result(v).await, 201);
             }
-            return Routed::bad_request("缺少结果数据")
+            return Routed::bad_request("缺少结果数据");
         }
         Some(RouteTarget::TaskVerify(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             // v2.5.9 认证式：固定委员集 (did + 公钥) + 委员私钥签名票，
             // 不再接受 approvals / committee_size 合成投票。
             let body = parsed_body.as_ref();
@@ -257,43 +309,58 @@ pub async fn route(
                 Err(e) => return Routed::bad_request(&e),
             };
             return from_mr(
-                market.verify_result(id, round, members, votes, unix_now()).await,
+                market
+                    .verify_result(id, round, members, votes, unix_now())
+                    .await,
                 200,
             );
         }
         Some(RouteTarget::TaskSettle(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             return from_mr(market.settle_task(id).await, 200);
         }
         Some(RouteTarget::TaskResume(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             // 恢复边：返工任务回到执行中（v2.6.0）
             return from_mr(market.resume_rework(id.clone()).await, 200);
         }
         Some(RouteTarget::TaskReopen(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             // 恢复边：无共识任务重新开放（v2.6.0）
             return from_mr(market.reopen_task(id.clone()).await, 200);
         }
         Some(RouteTarget::TaskReject(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             // 终局拒绝（v2.8.5，GAP §2.2.6：此前 reject_task 仅库可达）
             return from_mr(market.reject_task(id.clone()).await, 200);
         }
         Some(RouteTarget::DisputesCollection) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             if let Some(v) = parsed_body {
                 return from_mr(market.open_dispute(v).await, 201);
             }
-            return Routed::bad_request("缺少争议数据")
+            return Routed::bad_request("缺少争议数据");
         }
         Some(RouteTarget::DisputeArbitrate(id)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             if let Some(v) = parsed_body {
                 let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
                 // v2.8.5：仲裁者身份必填（拒绝匿名）；罚没金额由服务端规则决定，
                 // 不再读取请求体的 slash_amount。
-                let arbitrator = v.get("arbitrator")
+                let arbitrator = v
+                    .get("arbitrator")
                     .and_then(|x| x.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -302,20 +369,28 @@ pub async fn route(
                 }
                 return from_mr(market.arbitrate(id, arbitrator, guilty).await, 200);
             }
-            return Routed::bad_request("缺少仲裁数据")
+            return Routed::bad_request("缺少仲裁数据");
         }
         Some(RouteTarget::AccountDeposit(account)) => {
-            if method != "POST" { return method_not_allowed("POST"); }
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
             // v2.8.6（GAP §4.1）：JSON body 金额只接受整数（i64），
             // 拒绝浮点（10.5 截断、10.0 亦为 f64）；URL query 为字符串→解析整数。
-            let amount = parsed_body.as_ref()
+            let amount = parsed_body
+                .as_ref()
                 .and_then(|v| v.get("amount"))
                 .and_then(|x| x.as_i64())
                 .or_else(|| q.get("amount").and_then(|s| s.parse::<i64>().ok()));
             if let Some(amount) = amount {
-                return from_mr(market.deposit(account, crate::marketplace::Money::new(amount)).await, 200);
+                return from_mr(
+                    market
+                        .deposit(account, crate::marketplace::Money::new(amount))
+                        .await,
+                    200,
+                );
             }
-            return Routed::bad_request("缺少 amount")
+            return Routed::bad_request("缺少 amount");
         }
         Some(RouteTarget::AccountBalance(account)) => {
             return from_mr(market.balance(account).await, 200);
@@ -327,7 +402,10 @@ pub async fn route(
             return from_mr(market.audit().await, 200);
         }
         Some(RouteTarget::Leaderboard) => {
-            let limit = q.get("limit").and_then(|s| s.parse::<usize>().ok()).unwrap_or(10);
+            let limit = q
+                .get("limit")
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(10);
             return from_mr(market.leaderboard(limit).await, 200);
         }
         Some(RouteTarget::Stats) => {
@@ -402,8 +480,12 @@ fn map_api_segments(seg: &[&str]) -> Option<RouteTarget> {
         ["tasks", id, "reject"] => Some(RouteTarget::TaskReject((*id).to_string())),
         ["disputes"] => Some(RouteTarget::DisputesCollection),
         ["disputes", id, "arbitrate"] => Some(RouteTarget::DisputeArbitrate((*id).to_string())),
-        ["accounts", account, "deposit"] => Some(RouteTarget::AccountDeposit((*account).to_string())),
-        ["accounts", account, "balance"] => Some(RouteTarget::AccountBalance((*account).to_string())),
+        ["accounts", account, "deposit"] => {
+            Some(RouteTarget::AccountDeposit((*account).to_string()))
+        }
+        ["accounts", account, "balance"] => {
+            Some(RouteTarget::AccountBalance((*account).to_string()))
+        }
         ["conservation"] => Some(RouteTarget::Conservation),
         ["audit"] => Some(RouteTarget::Audit),
         ["leaderboard"] => Some(RouteTarget::Leaderboard),
@@ -442,15 +524,13 @@ pub(crate) fn parse_committee_members(
             .and_then(|x| x.as_str())
             .ok_or("委员缺少 public_key（hex）")?;
         let pk_bytes = hex::decode(pk_hex).map_err(|e| format!("委员公钥 hex 错误: {e}"))?;
-        let pk: [u8; 32] = pk_bytes
-            .try_into()
-            .map_err(|_| "委员公钥必须为 32 字节")?;
+        let pk: [u8; 32] = pk_bytes.try_into().map_err(|_| "委员公钥必须为 32 字节")?;
         // v2.8.9：弱公钥拒绝 + DID↔公钥绑定（GAP §2.2/§2.4 委员授权，防止自造密钥签票）
         if crate::identity::is_weak_pubkey(&pk) {
             return Err(format!("委员 {did} 公钥为弱公钥，拒绝"));
         }
-        let parsed = crate::identity::Did::parse(&did)
-            .map_err(|_| format!("委员 {did} 的 DID 非法"))?;
+        let parsed =
+            crate::identity::Did::parse(&did).map_err(|_| format!("委员 {did} 的 DID 非法"))?;
         if parsed.identifier() != crate::identity::Did::fingerprint(&pk) {
             return Err(format!("委员 {did} 的 DID 与公钥指纹不匹配"));
         }
@@ -463,7 +543,10 @@ pub(crate) fn parse_committee_members(
 pub(crate) fn parse_signed_votes(
     v: Option<&Value>,
 ) -> Result<Vec<crate::marketplace::SignedQaVote>, String> {
-    let arr = match v.and_then(|b| b.get("signed_votes")).and_then(|x| x.as_array()) {
+    let arr = match v
+        .and_then(|b| b.get("signed_votes"))
+        .and_then(|x| x.as_array())
+    {
         Some(a) => a,
         None => return Ok(Vec::new()),
     };

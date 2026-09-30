@@ -38,10 +38,7 @@ impl MarketReputation {
 
     /// 综合评分
     pub fn overall(&self) -> f64 {
-        self.quality * 0.35
-            + self.speed * 0.20
-            + self.honesty * 0.30
-            + self.availability * 0.15
+        self.quality * 0.35 + self.speed * 0.20 + self.honesty * 0.30 + self.availability * 0.15
     }
 
     /// 成功率
@@ -147,9 +144,7 @@ impl ReputationManager {
                 locked_at: Self::now(),
             },
         );
-        self.reputations
-            .entry(agent_id.to_string())
-            .or_default();
+        self.reputations.entry(agent_id.to_string()).or_default();
         Ok(())
     }
 
@@ -234,9 +229,7 @@ impl ReputationManager {
     pub fn export_reputations(&self) -> Vec<(String, String)> {
         self.reputations
             .iter()
-            .filter_map(|(id, rep)| {
-                serde_json::to_string(rep).ok().map(|p| (id.clone(), p))
-            })
+            .filter_map(|(id, rep)| serde_json::to_string(rep).ok().map(|p| (id.clone(), p)))
             .collect()
     }
 

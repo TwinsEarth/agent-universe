@@ -2,8 +2,8 @@
 // 运行: cargo run --example dialcheck
 use futures::StreamExt;
 use libp2p::{
-    identify, ping, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux,
-    Multiaddr, SwarmBuilder,
+    identify, noise, ping, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux, Multiaddr,
+    SwarmBuilder,
 };
 use std::time::Duration;
 
@@ -31,9 +31,8 @@ async fn main() -> anyhow::Result<()> {
                 "/diag/1".to_string(),
                 key.public(),
             ));
-            let ping = ping::Behaviour::new(
-                ping::Config::new().with_interval(Duration::from_secs(15)),
-            );
+            let ping =
+                ping::Behaviour::new(ping::Config::new().with_interval(Duration::from_secs(15)));
             DiagBehaviour { identify, ping }
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))

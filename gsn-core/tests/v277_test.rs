@@ -10,10 +10,14 @@ use gsn_core::sandbox::runtime::{CodeLanguage, ProcessSandbox};
 use gsn_core::sandbox::Sandbox;
 
 fn mk_cfg(id: &str) -> SandboxConfig {
+    // 实际运行的测试显式承认进程后端在本平台无法强制网络/FS/磁盘边界
+    // （trusted_local 带理由的 waiver），这是诚实的本地执行方式。
     SandboxConfig {
         sandbox_id: id.to_string(),
         isolation: IsolationLevel::Process,
-        ..SandboxConfig::default()
+        ..SandboxConfig::trusted_local(
+            "v277 integration test: host has no egress/FS/quota primitive",
+        )
     }
 }
 
@@ -28,13 +32,14 @@ fn spawned(id: &str) -> ProcessSandbox {
 fn v277_run_python_hello() {
     let mut s = spawned("v277-py");
     let r = s
-        .run_code(
-            CodeLanguage::Python,
-            "print('hello from python')\n",
-        )
+        .run_code(CodeLanguage::Python, "print('hello from python')\n")
         .unwrap();
     assert_eq!(r.exit_code, 0);
-    assert!(r.stdout.contains("hello from python"), "stdout: {}", r.stdout);
+    assert!(
+        r.stdout.contains("hello from python"),
+        "stdout: {}",
+        r.stdout
+    );
     s.destroy().unwrap();
 }
 
@@ -55,9 +60,7 @@ fn v277_run_javascript_hello() {
 #[test]
 fn v277_python_compute_result() {
     let mut s = spawned("v277-compute");
-    let r = s
-        .run_code(CodeLanguage::Python, "print(21*2)\n")
-        .unwrap();
+    let r = s.run_code(CodeLanguage::Python, "print(21*2)\n").unwrap();
     assert!(r.stdout.trim().contains("42"), "got: {}", r.stdout);
     s.destroy().unwrap();
 }
@@ -80,10 +83,7 @@ fn v277_timeout_kills_long_running() {
     s.create(&cfg).unwrap();
     s.start().unwrap();
     let r = s.run_code(CodeLanguage::Python, "while True:\n    pass\n");
-    assert!(matches!(
-        r,
-        Err(SandboxError::ResourceLimitExceeded { .. })
-    ));
+    assert!(matches!(r, Err(SandboxError::ResourceLimitExceeded { .. })));
     s.destroy().unwrap();
 }
 
@@ -195,7 +195,10 @@ fn v277_exec_before_start_rejected() {
 #[test]
 fn v277_language_parse() {
     assert_eq!(CodeLanguage::from_label("py"), Some(CodeLanguage::Python));
-    assert_eq!(CodeLanguage::from_label("node"), Some(CodeLanguage::JavaScript));
+    assert_eq!(
+        CodeLanguage::from_label("node"),
+        Some(CodeLanguage::JavaScript)
+    );
     assert_eq!(CodeLanguage::from_label("ruby"), None);
 }
 
@@ -205,4 +208,64 @@ fn v277_resource_limits_struct_sane() {
     assert!(r.timeout_ms > 0);
     let n = NetworkPolicy::default();
     assert!(!n.allow_egress);
+}
+
+// v2.9.1（G1 核心）：没有 waiver 的默认配置必须被能力闸门拒绝——
+// 默认不是"静默执行"，而是"不执行"。该测试在旧代码上会失败。
+#[test]
+fn v277_default_config_refused_without_waiver() {
+    let id = "v277-default-refused";
+    let mut s = ProcessSandbox::new(id);
+    let cfg = SandboxConfig {
+        work_dir_base: Some(std::env::temp_dir()),
+        ..SandboxConfig::default()
+    };
+    let err = s.create(&cfg).unwrap_err();
+    assert!(
+        matches!(err, SandboxError::PolicyNotEnforceable { .. }),
+        "expected PolicyNotEnforceable, got {err:?}"
+    );
+}
+
+// v2.9.1（G1）：内存地址空间上限被强制执行，超出上限的分配不能成功。
+#[cfg(unix)]
+#[test]
+fn v277_memory_limit_blocks_large_allocation() {
+    let id = "v277-mem-limit";
+    let mut s = ProcessSandbox::new(id);
+    let mut cfg = mk_cfg(id);
+    cfg.work_dir_base = Some(std::env::temp_dir());
+    cfg.resources.mem_mb = 64;
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    let code = "x = bytearray(512*1024*1024); print('ALLOCATED', len(x))";
+    let r = s.run_code(CodeLanguage::Python, code).unwrap();
+    assert!(
+        !r.stdout.contains("ALLOCATED"),
+        "allocation beyond limit succeeded! stdout={}",
+        r.stdout
+    );
+    assert_ne!(r.exit_code, 0, "expected failure, got {r:?}");
+}
+
+// v2.9.1（G1）：CPU 时间上限（非墙钟）在约 1 秒 CPU 处终止忙等。
+#[cfg(unix)]
+#[test]
+fn v277_cpu_time_limit_kills_busy_loop() {
+    let id = "v277-cpu-limit";
+    let mut s = ProcessSandbox::new(id);
+    let mut cfg = mk_cfg(id);
+    cfg.work_dir_base = Some(std::env::temp_dir());
+    cfg.resources.cpu_millis = 1000;
+    cfg.resources.timeout_ms = 20_000;
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    let code = "while True:\n    pass\n";
+    let r = s.run_code(CodeLanguage::Python, code).unwrap();
+    assert_ne!(r.exit_code, 0, "busy loop should be killed, got {r:?}");
+    assert!(
+        r.wall_ms < 10_000,
+        "killed too late at wall_ms={} (CPU limit not enforced?)",
+        r.wall_ms
+    );
 }

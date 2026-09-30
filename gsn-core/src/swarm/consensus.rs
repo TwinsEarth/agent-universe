@@ -1,5 +1,5 @@
 //! 轻量级共识机制
-//! 
+//!
 //! 不追求 PoW 的安全性，而是追求快速、低成本的网络共识
 //! 适合智能体网络的日常决策
 
@@ -49,28 +49,35 @@ impl LightweightConsensus {
     }
 
     pub fn propose(&mut self, id: String, proposer: String, description: String, ttl_blocks: u64) {
-        self.proposals.insert(id.clone(), Proposal {
-            id,
-            proposer,
-            description,
-            votes: Vec::new(),
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
-            ttl_blocks,
-        });
+        self.proposals.insert(
+            id.clone(),
+            Proposal {
+                id,
+                proposer,
+                description,
+                votes: Vec::new(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
+                ttl_blocks,
+            },
+        );
     }
 
     pub fn vote(&mut self, proposal_id: &str, voter: String, approve: bool, weight: u64) {
         if let Some(proposal) = self.proposals.get_mut(proposal_id) {
-            proposal.votes.push(Vote { voter, approve, weight });
+            proposal.votes.push(Vote {
+                voter,
+                approve,
+                weight,
+            });
         }
     }
 
     pub fn tally(&self, proposal_id: &str) -> Option<ConsensusResult> {
         let proposal = self.proposals.get(proposal_id)?;
-        
+
         let mut approve_weight = 0u64;
         let mut reject_weight = 0u64;
         let mut total_votes = 0u64;

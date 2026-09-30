@@ -1,2 +1,2 @@
-pub mod uniffi;
 pub mod tauri;
+pub mod uniffi;

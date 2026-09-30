@@ -205,17 +205,23 @@ mod tests {
         let r = SandboxState::Stopped.transition(LifecycleAction::Pause);
         assert!(r.is_err());
         // Pending 不能直接 pause
-        assert!(SandboxState::Pending.transition(LifecycleAction::Pause).is_err());
+        assert!(SandboxState::Pending
+            .transition(LifecycleAction::Pause)
+            .is_err());
     }
 
     #[test]
     fn fail_from_any_nonterminal() {
         assert_eq!(
-            SandboxState::Running.transition(LifecycleAction::Fail).unwrap(),
+            SandboxState::Running
+                .transition(LifecycleAction::Fail)
+                .unwrap(),
             SandboxState::Failed
         );
         assert_eq!(
-            SandboxState::Paused.transition(LifecycleAction::Fail).unwrap(),
+            SandboxState::Paused
+                .transition(LifecycleAction::Fail)
+                .unwrap(),
             SandboxState::Failed
         );
     }
@@ -223,9 +229,15 @@ mod tests {
     #[test]
     fn label_roundtrip() {
         for s in [
-            SandboxState::Pending, SandboxState::Creating, SandboxState::Starting,
-            SandboxState::Running, SandboxState::Pausing, SandboxState::Paused,
-            SandboxState::Resuming, SandboxState::Stopping, SandboxState::Stopped,
+            SandboxState::Pending,
+            SandboxState::Creating,
+            SandboxState::Starting,
+            SandboxState::Running,
+            SandboxState::Pausing,
+            SandboxState::Paused,
+            SandboxState::Resuming,
+            SandboxState::Stopping,
+            SandboxState::Stopped,
             SandboxState::Failed,
         ] {
             assert_eq!(SandboxState::from_label(s.label()), Some(s));

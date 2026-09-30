@@ -219,7 +219,11 @@ mod tests {
         let e20k = build(9, 20_000).logical_edges();
         let n1 = 10_000u64;
         // 亚二次：远小于 N^2
-        assert!(e10k < n1 * n1 / 100, "edges={} should be sub-quadratic", e10k);
+        assert!(
+            e10k < n1 * n1 / 100,
+            "edges={} should be sub-quadratic",
+            e10k
+        );
         // 规模对照（GAP §5.3）：N 翻倍，edges 应约翻倍（线性），而非 4 倍（二次）。
         let ratio = e20k as f64 / e10k as f64;
         assert!(

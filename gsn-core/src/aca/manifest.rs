@@ -2,8 +2,8 @@
 //!
 //! 增强版 AgentCard：能力声明、硬件画像、验证模式、质押、信誉引用
 
-use crate::identity::Ed25519Signer;
 use super::crypto::{canonical_payload, sign_hex, verify_hex};
+use crate::identity::Ed25519Signer;
 use serde::{Deserialize, Serialize};
 
 /// 硬件画像

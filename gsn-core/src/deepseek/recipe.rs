@@ -221,9 +221,24 @@ mod tests {
     #[test]
     fn sampling_validation_rejects_out_of_range() {
         assert!(DsSampling::default().validate().is_ok());
-        assert!(DsSampling { temperature: 3.0, ..Default::default() }.validate().is_err());
-        assert!(DsSampling { top_p: 1.5, ..Default::default() }.validate().is_err());
-        assert!(DsSampling { max_tokens: 0, ..Default::default() }.validate().is_err());
+        assert!(DsSampling {
+            temperature: 3.0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(DsSampling {
+            top_p: 1.5,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(DsSampling {
+            max_tokens: 0,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

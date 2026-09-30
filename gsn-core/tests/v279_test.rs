@@ -61,7 +61,9 @@ fn v279_egress_wildcard_subdomain() {
     NetworkGuard::new(&p)
         .check_egress("sub.example.com", 443)
         .unwrap();
-    assert!(NetworkGuard::new(&p).check_egress("other.net", 443).is_err());
+    assert!(NetworkGuard::new(&p)
+        .check_egress("other.net", 443)
+        .is_err());
 }
 
 #[test]
@@ -100,11 +102,21 @@ fn v279_evidence_grade_ordering() {
 fn v279_audit_log_append_and_filter() {
     let mut log = AuditLog::new(None);
     log.append(audit_entry(
-        "sb1", "did:x", "exec", "main.py", "ok", EvidenceGrade::Verified,
+        "sb1",
+        "did:x",
+        "exec",
+        "main.py",
+        "ok",
+        EvidenceGrade::Verified,
     ))
     .unwrap();
     log.append(audit_entry(
-        "sb2", "did:y", "exec", "main.js", "ok", EvidenceGrade::Unverified,
+        "sb2",
+        "did:y",
+        "exec",
+        "main.js",
+        "ok",
+        EvidenceGrade::Unverified,
     ))
     .unwrap();
     assert_eq!(log.len(), 2);
@@ -119,7 +131,12 @@ fn v279_audit_log_persists_to_file() {
     {
         let mut log = AuditLog::new(Some(path.clone()));
         log.append(audit_entry(
-            "sb1", "did:x", "exec", "main.py", "ok", EvidenceGrade::Verified,
+            "sb1",
+            "did:x",
+            "exec",
+            "main.py",
+            "ok",
+            EvidenceGrade::Verified,
         ))
         .unwrap();
     }

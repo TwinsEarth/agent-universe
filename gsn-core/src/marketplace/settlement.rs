@@ -232,10 +232,7 @@ impl SettlementEngine {
         }
         let fb = self.balance(from);
         if fb < amount {
-            return Err(format!(
-                "账户 {} 余额不足：有 {}，需 {}",
-                from, fb, amount
-            ));
+            return Err(format!("账户 {} 余额不足：有 {}，需 {}", from, fb, amount));
         }
         let tb = self.balance(to);
         self.balances
@@ -440,8 +437,7 @@ impl SettlementEngine {
                 Err(_) => overflow = true,
             }
         }
-        let aggregate_matches =
-            deposits == self.total_deposits && slashed == self.total_slashed;
+        let aggregate_matches = deposits == self.total_deposits && slashed == self.total_slashed;
         let passed = !overflow
             && mismatches.is_empty()
             && expected_total == actual_total
@@ -525,10 +521,22 @@ mod tests {
         let mut e = SettlementEngine::new();
         e.deposit("a", Money::new(200)).unwrap();
         // 质押锁定、托管锁定（均带流水）
-        e.lock("a", "a", "__stake__:a", Money::new(100), SettlementReason::Staked)
-            .unwrap();
-        e.lock("t1", "a", "__escrow__:t1", Money::new(50), SettlementReason::Escrowed)
-            .unwrap();
+        e.lock(
+            "a",
+            "a",
+            "__stake__:a",
+            Money::new(100),
+            SettlementReason::Staked,
+        )
+        .unwrap();
+        e.lock(
+            "t1",
+            "a",
+            "__escrow__:t1",
+            Money::new(50),
+            SettlementReason::Escrowed,
+        )
+        .unwrap();
         let r = e.independent_audit();
         assert!(r.passed, "干净全流程应通过审计: {:?}", r.mismatches);
         assert_eq!(r.replayed_deposits, Money::new(200));

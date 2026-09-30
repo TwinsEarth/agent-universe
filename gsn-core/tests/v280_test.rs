@@ -9,7 +9,10 @@ use gsn_core::sandbox::manager::SandboxManager;
 use gsn_core::sandbox::{handle_sandbox_api, is_sandbox_route};
 
 fn mk_manager(dir: &std::path::Path) -> SandboxManager {
-    SandboxManager::new(dir.to_path_buf(), SandboxConfig::default(), 0)
+    // v2.9.1：默认配置无 waiver 会被能力闸门拒绝（G1 设计意图）；
+    // 集成生命周期测试需真正创建沙箱，使用显式 trusted_local（带理由）。
+    let cfg = SandboxConfig::trusted_local("v280 full lifecycle integration test");
+    SandboxManager::new(dir.to_path_buf(), cfg, 0)
 }
 
 fn call(
@@ -41,25 +44,45 @@ fn v280_full_lifecycle() {
 
     // exec Python
     let body = r#"{"language":"python","code":"print('hello-au')"}"#;
-    let (st, v) = call(&mut mgr, "POST", &format!("/api/v1/sandboxes/{id}/exec"), body);
+    let (st, v) = call(
+        &mut mgr,
+        "POST",
+        &format!("/api/v1/sandboxes/{id}/exec"),
+        body,
+    );
     assert_eq!(st, 200);
     let stdout = v.get("stdout").unwrap().as_str().unwrap();
     assert!(stdout.contains("hello-au"), "stdout={stdout}");
 
     // exec JavaScript
     let body = r#"{"language":"javascript","code":"console.log(1+1)"}"#;
-    let (st, v) = call(&mut mgr, "POST", &format!("/api/v1/sandboxes/{id}/exec"), body);
+    let (st, v) = call(
+        &mut mgr,
+        "POST",
+        &format!("/api/v1/sandboxes/{id}/exec"),
+        body,
+    );
     assert_eq!(st, 200);
     assert!(v.get("stdout").unwrap().as_str().unwrap().contains("2"));
 
     // pause
-    let (st, _) = call(&mut mgr, "POST", &format!("/api/v1/sandboxes/{id}/pause"), "");
+    let (st, _) = call(
+        &mut mgr,
+        "POST",
+        &format!("/api/v1/sandboxes/{id}/pause"),
+        "",
+    );
     assert_eq!(st, 200);
     let (_, v) = call(&mut mgr, "GET", &format!("/api/v1/sandboxes/{id}"), "");
     assert_eq!(v.get("state").unwrap(), "paused");
 
     // resume
-    let (st, _) = call(&mut mgr, "POST", &format!("/api/v1/sandboxes/{id}/resume"), "");
+    let (st, _) = call(
+        &mut mgr,
+        "POST",
+        &format!("/api/v1/sandboxes/{id}/resume"),
+        "",
+    );
     assert_eq!(st, 200);
     let (_, v) = call(&mut mgr, "GET", &format!("/api/v1/sandboxes/{id}"), "");
     assert_eq!(v.get("state").unwrap(), "running");
@@ -89,7 +112,12 @@ fn v280_e2b_alias_routes() {
     let id = v.get("id").unwrap().as_str().unwrap().to_string();
     // E2B /commands 别名
     let body = r#"{"language":"python","code":"print('e2b')"}"#;
-    let (st, v) = call(&mut mgr, "POST", &format!("/v1/sandboxes/{id}/commands"), body);
+    let (st, v) = call(
+        &mut mgr,
+        "POST",
+        &format!("/v1/sandboxes/{id}/commands"),
+        body,
+    );
     assert_eq!(st, 200);
     assert!(v.get("stdout").unwrap().as_str().unwrap().contains("e2b"));
 }

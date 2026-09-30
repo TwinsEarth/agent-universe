@@ -1,7 +1,7 @@
 //! Mesh 自组网管理：组合心跳、发现、会话、NAT 穿透
 
-use super::heartbeat::{HeartbeatConfig, HeartbeatTracker};
 use super::discovery::{DiscoveryAnnouncement, LocalSniffer};
+use super::heartbeat::{HeartbeatConfig, HeartbeatTracker};
 use super::session::{PermanentDid, SessionId, SessionRegistry};
 use crate::nat::{ConnectionState, NatTraversalManager, NatType};
 use serde::{Deserialize, Serialize};
@@ -199,7 +199,8 @@ mod tests {
     fn bind_did_after_start() {
         let mut node = MeshNode::new(test_config("macos", "macmini"), "mac01");
         node.start();
-        node.bind_permanent_did(PermanentDid("did:mac:root".into())).unwrap();
+        node.bind_permanent_did(PermanentDid("did:mac:root".into()))
+            .unwrap();
         let topo = node.topology();
         assert_eq!(topo.local_did, Some("did:mac:root".to_string()));
     }
@@ -251,7 +252,8 @@ mod tests {
     fn topology_snapshot_contains_all_info() {
         let mut node = MeshNode::new(test_config("macos", "macmini"), "mac01");
         node.start();
-        node.bind_permanent_did(PermanentDid("did:mac".into())).unwrap();
+        node.bind_permanent_did(PermanentDid("did:mac".into()))
+            .unwrap();
         node.discover_peer(ann_for("SN-win", "windows"));
         node.peer_pong("SN-win", 100);
 
@@ -269,7 +271,9 @@ mod tests {
         // 模拟云电脑视角：发现 mac mini 和 windows
         let mut cloud = MeshNode::new(test_config("linux", "cloud-linux"), "cloud");
         cloud.start();
-        cloud.bind_permanent_did(PermanentDid("did:cloud".into())).unwrap();
+        cloud
+            .bind_permanent_did(PermanentDid("did:cloud".into()))
+            .unwrap();
 
         cloud.discover_peer(DiscoveryAnnouncement {
             session_sn: "SN-mac".into(),

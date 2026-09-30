@@ -1,9 +1,9 @@
 pub mod collective;
-pub mod emergence;
 pub mod consensus;
+pub mod emergence;
 pub mod memory;
 
-pub use collective::{Swarm, AgentNode, CollectiveDecision};
-pub use emergence::EmergenceDetector;
+pub use collective::{AgentNode, CollectiveDecision, Swarm};
 pub use consensus::LightweightConsensus;
-pub use memory::{run_experiment, SharedMemory, Metrics, TrialResult, Rng};
+pub use emergence::EmergenceDetector;
+pub use memory::{run_experiment, Metrics, Rng, SharedMemory, TrialResult};

@@ -34,7 +34,11 @@ pub fn handle_api(
 
     // GET 列表 / 单个详情：只读放行（与 REST 一致）
     if action == "list" {
-        let list: Vec<Value> = manager.list_sandboxes().iter().map(|s| json!({ "id": s })).collect();
+        let list: Vec<Value> = manager
+            .list_sandboxes()
+            .iter()
+            .map(|s| json!({ "id": s }))
+            .collect();
         return (200, json!({ "sandboxes": list, "count": list.len() }));
     }
     if action == "get" {
@@ -56,7 +60,12 @@ pub fn handle_api(
     // 以下为变更类操作：必须认证
     let caller = match caller.map(str::trim).filter(|c| !c.is_empty()) {
         Some(c) => c,
-        None => return (401, json!({ "error": "未认证：变更类沙箱操作需要 Bearer 认证" })),
+        None => {
+            return (
+                401,
+                json!({ "error": "未认证：变更类沙箱操作需要 Bearer 认证" }),
+            )
+        }
     };
 
     match action {
@@ -81,9 +90,16 @@ pub fn handle_api(
                         return (error_status(&e), json!({ "error": e.to_string() }));
                     }
                     let state = manager.state_of(&id).unwrap_or(SandboxState::Pending);
-                    let owner = manager.owner_of(&id).map(str::to_string).unwrap_or_default();
+                    let owner = manager
+                        .owner_of(&id)
+                        .map(str::to_string)
+                        .unwrap_or_default();
                     let _ = manager.record_audit(
-                        &id, caller, "create", &id, "created",
+                        &id,
+                        caller,
+                        "create",
+                        &id,
+                        "created",
                         super::security::EvidenceGrade::Unverified,
                     );
                     (
@@ -109,7 +125,10 @@ pub fn handle_api(
                 Ok(v) => v,
                 Err(e) => return (400, json!({ "error": format!("请求体不是合法 JSON: {e}") })),
             };
-            let language = parsed.get("language").and_then(|v| v.as_str()).unwrap_or("python");
+            let language = parsed
+                .get("language")
+                .and_then(|v| v.as_str())
+                .unwrap_or("python");
             let code = match parsed.get("code").and_then(|v| v.as_str()) {
                 Some(c) => c,
                 None => return (400, json!({ "error": "缺少 'code' 字段" })),
@@ -134,8 +153,12 @@ pub fn handle_api(
                 Ok(r) => {
                     let grade = super::security::EvidenceGrade::Unverified;
                     let _ = manager.record_audit(
-                        &id, caller, "exec", language,
-                        &format!("exit={}", r.exit_code), grade,
+                        &id,
+                        caller,
+                        "exec",
+                        language,
+                        &format!("exit={}", r.exit_code),
+                        grade,
                     );
                     (
                         200,
@@ -150,7 +173,11 @@ pub fn handle_api(
                 }
                 Err(e) => {
                     let _ = manager.record_audit(
-                        &id, caller, "exec", language, &format!("error: {e}"),
+                        &id,
+                        caller,
+                        "exec",
+                        language,
+                        &format!("error: {e}"),
                         super::security::EvidenceGrade::Unverifiable,
                     );
                     (error_status(&e), json!({ "error": e.to_string() }))
@@ -166,7 +193,11 @@ pub fn handle_api(
             match manager.pause(&id) {
                 Ok(_) => {
                     let _ = manager.record_audit(
-                        &id, caller, "pause", &id, "paused",
+                        &id,
+                        caller,
+                        "pause",
+                        &id,
+                        "paused",
                         super::security::EvidenceGrade::Unverified,
                     );
                     (200, json!({ "id": id, "state": "paused" }))
@@ -183,7 +214,11 @@ pub fn handle_api(
             match manager.wake(&id) {
                 Ok(_) => {
                     let _ = manager.record_audit(
-                        &id, caller, "resume", &id, "running",
+                        &id,
+                        caller,
+                        "resume",
+                        &id,
+                        "running",
                         super::security::EvidenceGrade::Unverified,
                     );
                     (200, json!({ "id": id, "state": "running" }))
@@ -200,7 +235,11 @@ pub fn handle_api(
             match manager.destroy(&id) {
                 Ok(_) => {
                     let _ = manager.record_audit(
-                        &id, caller, "destroy", &id, "destroyed",
+                        &id,
+                        caller,
+                        "destroy",
+                        &id,
+                        "destroyed",
                         super::security::EvidenceGrade::Unverified,
                     );
                     (200, json!({ "id": id, "status": "destroyed" }))
@@ -214,10 +253,19 @@ pub fn handle_api(
 }
 
 /// 从请求 body 解析自定义配置；返回 None 表示无自定义（用默认/预热池）
-fn config_from_body(parsed: &Value, default: &SandboxConfig) -> Result<Option<SandboxConfig>, String> {
+fn config_from_body(
+    parsed: &Value,
+    default: &SandboxConfig,
+) -> Result<Option<SandboxConfig>, String> {
     let custom_keys = [
-        "template", "timeout_ms", "env", "allowed_domains", "initial_files",
-        "cpu_millis", "mem_mb", "disk_mb",
+        "template",
+        "timeout_ms",
+        "env",
+        "allowed_domains",
+        "initial_files",
+        "cpu_millis",
+        "mem_mb",
+        "disk_mb",
     ];
     let has_custom = custom_keys.iter().any(|k| parsed.get(k).is_some());
     if !has_custom {
@@ -305,7 +353,11 @@ fn parse_env(env: &Value) -> Result<Vec<(String, String)>, String> {
 
 /// 解析路径
 fn parse_path(method: &str, full_path: &str) -> Option<(&'static str, Option<String>)> {
-    let segments: Vec<&str> = full_path.trim_start_matches('/').split('/').filter(|s| !s.is_empty()).collect();
+    let segments: Vec<&str> = full_path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
     // 找 "sandboxes" 段
     let sb_idx = segments.iter().position(|s| *s == "sandboxes")?;
     let after = &segments[sb_idx + 1..];
@@ -357,10 +409,14 @@ pub fn default_sandbox_dir(data_dir: &Path) -> PathBuf {
 fn error_status(e: &SandboxError) -> u16 {
     match e {
         SandboxError::NotFound(_) => 404,
-        SandboxError::NetworkDenied(_) | SandboxError::IsolationViolation(_) | SandboxError::EnvBlocked(_) => 403,
+        SandboxError::NetworkDenied(_)
+        | SandboxError::IsolationViolation(_)
+        | SandboxError::EnvBlocked(_) => 403,
         SandboxError::InvalidConfig(_) | SandboxError::InvalidLifecycle { .. } => 400,
         SandboxError::ResourceLimitExceeded { .. } => 429,
         SandboxError::ExecFailed { .. } => 422,
+        // 配置语法合法，但请求的隔离边界后端无法强制：需换后端或显式豁免
+        SandboxError::PolicyNotEnforceable { .. } => 422,
         SandboxError::Internal(_) => 500,
     }
 }

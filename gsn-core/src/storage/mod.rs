@@ -1,5 +1,5 @@
-pub mod sqlite;
 pub mod persist;
+pub mod sqlite;
 
+pub use persist::{PersistentStore, StoredAgent, StoredRelay, StoredTask};
 pub use sqlite::LocalStorage;
-pub use persist::{PersistentStore, StoredAgent, StoredTask, StoredRelay};

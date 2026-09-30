@@ -3,8 +3,8 @@
 //! 适配 Kimi / 通义千问 / 智谱GLM / MiniMax / 腾讯混元 / 小米MiLM。
 //! 这些模型的 API 均兼容 OpenAI Chat Completions 格式，仅 base_url 与 model 名不同。
 
-use serde::{Deserialize, Serialize};
 use super::openai::{OaChatRequest, OaChatResponse, OaMessage, OaRole};
+use serde::{Deserialize, Serialize};
 
 /// 国内模型提供商。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -89,11 +89,23 @@ pub enum DomesticModel {
 impl DomesticModel {
     pub fn provider(&self) -> DomesticProvider {
         match self {
-            DomesticModel::KimiV1_8k | DomesticModel::KimiV1_32k | DomesticModel::KimiV1_128k | DomesticModel::KimiK2 => DomesticProvider::Kimi,
-            DomesticModel::QwenTurbo | DomesticModel::QwenPlus | DomesticModel::QwenMax | DomesticModel::Qwen25_72b => DomesticProvider::Qwen,
-            DomesticModel::Glm4Plus | DomesticModel::Glm4 | DomesticModel::Glm4Flash => DomesticProvider::Zhipu,
-            DomesticModel::MiniMaxAbab65 | DomesticModel::MiniMaxText01 => DomesticProvider::MiniMax,
-            DomesticModel::HunyuanPro | DomesticModel::HunyuanStandard | DomesticModel::HunyuanTurbo => DomesticProvider::Hunyuan,
+            DomesticModel::KimiV1_8k
+            | DomesticModel::KimiV1_32k
+            | DomesticModel::KimiV1_128k
+            | DomesticModel::KimiK2 => DomesticProvider::Kimi,
+            DomesticModel::QwenTurbo
+            | DomesticModel::QwenPlus
+            | DomesticModel::QwenMax
+            | DomesticModel::Qwen25_72b => DomesticProvider::Qwen,
+            DomesticModel::Glm4Plus | DomesticModel::Glm4 | DomesticModel::Glm4Flash => {
+                DomesticProvider::Zhipu
+            }
+            DomesticModel::MiniMaxAbab65 | DomesticModel::MiniMaxText01 => {
+                DomesticProvider::MiniMax
+            }
+            DomesticModel::HunyuanPro
+            | DomesticModel::HunyuanStandard
+            | DomesticModel::HunyuanTurbo => DomesticProvider::Hunyuan,
             DomesticModel::MiLMLarge => DomesticProvider::Xiaomi,
         }
     }
@@ -152,10 +164,17 @@ impl DomesticClient for MockDomesticClient {
         Ok(OaChatResponse {
             id: "domestic-mock".into(),
             choices: vec![super::openai::OaChoice {
-                message: OaMessage { role: OaRole::Assistant, content: self.answer.clone() },
+                message: OaMessage {
+                    role: OaRole::Assistant,
+                    content: self.answer.clone(),
+                },
                 finish_reason: "stop".into(),
             }],
-            usage: super::openai::OaUsage { prompt_tokens: 15, completion_tokens: 8, total_tokens: 23 },
+            usage: super::openai::OaUsage {
+                prompt_tokens: 15,
+                completion_tokens: 8,
+                total_tokens: 23,
+            },
         })
     }
 }
@@ -190,9 +209,18 @@ mod tests {
         assert_eq!(DomesticModel::KimiK2.provider(), DomesticProvider::Kimi);
         assert_eq!(DomesticModel::QwenMax.provider(), DomesticProvider::Qwen);
         assert_eq!(DomesticModel::Glm4Plus.provider(), DomesticProvider::Zhipu);
-        assert_eq!(DomesticModel::MiniMaxText01.provider(), DomesticProvider::MiniMax);
-        assert_eq!(DomesticModel::HunyuanPro.provider(), DomesticProvider::Hunyuan);
-        assert_eq!(DomesticModel::MiLMLarge.provider(), DomesticProvider::Xiaomi);
+        assert_eq!(
+            DomesticModel::MiniMaxText01.provider(),
+            DomesticProvider::MiniMax
+        );
+        assert_eq!(
+            DomesticModel::HunyuanPro.provider(),
+            DomesticProvider::Hunyuan
+        );
+        assert_eq!(
+            DomesticModel::MiLMLarge.provider(),
+            DomesticProvider::Xiaomi
+        );
     }
 
     #[test]
@@ -205,11 +233,19 @@ mod tests {
 
     #[test]
     fn mock_client_returns_answer() {
-        let client = MockDomesticClient { answer: "你好".into() };
+        let client = MockDomesticClient {
+            answer: "你好".into(),
+        };
         let req = OaChatRequest {
             model: "qwen-max".into(),
-            messages: vec![OaMessage { role: OaRole::User, content: "hi".into() }],
-            temperature: 0.7, top_p: 1.0, max_tokens: 256, stream: false,
+            messages: vec![OaMessage {
+                role: OaRole::User,
+                content: "hi".into(),
+            }],
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens: 256,
+            stream: false,
         };
         let resp = client.chat(&req).unwrap();
         assert_eq!(resp.choices[0].message.content, "你好");

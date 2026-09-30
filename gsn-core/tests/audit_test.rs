@@ -44,7 +44,7 @@ fn test_version_vector() {
     vv1.increment("node1");
     vv1.increment("node1");
     vv1.increment("node2");
-    
+
     assert_eq!(vv1.get("node1"), 2);
     assert_eq!(vv1.get("node2"), 1);
 }
@@ -54,26 +54,26 @@ fn test_version_vector_merge() {
     let mut vv1 = VersionVector::new();
     vv1.increment("node1");
     vv1.increment("node1");
-    
+
     let mut vv2 = VersionVector::new();
     vv2.increment("node1");
     vv2.increment("node2");
-    
+
     vv1.merge(&vv2);
-    
+
     assert_eq!(vv1.get("node1"), 2);
     assert_eq!(vv1.get("node2"), 1);
 }
 
 #[test]
 fn test_erasure_coder() {
-    let coder = ErasureCoder::new(4, 2);
+    let coder = ErasureCoder::new(4, 2).unwrap();
     assert_eq!(coder.total_shards(), 6);
-    
+
     let data = b"hello world, this is a test data for erasure coding";
-    let shards = coder.encode(data);
+    let shards = coder.encode(data).unwrap();
     assert_eq!(shards.len(), 6);
-    
+
     let decoded = coder.decode(&shards, data.len()).unwrap();
     assert_eq!(decoded.len(), data.len());
 }

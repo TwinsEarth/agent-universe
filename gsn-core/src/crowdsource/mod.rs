@@ -117,7 +117,8 @@ impl CrowdsourcingMarket {
     }
 
     pub fn open_tasks(&self) -> Vec<&CrowdTask> {
-        self.tasks.values()
+        self.tasks
+            .values()
             .filter(|t| t.status == CrowdTaskStatus::Open)
             .collect()
     }

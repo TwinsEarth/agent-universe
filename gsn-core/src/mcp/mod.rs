@@ -4,18 +4,18 @@
 //! 不替代 MCP，而是兼容并扩展：GSN 节点可作为 MCP Server 暴露能力，
 //! 也可作为 MCP Client 调用外部工具。
 
-pub mod protocol;
-pub mod tool;
-pub mod resource;
-pub mod prompt;
-pub mod server;
 pub mod market_tools;
+pub mod prompt;
+pub mod protocol;
+pub mod resource;
 pub mod sandbox_tools;
-pub mod stdio;
+pub mod server;
 pub mod sse;
+pub mod stdio;
+pub mod tool;
 
-pub use protocol::{McpMessage, McpRequest, McpResponse, McpError, RequestId, McpMethod};
-pub use tool::{ToolDefinition, ToolParameter, ToolSchema, ToolResult};
-pub use resource::{ResourceDefinition, ResourceContents, ResourceUri};
-pub use prompt::{PromptDefinition, PromptMessage, PromptArgument, PromptRole};
+pub use prompt::{PromptArgument, PromptDefinition, PromptMessage, PromptRole};
+pub use protocol::{McpError, McpMessage, McpMethod, McpRequest, McpResponse, RequestId};
+pub use resource::{ResourceContents, ResourceDefinition, ResourceUri};
 pub use server::McpServer;
+pub use tool::{ToolDefinition, ToolParameter, ToolResult, ToolSchema};

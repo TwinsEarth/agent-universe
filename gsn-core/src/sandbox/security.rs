@@ -142,10 +142,10 @@ impl AuditLog {
     /// 追加一条记录（不可删改）；若配置了文件则追加落盘
     pub fn append(&mut self, entry: AuditEntry) -> Result<(), SandboxError> {
         if let Some(path) = &self.file {
-            let line = serde_json::to_string(&entry)
-                .map_err(|e| SandboxError::Internal(e.to_string()))?;
-            use std::io::Write;
+            let line =
+                serde_json::to_string(&entry).map_err(|e| SandboxError::Internal(e.to_string()))?;
             use std::fs::OpenOptions;
+            use std::io::Write;
             let mut f = OpenOptions::new()
                 .create(true)
                 .append(true)

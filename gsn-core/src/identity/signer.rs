@@ -69,7 +69,10 @@ impl<'a> Ed25519Signer<'a> {
             Err(_) => return false,
         };
         let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        self.keypair.verifying_key.verify(message, &signature).is_ok()
+        self.keypair
+            .verifying_key
+            .verify(message, &signature)
+            .is_ok()
     }
 
     /// 用指定公钥验证签名（用于验证他人签名）

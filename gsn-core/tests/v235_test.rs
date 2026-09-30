@@ -44,12 +44,7 @@ fn info() -> NodeInfo {
 }
 
 /// 通过 REST route 发请求，返回 (status, body)
-async fn rest(
-    market: &MarketActorHandle,
-    method: &str,
-    path: &str,
-    body: &str,
-) -> (u16, Value) {
+async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
     let r = route(method, path, body, market, &info()).await;
     (r.status, r.body)
 }
@@ -76,15 +71,23 @@ fn test_rest_full_market_lifecycle() {
         let market = MarketActorHandle::spawn();
 
         // 1. 调用方充值（需求方，付任务预算）
-        let (s, _) = rest(&market, "POST",
+        let (s, _) = rest(
+            &market,
+            "POST",
             "/api/v1/accounts/caller-1/deposit",
-            r#"{"amount":1000}"#).await;
+            r#"{"amount":1000}"#,
+        )
+        .await;
         assert_ok(s);
 
         // 1b. 智能体自充质押金（注册即锁定质押，不能凭空铸造）
-        let (s, _) = rest(&market, "POST",
+        let (s, _) = rest(
+            &market,
+            "POST",
             "/api/v1/accounts/agent-translate/deposit",
-            r#"{"amount":100}"#).await;
+            r#"{"amount":100}"#,
+        )
+        .await;
         assert_ok(s);
 
         // 2. 发布者注册智能体（stake=100 ≥ min_stake）
@@ -97,26 +100,22 @@ fn test_rest_full_market_lifecycle() {
             "price": 10,
             "currency": "credit"
         });
-        let (s, body) = rest(&market, "POST", "/api/v1/agents",
-            &register.to_string()).await;
+        let (s, body) = rest(&market, "POST", "/api/v1/agents", &register.to_string()).await;
         assert_eq!(s, 201, "注册应 201，body={body}");
         assert_eq!(body["status"], "registered");
 
         // 3. 查询智能体
-        let (s, body) = rest(&market, "GET",
-            "/api/v1/agents/agent-translate", "").await;
+        let (s, body) = rest(&market, "GET", "/api/v1/agents/agent-translate", "").await;
         assert_ok(s);
         assert_eq!(body["name"], "翻译智能体");
         assert_eq!(body["stake"], 100);
 
         // 4. 按技能发现
-        let (s, body) = rest(&market, "GET",
-            "/api/v1/agents?skill=translation", "").await;
+        let (s, body) = rest(&market, "GET", "/api/v1/agents?skill=translation", "").await;
         assert_ok(s);
         // discover 返回数组或含 agents/results 字段
-        let has_results = body.is_array()
-            || body.get("agents").is_some()
-            || body.get("results").is_some();
+        let has_results =
+            body.is_array() || body.get("agents").is_some() || body.get("results").is_some();
         assert!(has_results, "发现结果应含智能体列表: {body}");
 
         // 5. 发布任务
@@ -136,8 +135,7 @@ fn test_rest_full_market_lifecycle() {
             "state": "Open",
             "created_at": 0
         });
-        let (s, body) = rest(&market, "POST", "/api/v1/tasks",
-            &task.to_string()).await;
+        let (s, body) = rest(&market, "POST", "/api/v1/tasks", &task.to_string()).await;
         assert_eq!(s, 201, "发布任务应 201，body={body}");
 
         // 6. 查询任务
@@ -152,13 +150,17 @@ fn test_rest_full_market_lifecycle() {
             "estimated_latency_ms": 500,
             "score": 0.9
         });
-        let (s, body) = rest(&market, "POST",
-            "/api/v1/tasks/task-1/bids", &bid.to_string()).await;
+        let (s, body) = rest(
+            &market,
+            "POST",
+            "/api/v1/tasks/task-1/bids",
+            &bid.to_string(),
+        )
+        .await;
         assert_eq!(s, 201, "投标应 201，body={body}");
 
         // 8. 匹配
-        let (s, body) = rest(&market, "POST",
-            "/api/v1/tasks/task-1/match", "").await;
+        let (s, body) = rest(&market, "POST", "/api/v1/tasks/task-1/match", "").await;
         assert_ok(s);
         assert_eq!(body["status"], "matched");
 
@@ -173,8 +175,13 @@ fn test_rest_full_market_lifecycle() {
             "evidence_grade": "CpuProto",
             "latency_ms": 420
         });
-        let (s, body) = rest(&market, "POST",
-            "/api/v1/tasks/task-1/results", &envelope.to_string()).await;
+        let (s, body) = rest(
+            &market,
+            "POST",
+            "/api/v1/tasks/task-1/results",
+            &envelope.to_string(),
+        )
+        .await;
         assert_eq!(s, 201, "提交结果应 201，body={body}");
 
         // 10. QA 验证（认证式，v2.5.9）：4 委员固定集，前 3 委员私钥签 Stop
@@ -195,8 +202,14 @@ fn test_rest_full_market_lifecycle() {
             members_json.push(json!({"did": did, "public_key": to_hex(&pk)}));
             if i <= 3 {
                 let sv = gsn_core::marketplace::SignedQaVote::sign(
-                    "task-1", 0, &did, gsn_core::marketplace::QaVote::Stop,
-                    &format!("nonce-{}", i), now - 60, now + 3600, &kp,
+                    "task-1",
+                    0,
+                    &did,
+                    gsn_core::marketplace::QaVote::Stop,
+                    &format!("nonce-{}", i),
+                    now - 60,
+                    now + 3600,
+                    &kp,
                 );
                 votes_json.push(serde_json::to_value(&sv).unwrap());
             }
@@ -207,7 +220,9 @@ fn test_rest_full_market_lifecycle() {
             "signed_votes": votes_json
         });
         let (s, body) = rest(
-            &market, "POST", "/api/v1/tasks/task-1/verify",
+            &market,
+            "POST",
+            "/api/v1/tasks/task-1/verify",
             &verify_body.to_string(),
         )
         .await;
@@ -215,14 +230,12 @@ fn test_rest_full_market_lifecycle() {
         assert_eq!(body["accepted"], true, "验证应通过: {body}");
 
         // 11. 结算
-        let (s, body) = rest(&market, "POST",
-            "/api/v1/tasks/task-1/settle", "").await;
+        let (s, body) = rest(&market, "POST", "/api/v1/tasks/task-1/settle", "").await;
         assert_ok(s);
         assert_eq!(body["status"], "settled");
 
         // 12. 守恒检查
-        let (s, body) = rest(&market, "GET",
-            "/api/v1/conservation", "").await;
+        let (s, body) = rest(&market, "GET", "/api/v1/conservation", "").await;
         assert_ok(s);
         assert_eq!(body["conserved"], true, "结算应守恒: {body}");
     });
@@ -273,7 +286,11 @@ fn test_rest_register_validation() {
 #[test]
 fn test_mcp_tool_definitions() {
     let tools = MarketMcpBridge::tool_definitions();
-    assert!(tools.len() >= 15, "应注册至少 15 个市场工具，实际 {}", tools.len());
+    assert!(
+        tools.len() >= 15,
+        "应注册至少 15 个市场工具，实际 {}",
+        tools.len()
+    );
 
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
     for required in [
@@ -306,19 +323,23 @@ fn test_mcp_tools_call_real_execution() {
             gsn_core::mcp::tool::ToolContent::Text { text } => text.clone(),
             _ => panic!("期望 text 内容"),
         };
-        assert!(text.contains("agent_count") || text.contains("task_count"),
-            "stats 应返回真实统计字段: {text}");
+        assert!(
+            text.contains("agent_count") || text.contains("task_count"),
+            "stats 应返回真实统计字段: {text}"
+        );
         // 确保不再是旧的占位 "tool executed"
         assert!(!text.contains("tool executed"), "不应再是占位响应");
 
         // 充值 + 余额查询，验证带参工具真实执行
         // v2.8.6：金额入口只接受整数，500.0 浮点会被拒（GAP §4.1）。
-        let r = bridge.call("market_deposit",
-            &json!({"account":"c1","amount":500})).await;
+        let r = bridge
+            .call("market_deposit", &json!({"account":"c1","amount":500}))
+            .await;
         assert!(!r.is_error);
 
-        let r = bridge.call("market_balance",
-            &json!({"account":"c1"})).await;
+        let r = bridge
+            .call("market_balance", &json!({"account":"c1"}))
+            .await;
         assert!(!r.is_error);
         let text = match &r.content[0] {
             gsn_core::mcp::tool::ToolContent::Text { text } => text.clone(),
@@ -339,20 +360,31 @@ fn test_mcp_full_flow_via_bridge() {
         let bridge = MarketMcpBridge::new(market.clone());
 
         // 先充值质押金（注册即锁定，不能凭空铸造）
-        let r = bridge.call("market_deposit", &json!({
-            "account":"a-mcp","amount":100
-        })).await;
+        let r = bridge
+            .call(
+                "market_deposit",
+                &json!({
+                    "account":"a-mcp","amount":100
+                }),
+            )
+            .await;
         assert!(!r.is_error, "充值质押金不应报错");
 
         // 注册
-        let r = bridge.call("market_register_agent", &json!({
-            "agent_id":"a-mcp","name":"MCP智能体","skills":["math"],"stake":100
-        })).await;
+        let r = bridge
+            .call(
+                "market_register_agent",
+                &json!({
+                    "agent_id":"a-mcp","name":"MCP智能体","skills":["math"],"stake":100
+                }),
+            )
+            .await;
         assert!(!r.is_error, "注册不应报错");
 
         // 发现
-        let r = bridge.call("market_discover_agents",
-            &json!({"skill":"math"})).await;
+        let r = bridge
+            .call("market_discover_agents", &json!({"skill":"math"}))
+            .await;
         assert!(!r.is_error);
 
         // 守恒
@@ -421,7 +453,14 @@ fn test_mcp_http_tools_call() {
         assert!(denied.body.contains("Unauthorized") || denied.body.contains("禁用"));
 
         // 令牌错误应 401
-        let bad = sse::handle_post(&call.to_string(), &market, &sb, Some("Bearer wrong"), Some("secret-tok")).await;
+        let bad = sse::handle_post(
+            &call.to_string(),
+            &market,
+            &sb,
+            Some("Bearer wrong"),
+            Some("secret-tok"),
+        )
+        .await;
         assert_eq!(bad.status, 401);
 
         // GET 返回 SSE
@@ -450,13 +489,22 @@ fn test_data_dir_tilde_expansion() {
 
     // 默认数据目录不得是字面 "~"，否则会在 CWD 下创建 ~ 目录。
     let d = default_data_dir();
-    assert!(!d.starts_with("~"), "default_data_dir 不应以字面 ~ 开头: {:?}", d);
+    assert!(
+        !d.starts_with("~"),
+        "default_data_dir 不应以字面 ~ 开头: {:?}",
+        d
+    );
 
     // ~/.gsn/data 必须展开到真实 home。
     let expanded = expand_tilde(PathBuf::from("~/.gsn/data"));
     assert!(!expanded.starts_with("~"), "~ 未被展开: {:?}", expanded);
     if let Ok(home) = std::env::var("HOME") {
-        assert!(expanded.starts_with(&home), "应位于 HOME 下: {:?} (HOME={})", expanded, home);
+        assert!(
+            expanded.starts_with(&home),
+            "应位于 HOME 下: {:?} (HOME={})",
+            expanded,
+            home
+        );
         assert!(expanded.ends_with(".gsn/data"));
     }
 

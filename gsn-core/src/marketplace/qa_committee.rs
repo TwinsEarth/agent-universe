@@ -218,12 +218,7 @@ impl QaCommittee {
         // 2. 任务必须与委员会绑定任务一致
         match &self.bound_task {
             Some(t) if t == &sv.task_id => {}
-            _ => {
-                return Err(format!(
-                    "投票任务 {} 与委员会绑定任务不符",
-                    sv.task_id
-                ))
-            }
+            _ => return Err(format!("投票任务 {} 与委员会绑定任务不符", sv.task_id)),
         }
 
         // 3. 轮次必须匹配
@@ -379,8 +374,14 @@ mod tests {
         let now = 1_000_000u64;
         for (i, (did, kp)) in kps.iter().take(3).enumerate() {
             let sv = SignedQaVote::sign(
-                "task-1", 0, did, QaVote::Stop,
-                &format!("nonce-{}", i), now - 10, now + 60, kp,
+                "task-1",
+                0,
+                did,
+                QaVote::Stop,
+                &format!("nonce-{}", i),
+                now - 10,
+                now + 60,
+                kp,
             );
             c.cast_signed_vote(sv, now).unwrap();
         }
@@ -392,9 +393,8 @@ mod tests {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
         let (did, kp) = &kps[0];
-        let mut sv = SignedQaVote::sign(
-            "task-1", 0, did, QaVote::Stop, "n1", now - 10, now + 60, kp,
-        );
+        let mut sv =
+            SignedQaVote::sign("task-1", 0, did, QaVote::Stop, "n1", now - 10, now + 60, kp);
         sv.signature = "00".repeat(64); // 伪造签名
         assert!(c.cast_signed_vote(sv, now).is_err());
     }
@@ -404,8 +404,14 @@ mod tests {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
         let sv = SignedQaVote::sign(
-            "task-1", 0, &kps[0].0, QaVote::Stop,
-            "same-nonce", now - 10, now + 60, &kps[0].1,
+            "task-1",
+            0,
+            &kps[0].0,
+            QaVote::Stop,
+            "same-nonce",
+            now - 10,
+            now + 60,
+            &kps[0].1,
         );
         c.cast_signed_vote(sv.clone(), now).unwrap();
         let err = c.cast_signed_vote(sv, now).unwrap_err();
@@ -417,8 +423,14 @@ mod tests {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
         let sv = SignedQaVote::sign(
-            "task-1", 0, &kps[0].0, QaVote::Stop,
-            "n", now - 100, now - 10, &kps[0].1,
+            "task-1",
+            0,
+            &kps[0].0,
+            QaVote::Stop,
+            "n",
+            now - 100,
+            now - 10,
+            &kps[0].1,
         );
         assert!(c.cast_signed_vote(sv, now).unwrap_err().contains("过期"));
     }
@@ -428,8 +440,14 @@ mod tests {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
         let sv = SignedQaVote::sign(
-            "other-task", 0, &kps[0].0, QaVote::Stop,
-            "n", now - 10, now + 60, &kps[0].1,
+            "other-task",
+            0,
+            &kps[0].0,
+            QaVote::Stop,
+            "n",
+            now - 10,
+            now + 60,
+            &kps[0].1,
         );
         assert!(c.cast_signed_vote(sv, now).is_err());
     }
@@ -442,8 +460,14 @@ mod tests {
         s[0] = 99;
         let kp = Keypair::from_seed(&s);
         let sv = SignedQaVote::sign(
-            "task-1", 0, "did:nau:stranger", QaVote::Stop,
-            "n", now - 10, now + 60, &kp,
+            "task-1",
+            0,
+            "did:nau:stranger",
+            QaVote::Stop,
+            "n",
+            now - 10,
+            now + 60,
+            &kp,
         );
         assert!(c.cast_signed_vote(sv, now).is_err());
     }
@@ -453,12 +477,24 @@ mod tests {
         let (mut c, kps) = committee4();
         let now = 1_000_000u64;
         let s1 = SignedQaVote::sign(
-            "task-1", 0, &kps[0].0, QaVote::Stop,
-            "n1", now - 10, now + 60, &kps[0].1,
+            "task-1",
+            0,
+            &kps[0].0,
+            QaVote::Stop,
+            "n1",
+            now - 10,
+            now + 60,
+            &kps[0].1,
         );
         let s2 = SignedQaVote::sign(
-            "task-1", 0, &kps[0].0, QaVote::Continue,
-            "n2", now - 10, now + 60, &kps[0].1,
+            "task-1",
+            0,
+            &kps[0].0,
+            QaVote::Continue,
+            "n2",
+            now - 10,
+            now + 60,
+            &kps[0].1,
         );
         c.cast_signed_vote(s1, now).unwrap();
         c.cast_signed_vote(s2, now).unwrap();
@@ -469,8 +505,14 @@ mod tests {
         assert_eq!(c.round(), 1);
         for (i, (did, kp)) in kps.iter().take(3).enumerate() {
             let sv = SignedQaVote::sign(
-                "task-1", 1, did, QaVote::Stop,
-                &format!("nn-{}", i), now - 10, now + 60, kp,
+                "task-1",
+                1,
+                did,
+                QaVote::Stop,
+                &format!("nn-{}", i),
+                now - 10,
+                now + 60,
+                kp,
             );
             c.cast_signed_vote(sv, now).unwrap();
         }

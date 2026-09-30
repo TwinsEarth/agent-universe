@@ -87,8 +87,12 @@ fn v276_lifecycle_full_cycle() {
 
 #[test]
 fn v276_terminal_states_reject_transitions() {
-    assert!(SandboxState::Stopped.transition(LifecycleAction::Pause).is_err());
-    assert!(SandboxState::Failed.transition(LifecycleAction::Start).is_err());
+    assert!(SandboxState::Stopped
+        .transition(LifecycleAction::Pause)
+        .is_err());
+    assert!(SandboxState::Failed
+        .transition(LifecycleAction::Start)
+        .is_err());
 }
 
 #[test]
@@ -128,7 +132,10 @@ fn v276_agent_identity_holds_did() {
 fn v276_docker_backend_env_blocked_when_absent() {
     let d = gsn_core::sandbox::docker::DockerSandbox::new("sb");
     if !d.daemon_available() {
-        assert!(matches!(d.ensure_available(), Err(SandboxError::EnvBlocked(_))));
+        assert!(matches!(
+            d.ensure_available(),
+            Err(SandboxError::EnvBlocked(_))
+        ));
     }
 }
 
@@ -140,7 +147,10 @@ fn v276_firecracker_env_blocked_when_no_kvm() {
         std::path::PathBuf::from("/rootfs"),
     );
     if !f.kvm_available() {
-        assert!(matches!(f.ensure_available(), Err(SandboxError::EnvBlocked(_))));
+        assert!(matches!(
+            f.ensure_available(),
+            Err(SandboxError::EnvBlocked(_))
+        ));
     }
 }
 

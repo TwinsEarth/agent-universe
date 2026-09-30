@@ -34,19 +34,19 @@ fn test_task_state_machine() {
         serde_json::json!({"prompt": "hello"}),
     );
     assert_eq!(task.status, TaskStatus::Pending);
-    
+
     task.assign("did:aip:executor".to_string());
     assert_eq!(task.status, TaskStatus::Assigned);
-    
+
     task.start();
     assert_eq!(task.status, TaskStatus::Running);
-    
+
     task.complete(serde_json::json!({"result": "world"}));
     assert_eq!(task.status, TaskStatus::Completed);
-    
+
     task.verify();
     assert_eq!(task.status, TaskStatus::Verified);
-    
+
     task.settle();
     assert_eq!(task.status, TaskStatus::Settled);
 }
@@ -55,11 +55,11 @@ fn test_task_state_machine() {
 fn test_dht_sharding() {
     let dht = InMemoryKademlia::new(16);
     assert_eq!(dht.shard_count, 16);
-    
+
     let shard1 = dht.shard_of("test-key-1");
     let shard2 = dht.shard_of("test-key-1");
     assert_eq!(shard1, shard2);
-    
+
     assert!(shard1 < 16);
 }
 
@@ -82,12 +82,12 @@ fn test_gossip_sub() {
 #[test]
 fn test_node_publish_and_discover() {
     let mut node = InMemoryNode::new("peer123".to_string(), "/ip4/0.0.0.0/tcp/4001".to_string());
-    
+
     let card = AgentCard::new("did:aip:agent1".to_string(), "Text Generator".to_string())
         .with_capability("text-generation".to_string());
-    
+
     node.publish_card(card);
-    
+
     let discovered = node.discover_by_capability("text-generation");
     assert_eq!(discovered.len(), 1);
     assert_eq!(discovered[0].name, "Text Generator");

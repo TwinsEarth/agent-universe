@@ -95,8 +95,14 @@ impl AnthropicClient for MockAnthropicClient {
         let _ = req;
         Ok(AnResponse {
             id: format!("an-mock-{}", uuid::Uuid::new_v4()),
-            content: vec![AnContentBlock { ty: "text".into(), text: self.answer.clone() }],
-            usage: AnUsage { input_tokens: 15, output_tokens: 6 },
+            content: vec![AnContentBlock {
+                ty: "text".into(),
+                text: self.answer.clone(),
+            }],
+            usage: AnUsage {
+                input_tokens: 15,
+                output_tokens: 6,
+            },
         })
     }
 }
@@ -107,7 +113,10 @@ mod tests {
 
     #[test]
     fn model_strings() {
-        assert_eq!(AnthropicModel::ClaudeSonnet4.as_str(), "claude-sonnet-4-20250514");
+        assert_eq!(
+            AnthropicModel::ClaudeSonnet4.as_str(),
+            "claude-sonnet-4-20250514"
+        );
         assert_eq!(AnthropicModel::ClaudeSonnet4.context_window(), 200_000);
     }
 
@@ -115,7 +124,10 @@ mod tests {
     fn system_is_top_level_not_in_messages() {
         let req = AnRequest {
             model: "claude-sonnet-4-20250514".into(),
-            messages: vec![AnMessage { role: AnRole::User, content: "hi".into() }],
+            messages: vec![AnMessage {
+                role: AnRole::User,
+                content: "hi".into(),
+            }],
             system: Some("you are helpful".into()),
             max_tokens: 512,
             temperature: 0.7,
@@ -129,7 +141,9 @@ mod tests {
 
     #[test]
     fn mock_returns_answer() {
-        let client = MockAnthropicClient { answer: "hello".into() };
+        let client = MockAnthropicClient {
+            answer: "hello".into(),
+        };
         let req = AnRequest {
             model: "claude-sonnet-4-20250514".into(),
             messages: vec![],

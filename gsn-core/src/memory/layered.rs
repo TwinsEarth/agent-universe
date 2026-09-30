@@ -70,7 +70,10 @@ impl Default for IntergenMemory {
 
 impl IntergenMemory {
     pub fn new() -> Self {
-        Self { chain: Vec::new(), prev_hash: GENESIS.to_string() }
+        Self {
+            chain: Vec::new(),
+            prev_hash: GENESIS.to_string(),
+        }
     }
 
     /// 追加一条轨迹：环哈希 = sha256(prev_hash + payload)。

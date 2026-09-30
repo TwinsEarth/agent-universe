@@ -44,18 +44,30 @@
 //! | hunyuan | 腾讯混元 | 国内 |
 //! | xiaomi | 小米 MiLM | 国内 |
 
-pub mod openai;
-pub mod gemini;
-pub mod anthropic;
-pub mod doubao;
-pub mod domestic;
-pub mod network;
 pub mod adapter;
+pub mod anthropic;
+pub mod domestic;
+pub mod doubao;
+pub mod gemini;
+pub mod network;
+pub mod openai;
 
-pub use openai::{MockOpenAiClient, OaChatRequest, OaChatResponse, OpenAiClient, OpenAiModel, OaMessage, OaRole};
-pub use gemini::{GeRequest, GeResponse, GeminiClient, GeminiModel, MockGeminiClient};
-pub use anthropic::{AnRequest, AnResponse, AnthropicClient, AnthropicModel, MockAnthropicClient, AnMessage, AnRole};
-pub use doubao::{DbChatRequest, DbChatResponse, DoubaoClient, DoubaoModel, MockDoubaoClient, DbMessage, DbRole};
+pub use adapter::{
+    AnthropicAdapter, DomesticAdapter, DoubaoAdapter, GeminiAdapter, LlmBackend, LlmResult,
+    OpenAiAdapter,
+};
+pub use anthropic::{
+    AnMessage, AnRequest, AnResponse, AnRole, AnthropicClient, AnthropicModel, MockAnthropicClient,
+};
 pub use domestic::{DomesticClient, DomesticModel, DomesticProvider, MockDomesticClient};
-pub use network::{DomesticRegistry, DowngradeEvent, EndpointHealth, LlmEndpoint, NetworkRegion, NetworkRouter, OverseasRegistry, RegionAwareDeliberation};
-pub use adapter::{AnthropicAdapter, DomesticAdapter, DoubaoAdapter, GeminiAdapter, LlmBackend, LlmResult, OpenAiAdapter};
+pub use doubao::{
+    DbChatRequest, DbChatResponse, DbMessage, DbRole, DoubaoClient, DoubaoModel, MockDoubaoClient,
+};
+pub use gemini::{GeRequest, GeResponse, GeminiClient, GeminiModel, MockGeminiClient};
+pub use network::{
+    DomesticRegistry, DowngradeEvent, EndpointHealth, LlmEndpoint, NetworkRegion, NetworkRouter,
+    OverseasRegistry, RegionAwareDeliberation,
+};
+pub use openai::{
+    MockOpenAiClient, OaChatRequest, OaChatResponse, OaMessage, OaRole, OpenAiClient, OpenAiModel,
+};

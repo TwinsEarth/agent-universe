@@ -23,7 +23,13 @@ pub struct SharedEntry {
 }
 
 impl SharedEntry {
-    pub fn new(agent_id: &str, task_key: &str, strategy: &str, successes: u32, failures: u32) -> Self {
+    pub fn new(
+        agent_id: &str,
+        task_key: &str,
+        strategy: &str,
+        successes: u32,
+        failures: u32,
+    ) -> Self {
         Self {
             agent_id: agent_id.into(),
             task_key: task_key.into(),
@@ -104,8 +110,10 @@ mod tests {
     fn picks_highest_derived_quality() {
         let mut s = SwarmMemory::new();
         // a1: 1成功0失败 = 10000 bps；a2: 8成功2失败 = 8000 bps
-        s.publish(SharedEntry::new("a1", "ocr", "tesseract", 1, 0), 5000).unwrap();
-        s.publish(SharedEntry::new("a2", "ocr", "paddleocr", 8, 2), 5000).unwrap();
+        s.publish(SharedEntry::new("a1", "ocr", "tesseract", 1, 0), 5000)
+            .unwrap();
+        s.publish(SharedEntry::new("a2", "ocr", "paddleocr", 8, 2), 5000)
+            .unwrap();
         assert_eq!(s.best_strategy("ocr"), Some("tesseract".into()));
     }
 

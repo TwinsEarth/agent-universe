@@ -37,8 +37,8 @@ impl RootSeedConfig {
     }
 
     pub fn should_downgrade(&self, active_peers: u32, dht_health: u32) -> bool {
-        self.mode == SeedMode::Root 
-            && active_peers > self.upgrade_threshold 
+        self.mode == SeedMode::Root
+            && active_peers > self.upgrade_threshold
             && dht_health > (self.upgrade_threshold / 2)
     }
 

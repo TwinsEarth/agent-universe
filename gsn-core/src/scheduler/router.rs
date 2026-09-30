@@ -1,9 +1,9 @@
 //! 任务路由器
-//! 
+//!
 //! 智能任务分配：根据能力、信誉、负载、距离选择最佳执行者
 
-use std::collections::HashMap;
 use crate::agent::Task;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct RouteScore {
@@ -46,14 +46,14 @@ impl TaskRouter {
 
         for candidate in candidates {
             let load = self.loads.get(candidate).copied().unwrap_or(0);
-            
+
             // 负载检查
             if load >= self.max_concurrent {
                 continue;
             }
 
             let latency = self.latencies.get(candidate).copied().unwrap_or(100);
-            
+
             // 评分公式：信誉(外部) / 负载惩罚 / 延迟惩罚
             let load_penalty = (load as f64 / self.max_concurrent as f64) * 0.3;
             let latency_penalty = (latency as f64 / 1000.0).min(1.0) * 0.2;
@@ -71,7 +71,9 @@ impl TaskRouter {
         }
 
         if let Some(ref score) = best {
-            self.loads.entry(score.agent_did.clone()).and_modify(|l| *l += 1);
+            self.loads
+                .entry(score.agent_did.clone())
+                .and_modify(|l| *l += 1);
         }
 
         best

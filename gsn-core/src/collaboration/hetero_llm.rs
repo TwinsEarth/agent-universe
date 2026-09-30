@@ -63,9 +63,7 @@ impl Deliberation {
         for p in &self.proposals {
             *tally.entry(p.answer.clone()).or_insert(0.0) += self.score(p);
         }
-        tally
-            .into_iter()
-            .max_by(|a, b| a.1.total_cmp(&b.1))
+        tally.into_iter().max_by(|a, b| a.1.total_cmp(&b.1))
     }
 
     pub fn proposal_count(&self) -> usize {
@@ -86,10 +84,11 @@ impl CrossModelMemory {
     }
 
     pub fn share(&mut self, task_key: &str, model_id: &str, note: &str, confidence: f64) {
-        self.entries
-            .entry(task_key.into())
-            .or_default()
-            .push((model_id.into(), note.into(), confidence));
+        self.entries.entry(task_key.into()).or_default().push((
+            model_id.into(),
+            note.into(),
+            confidence,
+        ));
     }
 
     /// 跨模型检索：聚合不同模型对同一任务的经验，按可信度取最高。
@@ -120,7 +119,11 @@ mod tests {
     use super::*;
 
     fn model(id: &str, w: f64) -> LlmModel {
-        LlmModel { id: id.into(), family: "x".into(), weight: w }
+        LlmModel {
+            id: id.into(),
+            family: "x".into(),
+            weight: w,
+        }
     }
 
     #[test]
@@ -129,9 +132,24 @@ mod tests {
         d.add_model(model("gpt", 0.9));
         d.add_model(model("claude", 0.8));
         d.add_model(model("local", 0.5));
-        d.propose(Proposal { model_id: "gpt".into(), answer: "A".into(), confidence: 0.95 }).unwrap();
-        d.propose(Proposal { model_id: "claude".into(), answer: "A".into(), confidence: 0.9 }).unwrap();
-        d.propose(Proposal { model_id: "local".into(), answer: "B".into(), confidence: 0.6 }).unwrap();
+        d.propose(Proposal {
+            model_id: "gpt".into(),
+            answer: "A".into(),
+            confidence: 0.95,
+        })
+        .unwrap();
+        d.propose(Proposal {
+            model_id: "claude".into(),
+            answer: "A".into(),
+            confidence: 0.9,
+        })
+        .unwrap();
+        d.propose(Proposal {
+            model_id: "local".into(),
+            answer: "B".into(),
+            confidence: 0.6,
+        })
+        .unwrap();
         let (answer, votes) = d.vote().unwrap();
         assert_eq!(answer, "A");
         assert!(votes > 0.0);
@@ -140,7 +158,11 @@ mod tests {
     #[test]
     fn rejects_unknown_model_proposal() {
         let mut d = Deliberation::new();
-        let r = d.propose(Proposal { model_id: "ghost".into(), answer: "x".into(), confidence: 0.5 });
+        let r = d.propose(Proposal {
+            model_id: "ghost".into(),
+            answer: "x".into(),
+            confidence: 0.5,
+        });
         assert!(r.is_err());
     }
 

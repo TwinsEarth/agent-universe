@@ -8,11 +8,9 @@
 //! 本模块不做真实 HTTP 调用（保持 CPU 原型可验证）；
 //! 真实网络注入通过 DeepSeekClient trait 抽象，默认提供 MockClient。
 
-use super::recipe::{
-    DeepSeekModel, DsChatRequest, DsChatResponse, DsMessage, DsSampling, Recipe,
-};
 use super::protocol::Protocol;
-use super::tokenizer::{ContextBudget, estimate_tokens};
+use super::recipe::{DeepSeekModel, DsChatRequest, DsChatResponse, DsMessage, DsSampling, Recipe};
+use super::tokenizer::{estimate_tokens, ContextBudget};
 use crate::collaboration::hetero_llm::{LlmModel, Proposal};
 
 /// DeepSeek 后端配置。
@@ -48,7 +46,11 @@ pub struct MockDeepSeekClient {
 
 impl DeepSeekClient for MockDeepSeekClient {
     fn chat(&self, req: &DsChatRequest) -> Result<DsChatResponse, String> {
-        let usage_prompt: u32 = req.messages.iter().map(super::tokenizer::message_tokens).sum();
+        let usage_prompt: u32 = req
+            .messages
+            .iter()
+            .map(super::tokenizer::message_tokens)
+            .sum();
         let content = self.answer.clone();
         let completion = estimate_tokens(&content);
         Ok(DsChatResponse {
@@ -82,7 +84,11 @@ impl<C: DeepSeekClient> DeepSeekAdapter<C> {
     pub fn new(config: DeepSeekConfig, client: C) -> Self {
         let reserved = config.sampling.max_tokens;
         let model = config.model;
-        Self { config, client, budget: ContextBudget::new(model, reserved) }
+        Self {
+            config,
+            client,
+            budget: ContextBudget::new(model, reserved),
+        }
     }
 
     /// 暴露给协商层的 LlmModel（family=deepseek）。
@@ -131,8 +137,7 @@ impl<C: DeepSeekClient> DeepSeekAdapter<C> {
         task_instruction: &str,
         user_query: &str,
     ) -> Result<Proposal, String> {
-        let (answer, _usage) =
-            self.chat(agent_identity, task_instruction, user_query, vec![])?;
+        let (answer, _usage) = self.chat(agent_identity, task_instruction, user_query, vec![])?;
         Ok(Proposal {
             model_id: model_id.into(),
             answer,
@@ -158,7 +163,9 @@ mod tests {
             reasoning: Some("thought".into()),
         };
         let adapter = DeepSeekAdapter::new(cfg, client);
-        let (ans, usage) = adapter.chat("agent-1", "math", "what is 6*7", vec![]).unwrap();
+        let (ans, usage) = adapter
+            .chat("agent-1", "math", "what is 6*7", vec![])
+            .unwrap();
         assert_eq!(ans, "42");
         assert!(usage > 0);
     }
@@ -166,7 +173,13 @@ mod tests {
     #[test]
     fn adapter_produces_deepseek_family_llm_model() {
         let cfg = DeepSeekConfig::default();
-        let adapter = DeepSeekAdapter::new(cfg, MockDeepSeekClient { answer: "x".into(), reasoning: None });
+        let adapter = DeepSeekAdapter::new(
+            cfg,
+            MockDeepSeekClient {
+                answer: "x".into(),
+                reasoning: None,
+            },
+        );
         let m = adapter.as_llm_model("ds-1".into(), 0.8);
         assert_eq!(m.family, "deepseek");
         assert_eq!(m.id, "ds-1");
@@ -175,8 +188,20 @@ mod tests {
 
     #[test]
     fn adapter_rejects_invalid_sampling() {
-        let cfg = DeepSeekConfig { sampling: DsSampling { temperature: 9.0, ..Default::default() }, ..Default::default() };
-        let adapter = DeepSeekAdapter::new(cfg, MockDeepSeekClient { answer: "x".into(), reasoning: None });
+        let cfg = DeepSeekConfig {
+            sampling: DsSampling {
+                temperature: 9.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let adapter = DeepSeekAdapter::new(
+            cfg,
+            MockDeepSeekClient {
+                answer: "x".into(),
+                reasoning: None,
+            },
+        );
         assert!(adapter.chat("a", "b", "c", vec![]).is_err());
     }
 
@@ -184,7 +209,13 @@ mod tests {
     fn adapter_propose_into_deliberation() {
         use crate::collaboration::hetero_llm::Deliberation;
         let cfg = DeepSeekConfig::default();
-        let adapter = DeepSeekAdapter::new(cfg, MockDeepSeekClient { answer: "A".into(), reasoning: None });
+        let adapter = DeepSeekAdapter::new(
+            cfg,
+            MockDeepSeekClient {
+                answer: "A".into(),
+                reasoning: None,
+            },
+        );
         let mut d = Deliberation::new();
         d.add_model(adapter.as_llm_model("ds-1".into(), 0.9));
         let p = adapter.propose("ds-1", 0.95, "a", "b", "c").unwrap();

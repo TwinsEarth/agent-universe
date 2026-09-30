@@ -109,7 +109,9 @@ impl ParamBuilder for ToolDefinition {
         } else {
             serde_json::json!({ "type": ty, "description": desc })
         };
-        self.input_schema.properties.insert(name.to_string(), schema);
+        self.input_schema
+            .properties
+            .insert(name.to_string(), schema);
         if required {
             self.input_schema.required.push(name.to_string());
         }

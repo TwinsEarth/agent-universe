@@ -3,12 +3,21 @@
 //! 把 OpenAI / Gemini / Anthropic 三家包装成异构 LLM 协商可用的模型节点。
 //! 每家都产出 family="openai"/"gemini"/"anthropic" 的 LlmModel。
 
-use crate::collaboration::hetero_llm::{LlmModel, Proposal};
-use super::openai::{MockOpenAiClient, OaChatRequest, OpenAiClient, OpenAiModel, OaMessage, OaRole};
-use super::gemini::{GeContent, GeGenConfig, GePart, GeRequest, GeminiClient, GeminiModel, MockGeminiClient};
-use super::anthropic::{AnMessage, AnRequest, AnRole, AnthropicClient, AnthropicModel, MockAnthropicClient};
-use super::doubao::{DbChatRequest, DbMessage, DbRole, DbThinking, DbThinkingType, DoubaoClient, DoubaoModel, MockDoubaoClient};
+use super::anthropic::{
+    AnMessage, AnRequest, AnRole, AnthropicClient, AnthropicModel, MockAnthropicClient,
+};
 use super::domestic::{DomesticClient, DomesticModel, DomesticProvider, MockDomesticClient};
+use super::doubao::{
+    DbChatRequest, DbMessage, DbRole, DbThinking, DbThinkingType, DoubaoClient, DoubaoModel,
+    MockDoubaoClient,
+};
+use super::gemini::{
+    GeContent, GeGenConfig, GePart, GeRequest, GeminiClient, GeminiModel, MockGeminiClient,
+};
+use super::openai::{
+    MockOpenAiClient, OaChatRequest, OaMessage, OaRole, OpenAiClient, OpenAiModel,
+};
+use crate::collaboration::hetero_llm::{LlmModel, Proposal};
 
 /// 统一 LLM 后端枚举。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,11 +57,20 @@ pub struct OpenAiAdapter {
 
 impl OpenAiAdapter {
     pub fn new(model: OpenAiModel, answer: &str) -> Self {
-        Self { model, client: MockOpenAiClient { answer: answer.into() } }
+        Self {
+            model,
+            client: MockOpenAiClient {
+                answer: answer.into(),
+            },
+        }
     }
 
     pub fn as_llm_model(&self, id: String, weight: f64) -> LlmModel {
-        LlmModel { id, family: "openai".into(), weight }
+        LlmModel {
+            id,
+            family: "openai".into(),
+            weight,
+        }
     }
 
     pub fn chat(&self, user_query: &str) -> LlmResult {
@@ -71,7 +89,11 @@ impl OpenAiAdapter {
         let resp = match self.client.chat(&req) {
             Ok(r) => r,
             Err(e) => {
-                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+                return LlmResult {
+                    answer: format!("ERROR: llm request: {e}"),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                };
             }
         };
         let answer = resp
@@ -88,7 +110,11 @@ impl OpenAiAdapter {
 
     pub fn propose(&self, model_id: &str, confidence: f64) -> Proposal {
         let r = self.chat("");
-        Proposal { model_id: model_id.into(), answer: r.answer, confidence }
+        Proposal {
+            model_id: model_id.into(),
+            answer: r.answer,
+            confidence,
+        }
     }
 }
 
@@ -101,27 +127,46 @@ pub struct GeminiAdapter {
 
 impl GeminiAdapter {
     pub fn new(model: GeminiModel, answer: &str) -> Self {
-        Self { model, client: MockGeminiClient { answer: answer.into() } }
+        Self {
+            model,
+            client: MockGeminiClient {
+                answer: answer.into(),
+            },
+        }
     }
 
     pub fn as_llm_model(&self, id: String, weight: f64) -> LlmModel {
-        LlmModel { id, family: "gemini".into(), weight }
+        LlmModel {
+            id,
+            family: "gemini".into(),
+            weight,
+        }
     }
 
     pub fn chat(&self, user_query: &str) -> LlmResult {
         let req = GeRequest {
             contents: vec![GeContent {
                 role: "user".into(),
-                parts: vec![GePart { text: user_query.into() }],
+                parts: vec![GePart {
+                    text: user_query.into(),
+                }],
             }],
             system_instruction: None,
-            generation_config: GeGenConfig { temperature: 0.7, top_p: 0.9, max_output_tokens: 4096 },
+            generation_config: GeGenConfig {
+                temperature: 0.7,
+                top_p: 0.9,
+                max_output_tokens: 4096,
+            },
         };
         // v2.6.8（GAP §7.5）：失败 / candidates 空 / parts 空不再 panic。
         let resp = match self.client.generate(&req) {
             Ok(r) => r,
             Err(e) => {
-                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+                return LlmResult {
+                    answer: format!("ERROR: llm request: {e}"),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                };
             }
         };
         let answer = resp
@@ -139,7 +184,11 @@ impl GeminiAdapter {
 
     pub fn propose(&self, model_id: &str, confidence: f64) -> Proposal {
         let r = self.chat("");
-        Proposal { model_id: model_id.into(), answer: r.answer, confidence }
+        Proposal {
+            model_id: model_id.into(),
+            answer: r.answer,
+            confidence,
+        }
     }
 }
 
@@ -151,17 +200,29 @@ pub struct AnthropicAdapter {
 
 impl AnthropicAdapter {
     pub fn new(model: AnthropicModel, answer: &str) -> Self {
-        Self { model, client: MockAnthropicClient { answer: answer.into() } }
+        Self {
+            model,
+            client: MockAnthropicClient {
+                answer: answer.into(),
+            },
+        }
     }
 
     pub fn as_llm_model(&self, id: String, weight: f64) -> LlmModel {
-        LlmModel { id, family: "anthropic".into(), weight }
+        LlmModel {
+            id,
+            family: "anthropic".into(),
+            weight,
+        }
     }
 
     pub fn chat(&self, user_query: &str) -> LlmResult {
         let req = AnRequest {
             model: self.model.as_str().into(),
-            messages: vec![AnMessage { role: AnRole::User, content: user_query.into() }],
+            messages: vec![AnMessage {
+                role: AnRole::User,
+                content: user_query.into(),
+            }],
             system: None,
             max_tokens: 4096,
             temperature: 0.7,
@@ -171,7 +232,11 @@ impl AnthropicAdapter {
         let resp = match self.client.messages(&req) {
             Ok(r) => r,
             Err(e) => {
-                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+                return LlmResult {
+                    answer: format!("ERROR: llm request: {e}"),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                };
             }
         };
         let answer = resp
@@ -188,7 +253,11 @@ impl AnthropicAdapter {
 
     pub fn propose(&self, model_id: &str, confidence: f64) -> Proposal {
         let r = self.chat("");
-        Proposal { model_id: model_id.into(), answer: r.answer, confidence }
+        Proposal {
+            model_id: model_id.into(),
+            answer: r.answer,
+            confidence,
+        }
     }
 }
 
@@ -203,7 +272,10 @@ impl DoubaoAdapter {
     pub fn new(model: DoubaoModel, answer: &str) -> Self {
         Self {
             model,
-            client: MockDoubaoClient { answer: answer.into(), reasoning: None },
+            client: MockDoubaoClient {
+                answer: answer.into(),
+                reasoning: None,
+            },
             thinking: false,
         }
     }
@@ -214,18 +286,27 @@ impl DoubaoAdapter {
     }
 
     pub fn as_llm_model(&self, id: String, weight: f64) -> LlmModel {
-        LlmModel { id, family: "doubao".into(), weight }
+        LlmModel {
+            id,
+            family: "doubao".into(),
+            weight,
+        }
     }
 
     pub fn chat(&self, user_query: &str) -> LlmResult {
         let thinking = if self.thinking {
-            Some(DbThinking { ty: DbThinkingType::Enabled })
+            Some(DbThinking {
+                ty: DbThinkingType::Enabled,
+            })
         } else {
             None
         };
         let req = DbChatRequest {
             model: self.model.as_str().into(),
-            messages: vec![DbMessage { role: DbRole::User, content: user_query.into() }],
+            messages: vec![DbMessage {
+                role: DbRole::User,
+                content: user_query.into(),
+            }],
             temperature: 0.7,
             top_p: 1.0,
             max_tokens: 4096,
@@ -236,10 +317,18 @@ impl DoubaoAdapter {
         let resp = match self.client.chat(&req) {
             Ok(r) => r,
             Err(e) => {
-                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+                return LlmResult {
+                    answer: format!("ERROR: llm request: {e}"),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                };
             }
         };
-        let answer = resp.choices.first().map(|c| c.message.content.clone()).unwrap_or_else(|| "ERROR: empty choices".to_string());
+        let answer = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_else(|| "ERROR: empty choices".to_string());
         LlmResult {
             answer,
             prompt_tokens: resp.usage.prompt_tokens,
@@ -249,7 +338,11 @@ impl DoubaoAdapter {
 
     pub fn propose(&self, model_id: &str, confidence: f64) -> Proposal {
         let r = self.chat("");
-        Proposal { model_id: model_id.into(), answer: r.answer, confidence }
+        Proposal {
+            model_id: model_id.into(),
+            answer: r.answer,
+            confidence,
+        }
     }
 }
 
@@ -261,7 +354,12 @@ pub struct DomesticAdapter {
 
 impl DomesticAdapter {
     pub fn new(model: DomesticModel, answer: &str) -> Self {
-        Self { model, client: MockDomesticClient { answer: answer.into() } }
+        Self {
+            model,
+            client: MockDomesticClient {
+                answer: answer.into(),
+            },
+        }
     }
 
     pub fn provider(&self) -> DomesticProvider {
@@ -269,13 +367,20 @@ impl DomesticAdapter {
     }
 
     pub fn as_llm_model(&self, id: String, weight: f64) -> LlmModel {
-        LlmModel { id, family: self.model.provider().family().into(), weight }
+        LlmModel {
+            id,
+            family: self.model.provider().family().into(),
+            weight,
+        }
     }
 
     pub fn chat(&self, user_query: &str) -> LlmResult {
         let req = OaChatRequest {
             model: self.model.as_str().into(),
-            messages: vec![OaMessage { role: OaRole::User, content: user_query.into() }],
+            messages: vec![OaMessage {
+                role: OaRole::User,
+                content: user_query.into(),
+            }],
             temperature: 0.7,
             top_p: 1.0,
             max_tokens: 4096,
@@ -285,10 +390,18 @@ impl DomesticAdapter {
         let resp = match self.client.chat(&req) {
             Ok(r) => r,
             Err(e) => {
-                return LlmResult { answer: format!("ERROR: llm request: {e}"), prompt_tokens: 0, completion_tokens: 0 };
+                return LlmResult {
+                    answer: format!("ERROR: llm request: {e}"),
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                };
             }
         };
-        let answer = resp.choices.first().map(|c| c.message.content.clone()).unwrap_or_else(|| "ERROR: empty choices".to_string());
+        let answer = resp
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .unwrap_or_else(|| "ERROR: empty choices".to_string());
         LlmResult {
             answer,
             prompt_tokens: resp.usage.prompt_tokens,
@@ -298,7 +411,11 @@ impl DomesticAdapter {
 
     pub fn propose(&self, model_id: &str, confidence: f64) -> Proposal {
         let r = self.chat("");
-        Proposal { model_id: model_id.into(), answer: r.answer, confidence }
+        Proposal {
+            model_id: model_id.into(),
+            answer: r.answer,
+            confidence,
+        }
     }
 }
 
@@ -432,8 +549,14 @@ mod tests {
     #[test]
     fn backend_families_are_distinct() {
         assert_eq!(LlmBackend::OpenAi(OpenAiModel::Gpt4o).family(), "openai");
-        assert_eq!(LlmBackend::Gemini(GeminiModel::Gemini15Pro).family(), "gemini");
-        assert_eq!(LlmBackend::Anthropic(AnthropicModel::ClaudeSonnet4).family(), "anthropic");
+        assert_eq!(
+            LlmBackend::Gemini(GeminiModel::Gemini15Pro).family(),
+            "gemini"
+        );
+        assert_eq!(
+            LlmBackend::Anthropic(AnthropicModel::ClaudeSonnet4).family(),
+            "anthropic"
+        );
         assert_eq!(LlmBackend::DeepSeek.family(), "deepseek");
     }
 }

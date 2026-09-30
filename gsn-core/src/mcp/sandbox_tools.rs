@@ -7,8 +7,8 @@
 //! 复用 `sandbox::handle_sandbox_api`（与 HTTP REST 同一处理器，单一来源）。
 
 use crate::mcp::tool::*;
-use crate::sandbox::manager::SandboxManager;
 use crate::sandbox::handle_sandbox_api;
+use crate::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
@@ -25,20 +25,37 @@ impl SandboxMcpBridge {
     /// 全部沙箱工具定义
     pub fn tool_definitions() -> Vec<ToolDefinition> {
         vec![
-            tool("sandbox_create", "创建并启动一个隔离沙箱（进程级隔离，返回 sandbox_id）"),
+            tool(
+                "sandbox_create",
+                "创建并启动一个隔离沙箱（进程级隔离，返回 sandbox_id）",
+            ),
             tool("sandbox_list", "列出受管沙箱与预热池大小（无参数）"),
-            tool("sandbox_get", "按 sandbox_id 查询沙箱状态")
-                .param("sandbox_id", "string", "沙箱 ID", true),
-            tool("sandbox_run_code", "在指定沙箱内执行代码（Python/JavaScript）并返回输出")
-                .param("sandbox_id", "string", "沙箱 ID", true)
-                .param("language", "string", "语言：python 或 javascript", true)
-                .param("code", "string", "要执行的源代码", true),
-            tool("sandbox_pause", "休眠沙箱（释放资源，保留文件）")
-                .param("sandbox_id", "string", "沙箱 ID", true),
-            tool("sandbox_resume", "唤醒休眠沙箱")
-                .param("sandbox_id", "string", "沙箱 ID", true),
-            tool("sandbox_destroy", "销毁沙箱并清理临时文件")
-                .param("sandbox_id", "string", "沙箱 ID", true),
+            tool("sandbox_get", "按 sandbox_id 查询沙箱状态").param(
+                "sandbox_id",
+                "string",
+                "沙箱 ID",
+                true,
+            ),
+            tool(
+                "sandbox_run_code",
+                "在指定沙箱内执行代码（Python/JavaScript）并返回输出",
+            )
+            .param("sandbox_id", "string", "沙箱 ID", true)
+            .param("language", "string", "语言：python 或 javascript", true)
+            .param("code", "string", "要执行的源代码", true),
+            tool("sandbox_pause", "休眠沙箱（释放资源，保留文件）").param(
+                "sandbox_id",
+                "string",
+                "沙箱 ID",
+                true,
+            ),
+            tool("sandbox_resume", "唤醒休眠沙箱").param("sandbox_id", "string", "沙箱 ID", true),
+            tool("sandbox_destroy", "销毁沙箱并清理临时文件").param(
+                "sandbox_id",
+                "string",
+                "沙箱 ID",
+                true,
+            ),
         ]
     }
 
@@ -47,7 +64,10 @@ impl SandboxMcpBridge {
     /// `caller`：认证主体（MCP 已通过 Bearer 认证；None 时变更类被 handle_api 拒绝）
     pub async fn call(&self, name: &str, args: &Value, caller: Option<&str>) -> ToolResult {
         let get_str = |k: &str| -> String {
-            args.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+            args.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
         };
 
         // 构造 (method, path, body) 复用 REST 处理器
@@ -64,11 +84,7 @@ impl SandboxMcpBridge {
                 let lang = get_str("language");
                 let code = args.get("code").and_then(|v| v.as_str()).unwrap_or("");
                 let payload = json!({ "language": lang, "code": code }).to_string();
-                (
-                    "POST",
-                    format!("/api/v1/sandboxes/{id}/exec"),
-                    payload,
-                )
+                ("POST", format!("/api/v1/sandboxes/{id}/exec"), payload)
             }
             "sandbox_pause" => (
                 "POST",

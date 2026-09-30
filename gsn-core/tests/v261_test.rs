@@ -2,9 +2,9 @@
 //!  - MCP 参数校验（GAP §8.1）：缺必填 / 类型错误 → -32602，由调用方转换
 //!  - 账本从只追加流水恢复（GAP §6.1）：restored 引擎余额 / 守恒 / 审计连续
 
+use gsn_core::marketplace::{Money, SettlementEngine, SettlementReason};
 use gsn_core::mcp::tool::validate_arguments;
 use gsn_core::mcp::ToolSchema;
-use gsn_core::marketplace::{Money, SettlementEngine, SettlementReason};
 use serde_json::{json, Map, Value};
 
 fn sample_schema() -> ToolSchema {
@@ -23,10 +23,11 @@ fn sample_schema() -> ToolSchema {
 fn validate_accepts_full_and_optional_absent() {
     let schema = sample_schema();
     assert!(validate_arguments(&schema, &json!({ "account": "a1", "amount": 100 })).is_ok());
-    assert!(
-        validate_arguments(&schema, &json!({ "account": "a1", "amount": 100, "memo": "hi" }))
-            .is_ok()
-    );
+    assert!(validate_arguments(
+        &schema,
+        &json!({ "account": "a1", "amount": 100, "memo": "hi" })
+    )
+    .is_ok());
 }
 
 #[test]
@@ -34,8 +35,7 @@ fn validate_rejects_missing_or_null_required() {
     let schema = sample_schema();
     let err = validate_arguments(&schema, &json!({ "account": "a1" })).unwrap_err();
     assert!(err.contains("amount"), "{err}");
-    let err =
-        validate_arguments(&schema, &json!({ "account": "a1", "amount": null })).unwrap_err();
+    let err = validate_arguments(&schema, &json!({ "account": "a1", "amount": null })).unwrap_err();
     assert!(err.contains("amount"), "{err}");
     let err = validate_arguments(&schema, &json!({ "amount": 1 })).unwrap_err();
     assert!(err.contains("account"), "{err}");
@@ -49,8 +49,7 @@ fn validate_rejects_wrong_types() {
         validate_arguments(&schema, &json!({ "account": "a1", "amount": "100" })).unwrap_err();
     assert!(err.contains("amount"), "{err}");
     // integer 传非整浮点
-    let err =
-        validate_arguments(&schema, &json!({ "account": "a1", "amount": 1.5 })).unwrap_err();
+    let err = validate_arguments(&schema, &json!({ "account": "a1", "amount": 1.5 })).unwrap_err();
     assert!(err.contains("amount"), "{err}");
     // string 传数字
     let err = validate_arguments(&schema, &json!({ "account": 7, "amount": 1 })).unwrap_err();

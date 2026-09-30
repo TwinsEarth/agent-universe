@@ -80,18 +80,25 @@ fn test_restore_tasks_from_store_visible() {
     market.restore_tasks_from_store(stored);
 
     assert_eq!(market.task_count(), 2);
-    let t1 = market.get_task("task-restore-1").expect("task-restore-1 应在内存");
+    let t1 = market
+        .get_task("task-restore-1")
+        .expect("task-restore-1 应在内存");
     assert_eq!(t1.state, TaskState::Settled, "SETTLED 应被正确反解析");
     assert_eq!(t1.owner.as_deref(), Some("worker-1"));
     // v2.8.4: 恢复不放宽证据闸门（GAP §3.2），BftLite 不回 None
     assert!(
-        matches!(t1.verification_policy, VerificationPolicy::BftLite { n: 3, f: 1 }),
+        matches!(
+            t1.verification_policy,
+            VerificationPolicy::BftLite { n: 3, f: 1 }
+        ),
         "BftLite 策略应正确恢复，实际 {:?}",
         t1.verification_policy
     );
     assert_eq!(t1.winner_price.map(|m| m.as_i64()), Some(4200));
     assert_eq!(t1.requester, "requester-1");
-    let t2 = market.get_task("task-restore-2").expect("task-restore-2 应在内存");
+    let t2 = market
+        .get_task("task-restore-2")
+        .expect("task-restore-2 应在内存");
     assert_eq!(t2.state, TaskState::Open);
     assert!(matches!(t2.verification_policy, VerificationPolicy::None));
 }

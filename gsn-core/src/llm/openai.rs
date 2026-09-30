@@ -93,10 +93,17 @@ impl OpenAiClient for MockOpenAiClient {
         Ok(OaChatResponse {
             id: format!("oa-mock-{}", uuid::Uuid::new_v4()),
             choices: vec![OaChoice {
-                message: OaMessage { role: OaRole::Assistant, content: self.answer.clone() },
+                message: OaMessage {
+                    role: OaRole::Assistant,
+                    content: self.answer.clone(),
+                },
                 finish_reason: "stop".into(),
             }],
-            usage: OaUsage { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+            usage: OaUsage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+                total_tokens: 15,
+            },
         })
     }
 }
@@ -114,11 +121,19 @@ mod tests {
 
     #[test]
     fn mock_client_returns_answer() {
-        let client = MockOpenAiClient { answer: "hello".into() };
+        let client = MockOpenAiClient {
+            answer: "hello".into(),
+        };
         let req = OaChatRequest {
             model: "gpt-4o".into(),
-            messages: vec![OaMessage { role: OaRole::User, content: "hi".into() }],
-            temperature: 0.7, top_p: 1.0, max_tokens: 256, stream: false,
+            messages: vec![OaMessage {
+                role: OaRole::User,
+                content: "hi".into(),
+            }],
+            temperature: 0.7,
+            top_p: 1.0,
+            max_tokens: 256,
+            stream: false,
         };
         let resp = client.chat(&req).unwrap();
         assert_eq!(resp.choices[0].message.content, "hello");

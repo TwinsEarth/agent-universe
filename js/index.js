@@ -9,7 +9,7 @@ const { AgentMarket, Bid, Reputation, MIN_STAKE } = require('./lib/market');
 const { McpHttpClient, McpError, MCP_PROTOCOL_VERSION } = require('./lib/mcp');
 const aca = require('./lib/aca');
 
-const version = '2.9.0';
+const version = '2.9.1';
 
 /**
  * AgentUniverse 门面：聚合身份、网络、市场能力

@@ -1,5 +1,5 @@
 //! 邻居节点管理
-//! 
+//!
 //! Kademlia 风格的 k-bucket 邻居管理
 
 use std::collections::HashMap;
@@ -34,13 +34,16 @@ impl NeighborManager {
             .map(|d| d.as_secs())
             .unwrap_or(0);
 
-        self.neighbors.insert(did.clone(), Neighbor {
-            did,
-            address,
-            latency_ms,
-            last_seen: now,
-            failed_pings: 0,
-        });
+        self.neighbors.insert(
+            did.clone(),
+            Neighbor {
+                did,
+                address,
+                latency_ms,
+                last_seen: now,
+                failed_pings: 0,
+            },
+        );
     }
 
     pub fn record_ping_success(&mut self, did: &str, latency_ms: u64) {
@@ -61,7 +64,9 @@ impl NeighborManager {
     }
 
     pub fn remove_unresponsive(&mut self) -> Vec<String> {
-        let failed: Vec<String> = self.neighbors.iter()
+        let failed: Vec<String> = self
+            .neighbors
+            .iter()
             .filter(|(_, n)| n.failed_pings >= self.max_failed_pings)
             .map(|(did, _)| did.clone())
             .collect();

@@ -2,6 +2,23 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.9.1] - 2026-10-01
+
+### 沙箱能力声明闸门 + 生产 panic 归零 + 快照持久化告警
+
+- **能力声明系统**（`sandbox/capability.rs`）：12 项 Capability、显式带理由的 Waiver、
+  `CapabilityDeclaration.check` 唯一消费点；进程后端按平台声明真实能力，无法强制且无 waiver
+  即 `PolicyNotEnforceable`（422）；**默认配置不执行**，trusted_local 显式 waiver 才本地执行；
+  Unix 加 `ulimit -v/-t/-u/-n`（内存/CPU/进程/文件），mem_mb 默认 768 兼容 Node V8；
+  daemon 读 `GSN_SANDBOX_BACKEND`，拼错值按禁用处理（安全配置 typo 不静默选中更弱后端）。
+- **生产 panic 归零**：market_actor、erasure（Result 化）、llm、marketplace、net/peer、
+  scheduler、swarm 共 12 站点，消除 `unwrap`/`expect`/NaN 路径。
+- **快照持久化告警**：5 处快照 `let _ =` 改 `warn_persist`，不再静默吞掉落盘失败。
+- **CI**：rust-test 加 `cargo fmt --check`；v2.9.1 矩阵 ubuntu/macos。
+- **unsafe**：winjob.rs 3 个 unsafe 块全部补 `// SAFETY:`。
+- 验证：clippy 零警告、全量测试通过（0 failed / 0 ignored）；v278/v280/v287 改显式 trusted_local。
+- 边界：Windows 矩阵与静态关卡（panic/unsafe 机械检查）在 v2.9.2 接入；v2.8.8 跳过。
+
 ## [v2.9.0] - 2026-09-30
 
 ### 桌面工作台大版本（Workbench，继续 Tauri 2）

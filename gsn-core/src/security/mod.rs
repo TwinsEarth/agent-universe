@@ -78,7 +78,9 @@ impl SecurityEngine {
     pub fn random_neighbors(&self, count: usize) -> Vec<&String> {
         use rand::seq::SliceRandom;
         let mut rng = rand::thread_rng();
-        self.neighbor_pool.choose_multiple(&mut rng, count).collect()
+        self.neighbor_pool
+            .choose_multiple(&mut rng, count)
+            .collect()
     }
 
     pub fn ban_node(&mut self, node_id: String) {

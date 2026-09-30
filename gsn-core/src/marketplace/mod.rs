@@ -10,31 +10,27 @@
 //! - 质押罚没
 //! - 证据分级
 
+pub mod agent_card;
 pub mod evidence;
 pub mod money;
-pub mod agent_card;
-pub mod task;
 pub mod qa_committee;
-pub mod settlement;
 pub mod reputation;
+pub mod settlement;
+pub mod task;
 
+pub use agent_card::{
+    AgentCategory, Currency, MarketAgentCard, Pricing, PricingModel, SchemaField, SkillManifest,
+    Sla,
+};
 pub use evidence::EvidenceGrade;
 pub use money::Money;
-pub use agent_card::{
-    MarketAgentCard, SkillManifest, Pricing, PricingModel, Currency, Sla,
-    SchemaField, AgentCategory,
-};
-pub use task::{
-    TaskSpec, TaskState, ResultEnvelope, ErrorType, VerificationPolicy,
-};
-pub use qa_committee::{QaCommittee, QaMember, QaVote, QaDecision, SignedQaVote};
+pub use qa_committee::{QaCommittee, QaDecision, QaMember, QaVote, SignedQaVote};
+pub use reputation::{MarketReputation, ReputationManager, StakeRecord, StakeStatus};
 pub use settlement::{
-    SettlementEngine, SettlementRecord, SettlementReason, ConservationReport, AuditReport,
-    AccountMismatch,
+    AccountMismatch, AuditReport, ConservationReport, SettlementEngine, SettlementReason,
+    SettlementRecord,
 };
-pub use reputation::{
-    ReputationManager, MarketReputation, StakeRecord, StakeStatus,
-};
+pub use task::{ErrorType, ResultEnvelope, TaskSpec, TaskState, VerificationPolicy};
 
 use std::collections::{HashMap, HashSet};
 
@@ -274,7 +270,11 @@ impl AgentMarket {
     /// 列出全部任务（工作台，新创建的在前）
     pub fn list_all_tasks(&self) -> Vec<TaskSpec> {
         let mut v: Vec<TaskSpec> = self.tasks.values().cloned().collect();
-        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.task_id.cmp(&b.task_id)));
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then(a.task_id.cmp(&b.task_id))
+        });
         v
     }
 
@@ -294,11 +294,7 @@ impl AgentMarket {
     pub fn discover_by_skill(&self, skill: &str) -> Vec<&MarketAgentCard> {
         self.skill_index
             .get(&skill.to_lowercase())
-            .map(|ids| {
-                ids.iter()
-                    .filter_map(|id| self.agents.get(id))
-                    .collect()
-            })
+            .map(|ids| ids.iter().filter_map(|id| self.agents.get(id)).collect())
             .unwrap_or_default()
     }
 
@@ -341,17 +337,11 @@ impl AgentMarket {
         }
 
         // 检查资格
-        if !self
-            .reputation_mgr
-            .is_eligible(&bid.agent_id, 0.3)
-        {
+        if !self.reputation_mgr.is_eligible(&bid.agent_id, 0.3) {
             return Err(format!("Agent {} 不满足资格要求", bid.agent_id));
         }
 
-        self.bids
-            .entry(bid.task_id.clone())
-            .or_default()
-            .push(bid);
+        self.bids.entry(bid.task_id.clone()).or_default().push(bid);
         Ok(())
     }
 
@@ -395,7 +385,7 @@ impl AgentMarket {
             }
         }
 
-        let best_bid = best.unwrap();
+        let best_bid = best.ok_or_else(|| format!("任务 {} 无有效中标候选", task_id))?;
         let winner = best_bid.agent_id.clone();
         let winner_price = best_bid.proposed_price;
 
@@ -419,10 +409,7 @@ impl AgentMarket {
             .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", envelope.task_id))?;
 
         if task.state != TaskState::Matched && task.state != TaskState::Running {
-            return Err(format!(
-                "任务状态为 {}，不能提交结果",
-                task.state.label()
-            ));
+            return Err(format!("任务状态为 {}，不能提交结果", task.state.label()));
         }
 
         // 重复劳动检测：对结果报告内容求 SHA256，与上次提交比对
@@ -439,8 +426,7 @@ impl AgentMarket {
                 task.state = task.state.transition(TaskState::Rejected)?;
             } else {
                 // policy=None：无需 QA，提交结果直接验收；否则进入验收阶段
-                let target = if matches!(task.verification_policy, VerificationPolicy::None)
-                {
+                let target = if matches!(task.verification_policy, VerificationPolicy::None) {
                     TaskState::Accepted
                 } else {
                     TaskState::Verifying
@@ -600,7 +586,10 @@ impl AgentMarket {
                 return Err("结果可信且成功，不能拒绝".to_string());
             }
         }
-        let task = self.tasks.get_mut(task_id).unwrap();
+        let task = self
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
         task.state = task.state.transition(TaskState::Rejected)?;
         Ok(())
     }
@@ -613,10 +602,7 @@ impl AgentMarket {
 
         let is_rejected = task.state == TaskState::Rejected;
         if task.state != TaskState::Accepted && !is_rejected {
-            return Err(format!(
-                "任务状态为 {}，不能结算",
-                task.state.label()
-            ));
+            return Err(format!("任务状态为 {}，不能结算", task.state.label()));
         }
 
         let agent_id = task
@@ -635,9 +621,9 @@ impl AgentMarket {
                 SettlementReason::Rejected
             };
             // 付执行者 0（留痕并标记已付，防重复结算）
-            let paid =
-                self.settlement
-                    .settle(task_id, &escrow, &agent_id, Money::ZERO, reason)?;
+            let paid = self
+                .settlement
+                .settle(task_id, &escrow, &agent_id, Money::ZERO, reason)?;
             // 托管预算全额退回需求方
             self.settlement
                 .refund(task_id, &escrow, &requester, budget)?;
@@ -667,9 +653,10 @@ impl AgentMarket {
         // 需要验证的任务，结果信封必须存在且证据等级可信（Verified/CpuProto）；
         // Unverified 或缺失结果一律拒绝结算付款。verification_policy = None 时豁免。
         if !matches!(task.verification_policy, VerificationPolicy::None) {
-            let envelope = self.results.get(task_id).ok_or_else(|| {
-                "任务缺少结果信封，无法核验证据等级，不能结算".to_string()
-            })?;
+            let envelope = self
+                .results
+                .get(task_id)
+                .ok_or_else(|| "任务缺少结果信封，无法核验证据等级，不能结算".to_string())?;
             if !envelope.evidence_grade.is_trustworthy() {
                 return Err(format!(
                     "结果证据等级为 {}（不可信），不能结算；请重新执行或升级证据等级",
@@ -716,9 +703,8 @@ impl AgentMarket {
         if let Some(agent) = self.agents.get_mut(&agent_id) {
             agent.total_calls += 1;
             if success {
-                agent.success_rate =
-                    (agent.success_rate * (agent.total_calls - 1) as f64 + 1.0)
-                        / agent.total_calls as f64;
+                agent.success_rate = (agent.success_rate * (agent.total_calls - 1) as f64 + 1.0)
+                    / agent.total_calls as f64;
             }
             agent.reputation_score = self
                 .reputation_mgr
@@ -765,9 +751,10 @@ impl AgentMarket {
         // Verifying/Rework 可发起争议，Open/Matched 与终态一律拒绝；
         // 同时在此读取 owner（respondent），避免后续 push 时的借用冲突。
         let respondent = {
-            let task = self.tasks.get_mut(task_id).ok_or_else(|| {
-                format!("NOT_FOUND: 任务 {} 不存在", task_id)
-            })?;
+            let task = self
+                .tasks
+                .get_mut(task_id)
+                .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
             task.state = task.state.transition(TaskState::Disputed)?;
             task.owner.clone().unwrap_or_default()
         };
@@ -969,7 +956,9 @@ impl AgentMarket {
         self.results
             .iter()
             .filter_map(|(id, env)| {
-                serde_json::to_string(env).ok().map(|payload| (id.clone(), payload))
+                serde_json::to_string(env)
+                    .ok()
+                    .map(|payload| (id.clone(), payload))
             })
             .collect()
     }
@@ -989,10 +978,7 @@ impl AgentMarket {
     /// 此前 `spawn_with_store` 只取了 `load_agents().len()` 打日志，业务对象并未注入内存，
     /// 导致重启后账本/余额从 SQLite 正确恢复、但 `/agents`、`/tasks/{id}`、`/stats` 全空。
     /// 快照未存字段（version/description/modalities/models/endpoint/pricing/sla 等）用安全默认值补齐。
-    pub fn restore_agents_from_store(
-        &mut self,
-        agents: Vec<crate::storage::StoredAgent>,
-    ) {
+    pub fn restore_agents_from_store(&mut self, agents: Vec<crate::storage::StoredAgent>) {
         for a in agents {
             let skills: Vec<String> = a
                 .skills
@@ -1039,10 +1025,7 @@ impl AgentMarket {
     ///
     /// 快照未存字段（context/done/todo/trace/required_skills/requester/winner_price/deadline）
     /// 用安全默认值补齐；状态经 `TaskState::from_label` 反解析，坏值回 `Open`。
-    pub fn restore_tasks_from_store(
-        &mut self,
-        tasks: Vec<crate::storage::StoredTask>,
-    ) {
+    pub fn restore_tasks_from_store(&mut self, tasks: Vec<crate::storage::StoredTask>) {
         for t in tasks {
             // v2.8.4: 恢复验证策略（GAP §3.2）。新持久化的 None 也会序列化为
             // "None" 并正确解析回 None（用户真实意图）；仅遗留空/坏值回 None 并显式警告。
@@ -1106,8 +1089,7 @@ impl AgentMarket {
         reputations: Vec<(String, String)>,
         stakes: Vec<(String, String)>,
     ) {
-        self.reputation_mgr
-            .import_reputations(reputations);
+        self.reputation_mgr.import_reputations(reputations);
         self.reputation_mgr.import_stakes(stakes);
     }
 }

@@ -150,7 +150,9 @@ fn test_register_agent_empty_name() {
 fn test_register_agent_duplicate() {
     let mut market = AgentMarket::new();
     market.deposit("agent-1", Money::new(100)).unwrap();
-    assert!(market.register_agent(make_agent_card("agent-1", 100)).is_ok());
+    assert!(market
+        .register_agent(make_agent_card("agent-1", 100))
+        .is_ok());
     // 第二次注册：质押金已锁定、自有余额为 0 → 拒绝（防止重复占用），不覆盖
     let result = market.register_agent(make_agent_card("agent-1", 100));
     assert!(result.is_err());
@@ -435,7 +437,13 @@ fn test_settlement_completed() {
     let mut engine = SettlementEngine::new();
     engine.deposit("payer", Money::new(100)).unwrap();
     let paid = engine
-        .settle("t1", "payer", "payee", Money::new(50), SettlementReason::Completed)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(50),
+            SettlementReason::Completed,
+        )
         .unwrap();
     assert_eq!(paid, Money::new(50));
     assert_eq!(engine.balance("payer"), Money::new(50));
@@ -448,11 +456,23 @@ fn test_settlement_duplicate_payment_prevented() {
     engine.deposit("payer", Money::new(100)).unwrap();
 
     engine
-        .settle("t1", "payer", "payee", Money::new(50), SettlementReason::Completed)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(50),
+            SettlementReason::Completed,
+        )
         .unwrap();
     // 第二次结算同一任务 → 付 0
     let paid = engine
-        .settle("t1", "payer", "payee", Money::new(50), SettlementReason::Completed)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(50),
+            SettlementReason::Completed,
+        )
         .unwrap();
     assert_eq!(paid, Money::ZERO);
     assert_eq!(engine.balance("payee"), Money::new(50)); // 没有多付
@@ -463,7 +483,13 @@ fn test_settlement_rejected_pays_zero() {
     let mut engine = SettlementEngine::new();
     engine.deposit("payer", Money::new(100)).unwrap();
     let paid = engine
-        .settle("t1", "payer", "payee", Money::new(50), SettlementReason::Rejected)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(50),
+            SettlementReason::Rejected,
+        )
         .unwrap();
     assert_eq!(paid, Money::ZERO);
     // 被拒不付款，付款方余额不变
@@ -477,7 +503,11 @@ fn test_settlement_insufficient_balance_no_minting() {
     engine.deposit("payer", Money::new(10)).unwrap();
     // 付款方余额不足 → 报错，绝不铸币
     let result = engine.settle(
-        "t1", "payer", "payee", Money::new(50), SettlementReason::Completed,
+        "t1",
+        "payer",
+        "payee",
+        Money::new(50),
+        SettlementReason::Completed,
     );
     assert!(result.is_err());
     // 收款方没有凭空收到钱
@@ -508,7 +538,13 @@ fn test_conservation_check_valid() {
     let mut engine = SettlementEngine::new();
     engine.deposit("payer", Money::new(100)).unwrap();
     engine
-        .settle("t1", "payer", "payee", Money::new(40), SettlementReason::Completed)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(40),
+            SettlementReason::Completed,
+        )
         .unwrap();
 
     let report = engine.conservation_check();
@@ -522,7 +558,13 @@ fn test_conservation_with_slash() {
     let mut engine = SettlementEngine::new();
     engine.deposit("payer", Money::new(100)).unwrap();
     engine
-        .settle("t1", "payer", "payee", Money::new(40), SettlementReason::Completed)
+        .settle(
+            "t1",
+            "payer",
+            "payee",
+            Money::new(40),
+            SettlementReason::Completed,
+        )
         .unwrap();
     engine.slash("payee", Money::new(10)).unwrap();
 
@@ -747,7 +789,9 @@ fn test_end_to_end_market_flow() {
         .unwrap();
 
     // 3. 投标（报价 10）
-    market.submit_bid(make_bid("agent-1", "task-1", 10)).unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
 
     // 4. 匹配
     let winner = market.match_task("task-1").unwrap();
@@ -1042,7 +1086,9 @@ fn test_money_vector_matches_conformance() {
         .publish_task(make_task("task-1", 50, "requester-1"))
         .unwrap();
     // 投标 10、匹配
-    market.submit_bid(make_bid("agent-1", "task-1", 10)).unwrap();
+    market
+        .submit_bid(make_bid("agent-1", "task-1", 10))
+        .unwrap();
     assert_eq!(market.match_task("task-1").unwrap(), "agent-1");
     // 提交结果
     market
@@ -1105,12 +1151,7 @@ fn test_money_vector_matches_conformance() {
 
 // ===== v2.6.0 状态机恢复边 + 证据分级结算闸门（GAP §3.4 / 证据谓词零调用点）=====
 
-fn submit_envelope(
-    market: &mut AgentMarket,
-    task: &str,
-    agent: &str,
-    grade: EvidenceGrade,
-) {
+fn submit_envelope(market: &mut AgentMarket, task: &str, agent: &str, grade: EvidenceGrade) {
     market
         .submit_result(ResultEnvelope {
             task_id: task.to_string(),
@@ -1147,7 +1188,8 @@ fn stop_committee(prefix: &str) -> QaCommittee {
     c.cast_vote(&format!("{}0", prefix), QaVote::Stop).unwrap();
     c.cast_vote(&format!("{}1", prefix), QaVote::Stop).unwrap();
     c.cast_vote(&format!("{}2", prefix), QaVote::Stop).unwrap();
-    c.cast_vote(&format!("{}3", prefix), QaVote::Continue).unwrap();
+    c.cast_vote(&format!("{}3", prefix), QaVote::Continue)
+        .unwrap();
     c
 }
 
@@ -1198,17 +1240,11 @@ fn test_resume_after_rework() {
         market.verify_result("task-1", &committee).unwrap(),
         QaDecision::Continue
     );
-    assert_eq!(
-        market.get_task("task-1").unwrap().state,
-        TaskState::Rework
-    );
+    assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Rework);
 
     // 恢复边：Rework → Running
     market.resume_after_rework("task-1").unwrap();
-    assert_eq!(
-        market.get_task("task-1").unwrap().state,
-        TaskState::Running
-    );
+    assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Running);
     // 已在 Running，再次 resume 非法（转移表无 Running→Running）
     assert!(market.resume_after_rework("task-1").is_err());
     // 不存在任务报错
@@ -1260,10 +1296,7 @@ fn test_reopen_after_no_quorum_then_resettle() {
     );
     let paid = market.settle_task("task-1").unwrap();
     assert_eq!(paid, Money::new(10));
-    assert_eq!(
-        market.get_task("task-1").unwrap().state,
-        TaskState::Settled
-    );
+    assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Settled);
 }
 
 #[test]
@@ -1324,8 +1357,5 @@ fn test_settle_none_policy_exempts_evidence_gate() {
     // 无 QA、证据豁免 → 结算成功
     let paid = market.settle_task("task-1").unwrap();
     assert_eq!(paid, Money::new(10));
-    assert_eq!(
-        market.get_task("task-1").unwrap().state,
-        TaskState::Settled
-    );
+    assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Settled);
 }

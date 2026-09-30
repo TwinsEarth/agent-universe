@@ -22,7 +22,7 @@ impl InMemoryKademlia {
     }
 
     pub fn shard_of(&self, key: &str) -> u32 {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
         let hash = hasher.finalize();

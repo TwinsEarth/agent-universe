@@ -109,7 +109,11 @@ impl NatTraversalManager {
     }
 
     /// 建立连接
-    pub fn connect(&mut self, peer_id: String, _remote_candidates: Vec<IceCandidate>) -> ConnectionState {
+    pub fn connect(
+        &mut self,
+        peer_id: String,
+        _remote_candidates: Vec<IceCandidate>,
+    ) -> ConnectionState {
         // 占位：不进行 ICE 协商，直接置为 Connected；真实打洞/中继见 net::peer
         let state = ConnectionState::Connected;
         self.connections.insert(peer_id, state);
@@ -121,7 +125,8 @@ impl NatTraversalManager {
     }
 
     pub fn connected_count(&self) -> usize {
-        self.connections.values()
+        self.connections
+            .values()
             .filter(|s| **s == ConnectionState::Connected)
             .count()
     }

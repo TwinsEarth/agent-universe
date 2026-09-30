@@ -77,7 +77,10 @@ pub enum ProcessOutcome {
     /// 任务被拒绝
     TaskRejected { task_id: String, reason: String },
     /// 任务已执行，产出收据
-    TaskCompleted { task_id: String, receipt: Box<Receipt> },
+    TaskCompleted {
+        task_id: String,
+        receipt: Box<Receipt>,
+    },
     /// 消息/请求被拒绝（未进入流程）
     Rejected { reason: String },
 }
@@ -297,10 +300,7 @@ impl AcaProcessor {
     fn decide(&self, envelope: &TaskEnvelope) -> AcaDecision {
         // 能力匹配
         if !self.capabilities.contains(&envelope.capability) {
-            return AcaDecision::Reject(format!(
-                "本节点不具备能力: {}",
-                envelope.capability
-            ));
+            return AcaDecision::Reject(format!("本节点不具备能力: {}", envelope.capability));
         }
         // 预算须为正
         if envelope.budget == 0 {
@@ -352,8 +352,7 @@ impl AcaProcessor {
 
         // 构造并签名收据
         let signer = Ed25519Signer::new(&self.keypair);
-        let mut receipt =
-            Receipt::new(task_id.to_string(), self.local_did.clone(), &output.result);
+        let mut receipt = Receipt::new(task_id.to_string(), self.local_did.clone(), &output.result);
         receipt.metering = ResourceMetering {
             compute_ms: output.compute_ms,
             memory_peak_mb: output.memory_peak_mb,
@@ -389,11 +388,7 @@ impl AcaProcessor {
     }
 
     /// 处理对端发来的收据：验签后按可验证收据客观记账
-    fn handle_incoming_receipt(
-        &mut self,
-        msg: &AcaMessage,
-        pubkey: &[u8],
-    ) -> ProcessOutcome {
+    fn handle_incoming_receipt(&mut self, msg: &AcaMessage, pubkey: &[u8]) -> ProcessOutcome {
         let receipt = match msg.parse_receipt() {
             Ok(r) => r,
             Err(e) => {

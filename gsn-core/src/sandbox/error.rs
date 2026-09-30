@@ -26,14 +26,21 @@ pub enum SandboxError {
     /// 配置非法（调用方问题，不进入执行）。
     InvalidConfig(String),
     /// 生命周期状态非法（当前状态不允许该动作）。
-    InvalidLifecycle {
-        from: String,
-        action: String,
-    },
+    InvalidLifecycle { from: String, action: String },
     /// 沙箱不存在 / 已被回收。
     NotFound(String),
     /// 网络策略拒绝（出站目标不在白名单）。
     NetworkDenied(String),
+    /// 请求的边界后端在本平台**无法强制**——要么换后端，要么显式豁免并记审计。
+    /// 绝不静默降级后继续运行。
+    PolicyNotEnforceable {
+        /// 无法强制的边界
+        boundary: crate::sandbox::capability::Capability,
+        /// 后端名称
+        backend: String,
+        /// 为什么无法强制
+        detail: String,
+    },
     /// 内部错误（不静默吞掉，必须上抛）。
     Internal(String),
 }
@@ -46,8 +53,15 @@ impl std::fmt::Display for SandboxError {
             SandboxError::ExecFailed { exit_code, stderr } => {
                 write!(f, "exec failed (exit={exit_code:?}): {stderr}")
             }
-            SandboxError::ResourceLimitExceeded { kind, limit, actual } => {
-                write!(f, "resource limit exceeded: {kind} limit={limit} actual={actual}")
+            SandboxError::ResourceLimitExceeded {
+                kind,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "resource limit exceeded: {kind} limit={limit} actual={actual}"
+                )
             }
             SandboxError::InvalidConfig(m) => write!(f, "invalid config: {m}"),
             SandboxError::InvalidLifecycle { from, action } => {
@@ -55,6 +69,16 @@ impl std::fmt::Display for SandboxError {
             }
             SandboxError::NotFound(id) => write!(f, "sandbox not found: {id}"),
             SandboxError::NetworkDenied(target) => write!(f, "network denied: {target}"),
+            SandboxError::PolicyNotEnforceable {
+                boundary,
+                backend,
+                detail,
+            } => {
+                write!(
+                    f,
+                    "policy not enforceable: {boundary} (backend `{backend}`): {detail}"
+                )
+            }
             SandboxError::Internal(m) => write!(f, "internal: {m}"),
         }
     }

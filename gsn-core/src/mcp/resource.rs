@@ -22,7 +22,11 @@ impl ResourceUri {
         let rest = uri.strip_prefix("gsn://")?;
         let parts: Vec<&str> = rest.splitn(3, '/').collect();
         if parts.len() == 3 {
-            Some((parts[0].to_string(), parts[1].to_string(), parts[2].to_string()))
+            Some((
+                parts[0].to_string(),
+                parts[1].to_string(),
+                parts[2].to_string(),
+            ))
         } else {
             None
         }

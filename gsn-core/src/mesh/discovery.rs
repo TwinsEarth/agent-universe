@@ -29,7 +29,9 @@ pub struct DiscoveryTable {
 
 impl DiscoveryTable {
     pub fn new() -> Self {
-        Self { peers: HashMap::new() }
+        Self {
+            peers: HashMap::new(),
+        }
     }
 
     /// 收到一个 peer 的发现公告
@@ -58,7 +60,10 @@ impl DiscoveryTable {
 
     /// 已绑定永久 DID 的 peers
     pub fn bound_peers(&self) -> Vec<&DiscoveryAnnouncement> {
-        self.peers.values().filter(|a| a.permanent_did.is_some()).collect()
+        self.peers
+            .values()
+            .filter(|a| a.permanent_did.is_some())
+            .collect()
     }
 }
 

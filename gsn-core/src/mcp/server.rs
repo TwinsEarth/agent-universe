@@ -10,13 +10,13 @@
 //! - initialize 输出规范的 camelCase，能力声明按实际注册动态生成。
 //! - 支持 MCP 规范的 `ping` 心跳。
 
-use std::collections::HashMap;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
-use super::protocol::*;
-use super::tool::*;
-use super::resource::*;
 use super::prompt::*;
+use super::protocol::*;
+use super::resource::*;
+use super::tool::*;
 
 /// 同步工具执行器：接收 arguments JSON，返回 ToolResult
 pub type ToolHandler = Box<dyn Fn(&Value) -> ToolResult + Send + Sync>;
@@ -150,11 +150,7 @@ impl McpServer {
         self.initialized = true;
         // 客户端声明的版本（用于日志/兼容判断）；本服务端固定支持 MCP_PROTOCOL_VERSION。
         let _client_version = params.get("protocolVersion").and_then(|v| v.as_str());
-        let result = initialize_result_value(
-            &self.server_name,
-            self.capabilities_value(),
-            None,
-        );
+        let result = initialize_result_value(&self.server_name, self.capabilities_value(), None);
         McpResponse::success(id, result)
     }
 
@@ -177,9 +173,9 @@ impl McpServer {
             let tr = ToolResult::error(format!("未知工具: {name}"));
             return McpResponse::success(
                 id,
-                serde_json::to_value(tr).unwrap_or_else(|_| {
-                    json!({"content":[{"type":"text","text":"未知工具"}],"isError":true})
-                }),
+                serde_json::to_value(tr).unwrap_or_else(
+                    |_| json!({"content":[{"type":"text","text":"未知工具"}],"isError":true}),
+                ),
             );
         }
 
@@ -189,9 +185,7 @@ impl McpServer {
             None => {
                 return McpResponse::error(
                     id,
-                    McpError::InvalidRequest(format!(
-                        "工具 '{name}' 未绑定执行器，无法执行"
-                    )),
+                    McpError::InvalidRequest(format!("工具 '{name}' 未绑定执行器，无法执行")),
                 );
             }
         };
@@ -235,9 +229,7 @@ impl McpServer {
             None => {
                 return McpResponse::error(
                     id,
-                    McpError::InvalidRequest(format!(
-                        "资源 '{uri}' 未绑定读取器，无法读取"
-                    )),
+                    McpError::InvalidRequest(format!("资源 '{uri}' 未绑定读取器，无法读取")),
                 );
             }
         };

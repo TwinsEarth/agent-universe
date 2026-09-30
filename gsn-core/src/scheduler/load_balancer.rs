@@ -33,11 +33,14 @@ impl LoadBalancer {
     }
 
     pub fn add_node(&mut self, did: String, capacity: u64) {
-        self.nodes.insert(did, NodeLoad {
-            active_tasks: 0,
-            total_tasks: 0,
-            capacity,
-        });
+        self.nodes.insert(
+            did,
+            NodeLoad {
+                active_tasks: 0,
+                total_tasks: 0,
+                capacity,
+            },
+        );
     }
 
     pub fn remove_node(&mut self, did: &str) {
@@ -60,7 +63,9 @@ impl LoadBalancer {
     }
 
     pub fn select_node(&self) -> Option<String> {
-        let available: Vec<_> = self.nodes.iter()
+        let available: Vec<_> = self
+            .nodes
+            .iter()
             .filter(|(_, n)| n.active_tasks < n.capacity)
             .collect();
 
@@ -69,33 +74,34 @@ impl LoadBalancer {
         }
 
         match self.strategy {
-            BalanceStrategy::RoundRobin => {
-                available.first().map(|(did, _)| (*did).clone())
-            }
-            BalanceStrategy::LeastConnections => {
-                available.into_iter()
-                    .min_by_key(|(_, n)| n.active_tasks)
-                    .map(|(did, _)| did.clone())
-            }
-            BalanceStrategy::LeastResponseTime => {
-                available.into_iter()
-                    .min_by(|a, b| {
-                        let a_ratio = a.1.active_tasks as f64 / a.1.capacity as f64;
-                        let b_ratio = b.1.active_tasks as f64 / b.1.capacity as f64;
-                        a_ratio.partial_cmp(&b_ratio).unwrap()
-                    })
-                    .map(|(did, _)| did.clone())
-            }
+            BalanceStrategy::RoundRobin => available.first().map(|(did, _)| (*did).clone()),
+            BalanceStrategy::LeastConnections => available
+                .into_iter()
+                .min_by_key(|(_, n)| n.active_tasks)
+                .map(|(did, _)| did.clone()),
+            BalanceStrategy::LeastResponseTime => available
+                .into_iter()
+                .min_by(|a, b| {
+                    // 比较利用率 active/capacity：用交叉相乘避免浮点与 NaN
+                    // （available 已保证 capacity > 0）
+                    let lhs = a.1.active_tasks.saturating_mul(b.1.capacity);
+                    let rhs = b.1.active_tasks.saturating_mul(a.1.capacity);
+                    lhs.cmp(&rhs)
+                })
+                .map(|(did, _)| did.clone()),
         }
     }
 
     pub fn average_utilization(&self) -> f64 {
-        if self.nodes.is_empty() {
+        // 仅纳入 capacity > 0 的节点，避免 0/0 = NaN
+        let usable: Vec<&NodeLoad> = self.nodes.values().filter(|n| n.capacity > 0).collect();
+        if usable.is_empty() {
             return 0.0;
         }
-        let sum: f64 = self.nodes.values()
+        let sum: f64 = usable
+            .iter()
             .map(|n| n.active_tasks as f64 / n.capacity as f64)
             .sum();
-        sum / self.nodes.len() as f64
+        sum / usable.len() as f64
     }
 }

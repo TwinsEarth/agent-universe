@@ -1,9 +1,9 @@
 //! 贡献证明（Proof of Contribution）
-//! 
+//!
 //! 智能体为网络做了多少贡献，就获得多少信誉
 //! 不同于 PoW 的计算浪费，PoC 是实际有用的贡献
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct ContributionProof {

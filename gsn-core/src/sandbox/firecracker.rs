@@ -72,7 +72,10 @@ mod tests {
     fn env_blocked_when_no_kvm() {
         let f = FirecrackerSandbox::new("sb", PathBuf::from("/vmlinux"), PathBuf::from("/rootfs"));
         if !f.kvm_available() {
-            assert!(matches!(f.ensure_available(), Err(SandboxError::EnvBlocked(_))));
+            assert!(matches!(
+                f.ensure_available(),
+                Err(SandboxError::EnvBlocked(_))
+            ));
         }
     }
 }

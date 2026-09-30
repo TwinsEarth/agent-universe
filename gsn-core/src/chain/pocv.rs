@@ -1,8 +1,8 @@
 //! PoCV 可验证计算（修复版）
-//! 
+//!
 //! 基于哈希链的可验证计算，验证者可以独立验证计算结果
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone)]
 pub struct ProofOfComputation {
@@ -43,7 +43,13 @@ impl PoCVVerifier {
     }
 
     /// 生成计算证明
-    pub fn generate_proof(&self, input: &[u8], output: &[u8], steps: u64, prover_did: String) -> ProofOfComputation {
+    pub fn generate_proof(
+        &self,
+        input: &[u8],
+        output: &[u8],
+        steps: u64,
+        prover_did: String,
+    ) -> ProofOfComputation {
         ProofOfComputation {
             input_hash: self.compute_hash(input),
             output_hash: self.compute_hash(output),

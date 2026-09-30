@@ -55,7 +55,6 @@ impl McpMethod {
             McpMethod::Custom => "custom",
         }
     }
-
 }
 
 impl std::str::FromStr for McpMethod {
@@ -283,7 +282,9 @@ impl ServerCapabilities {
     /// 仅声明 tools 能力（市场 MCP 服务使用）
     pub fn tools_only() -> Self {
         Self {
-            tools: Some(ToolsCapability { list_changed: false }),
+            tools: Some(ToolsCapability {
+                list_changed: false,
+            }),
             resources: None,
             prompts: None,
         }

@@ -6,9 +6,9 @@
 use crate::marketplace::*;
 use crate::storage::PersistentStore;
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, oneshot};
 
 /// 当前 Unix 毫秒
 pub fn now_ms() -> u64 {
@@ -16,6 +16,14 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// 快照持久化失败时显式告警（GAP §3.6：快照为幂等 fire-and-forget，
+/// 无法在后台循环里把错误回传给已响应的请求，但绝不允许静默吞掉）。
+fn warn_persist<T>(r: anyhow::Result<T>, what: &str) {
+    if let Err(e) = r {
+        eprintln!("⚠️ 快照持久化失败（{what}，下轮会重写）: {e}");
+    }
 }
 
 /// 简化的智能体注册输入
@@ -54,8 +62,12 @@ pub struct RegisterAgentInput {
     pub pricing_model: String,
 }
 
-fn default_currency() -> String { "credit".to_string() }
-fn default_pricing_model() -> String { "per_call".to_string() }
+fn default_currency() -> String {
+    "credit".to_string()
+}
+fn default_pricing_model() -> String {
+    "per_call".to_string()
+}
 
 impl RegisterAgentInput {
     /// 转换为完整 MarketAgentCard
@@ -81,7 +93,11 @@ impl RegisterAgentInput {
             modalities: self.modalities,
             models: self.models,
             endpoint: self.endpoint,
-            pricing: Pricing { model, price: self.price, currency },
+            pricing: Pricing {
+                model,
+                price: self.price,
+                currency,
+            },
             sla: Sla::default(),
             owner: self.owner,
             stake: self.stake,
@@ -100,29 +116,62 @@ impl RegisterAgentInput {
 #[derive(Debug)]
 pub enum MarketCommand {
     /// 注册智能体（传入卡片 JSON）
-    RegisterAgent { card: Value, reply: oneshot::Sender<MarketResponse> },
+    RegisterAgent {
+        card: Value,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 查询单个智能体
-    GetAgent { agent_id: String, reply: oneshot::Sender<MarketResponse> },
+    GetAgent {
+        agent_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 按技能发现
-    Discover { skill: String, reply: oneshot::Sender<MarketResponse> },
+    Discover {
+        skill: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 关键词搜索
-    Search { query: String, reply: oneshot::Sender<MarketResponse> },
+    Search {
+        query: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 列出全部已注册智能体（工作台，?all=1）
-    ListAllAgents { reply: oneshot::Sender<MarketResponse> },
+    ListAllAgents {
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 发布任务（传入任务 JSON）
-    PublishTask { task: Value, reply: oneshot::Sender<MarketResponse> },
+    PublishTask {
+        task: Value,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 查询任务
-    GetTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    GetTask {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 列出任务（默认统计）
-    ListTasks { reply: oneshot::Sender<MarketResponse> },
+    ListTasks {
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 列出全部任务（工作台，?all=1）
-    ListAllTasks { reply: oneshot::Sender<MarketResponse> },
+    ListAllTasks {
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 投标
-    SubmitBid { bid: Value, reply: oneshot::Sender<MarketResponse> },
+    SubmitBid {
+        bid: Value,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 匹配任务
-    MatchTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    MatchTask {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 提交结果
-    SubmitResult { envelope: Value, reply: oneshot::Sender<MarketResponse> },
+    SubmitResult {
+        envelope: Value,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 验证结果（认证式，v2.5.9）
     ///
     /// members: 固定委员集 (did, 公钥)；signed_votes: 委员私钥签发的真实投票。
@@ -136,30 +185,66 @@ pub enum MarketCommand {
         reply: oneshot::Sender<MarketResponse>,
     },
     /// 结算任务
-    SettleTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    SettleTask {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 恢复边：返工任务回到执行中（v2.6.0）
-    ResumeRework { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    ResumeRework {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 恢复边：无共识任务重新开放（v2.6.0）
-    ReopenTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    ReopenTask {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 终局拒绝（v2.8.5：此前 reject_task 仅库可达，未走 REST/MCP）
-    RejectTask { task_id: String, reply: oneshot::Sender<MarketResponse> },
+    RejectTask {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 开启争议
-    OpenDispute { dispute: Value, reply: oneshot::Sender<MarketResponse> },
+    OpenDispute {
+        dispute: Value,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 仲裁
     /// 仲裁（v2.8.5：罚没金额服务端定，需显式仲裁者，不再传 slash）
-    Arbitrate { dispute_id: String, arbitrator: String, guilty: bool, reply: oneshot::Sender<MarketResponse> },
+    Arbitrate {
+        dispute_id: String,
+        arbitrator: String,
+        guilty: bool,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 充值
-    Deposit { account: String, amount: Money, reply: oneshot::Sender<MarketResponse> },
+    Deposit {
+        account: String,
+        amount: Money,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 查询余额
-    Balance { account: String, reply: oneshot::Sender<MarketResponse> },
+    Balance {
+        account: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 守恒检查
-    Conservation { reply: oneshot::Sender<MarketResponse> },
+    Conservation {
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 独立审计（从流水独立重放，v2.5.9）
-    Audit { reply: oneshot::Sender<MarketResponse> },
+    Audit {
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 信誉排行榜
-    Leaderboard { limit: usize, reply: oneshot::Sender<MarketResponse> },
+    Leaderboard {
+        limit: usize,
+        reply: oneshot::Sender<MarketResponse>,
+    },
     /// 市场概览统计
-    Stats { reply: oneshot::Sender<MarketResponse> },
+    Stats {
+        reply: oneshot::Sender<MarketResponse>,
+    },
 }
 
 /// 市场响应
@@ -227,7 +312,10 @@ impl MarketActorHandle {
                     if head.is_empty() {
                         println!("🔗 账本哈希链：空（全新库）");
                     } else {
-                        println!("🔗 账本哈希链校验通过，head={}", &head[..head.len().min(12)]);
+                        println!(
+                            "🔗 账本哈希链校验通过，head={}",
+                            &head[..head.len().min(12)]
+                        );
                     }
                 }
                 Err(seq) => {
@@ -303,27 +391,38 @@ impl MarketActorHandle {
                     match store.append_ledger_record(&records[ledger_water]) {
                         Ok(()) => ledger_water += 1,
                         Err(e) => {
-                            eprintln!("⚠️ 账本流水 append 失败（停在水位 {ledger_water}，下轮重试）: {e}");
+                            eprintln!(
+                                "⚠️ 账本流水 append 失败（停在水位 {ledger_water}，下轮重试）: {e}"
+                            );
                             break;
                         }
                     }
                 }
                 // agents / tasks 快照 upsert（幂等，覆盖最新状态）
                 for a in market.snapshot_agents_for_store() {
-                    let _ = store.upsert_agent(&a);
+                    warn_persist(store.upsert_agent(&a), "agent 快照");
                 }
                 for t in market.snapshot_tasks_for_store() {
-                    let _ = store.upsert_task(&t);
+                    warn_persist(store.upsert_task(&t), "task 快照");
                 }
                 // v2.8.4: 结果信封/信誉/质押快照（GAP §3.2，幂等覆盖）。
                 for (id, payload) in market.snapshot_results_for_store() {
-                    let _ = store.put_json_row("result_envelopes", "task_id", &id, &payload);
+                    warn_persist(
+                        store.put_json_row("result_envelopes", "task_id", &id, &payload),
+                        "result envelope 快照",
+                    );
                 }
                 for (id, payload) in market.snapshot_reputations_for_store() {
-                    let _ = store.put_json_row("reputations", "agent_id", &id, &payload);
+                    warn_persist(
+                        store.put_json_row("reputations", "agent_id", &id, &payload),
+                        "reputation 快照",
+                    );
                 }
                 for (id, payload) in market.snapshot_stakes_for_store() {
-                    let _ = store.put_json_row("stakes", "agent_id", &id, &payload);
+                    warn_persist(
+                        store.put_json_row("stakes", "agent_id", &id, &payload),
+                        "stake 快照",
+                    );
                 }
             }
         });
@@ -331,50 +430,65 @@ impl MarketActorHandle {
     }
 
     /// 发送命令并等待响应
-    async fn call(&self, make: impl FnOnce(oneshot::Sender<MarketResponse>) -> MarketCommand) -> MarketResponse {
+    async fn call(
+        &self,
+        make: impl FnOnce(oneshot::Sender<MarketResponse>) -> MarketCommand,
+    ) -> MarketResponse {
         let (reply, rx) = oneshot::channel();
         let cmd = make(reply);
         if self.tx.send(cmd).await.is_err() {
             return MarketResponse::err("market actor 已关闭");
         }
-        rx.await.unwrap_or_else(|_| MarketResponse::err("market actor 无响应"))
+        rx.await
+            .unwrap_or_else(|_| MarketResponse::err("market actor 无响应"))
     }
 
     pub async fn register_agent(&self, card: Value) -> MarketResponse {
-        self.call(|reply| MarketCommand::RegisterAgent { card, reply }).await
+        self.call(|reply| MarketCommand::RegisterAgent { card, reply })
+            .await
     }
     pub async fn get_agent(&self, agent_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::GetAgent { agent_id, reply }).await
+        self.call(|reply| MarketCommand::GetAgent { agent_id, reply })
+            .await
     }
     pub async fn discover(&self, skill: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::Discover { skill, reply }).await
+        self.call(|reply| MarketCommand::Discover { skill, reply })
+            .await
     }
     pub async fn search(&self, query: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::Search { query, reply }).await
+        self.call(|reply| MarketCommand::Search { query, reply })
+            .await
     }
     pub async fn list_all_agents(&self) -> MarketResponse {
-        self.call(|reply| MarketCommand::ListAllAgents { reply }).await
+        self.call(|reply| MarketCommand::ListAllAgents { reply })
+            .await
     }
     pub async fn publish_task(&self, task: Value) -> MarketResponse {
-        self.call(|reply| MarketCommand::PublishTask { task, reply }).await
+        self.call(|reply| MarketCommand::PublishTask { task, reply })
+            .await
     }
     pub async fn get_task(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::GetTask { task_id, reply }).await
+        self.call(|reply| MarketCommand::GetTask { task_id, reply })
+            .await
     }
     pub async fn list_tasks(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::ListTasks { reply }).await
     }
     pub async fn list_all_tasks(&self) -> MarketResponse {
-        self.call(|reply| MarketCommand::ListAllTasks { reply }).await
+        self.call(|reply| MarketCommand::ListAllTasks { reply })
+            .await
     }
     pub async fn submit_bid(&self, bid: Value) -> MarketResponse {
-        self.call(|reply| MarketCommand::SubmitBid { bid, reply }).await
+        self.call(|reply| MarketCommand::SubmitBid { bid, reply })
+            .await
     }
     pub async fn match_task(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::MatchTask { task_id, reply }).await
+        self.call(|reply| MarketCommand::MatchTask { task_id, reply })
+            .await
     }
     pub async fn submit_result(&self, envelope: Value) -> MarketResponse {
-        self.call(|reply| MarketCommand::SubmitResult { envelope, reply }).await
+        self.call(|reply| MarketCommand::SubmitResult { envelope, reply })
+            .await
     }
     /// 认证式验证：固定委员集 + 委员签名票（v2.5.9）
     pub async fn verify_result(
@@ -396,40 +510,64 @@ impl MarketActorHandle {
         .await
     }
     pub async fn settle_task(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::SettleTask { task_id, reply }).await
+        self.call(|reply| MarketCommand::SettleTask { task_id, reply })
+            .await
     }
     /// 恢复边：返工任务回到执行中（v2.6.0）
     pub async fn resume_rework(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::ResumeRework { task_id, reply }).await
+        self.call(|reply| MarketCommand::ResumeRework { task_id, reply })
+            .await
     }
     /// 恢复边：无共识任务重新开放（v2.6.0）
     pub async fn reopen_task(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::ReopenTask { task_id, reply }).await
+        self.call(|reply| MarketCommand::ReopenTask { task_id, reply })
+            .await
     }
     pub async fn reject_task(&self, task_id: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::RejectTask { task_id, reply }).await
+        self.call(|reply| MarketCommand::RejectTask { task_id, reply })
+            .await
     }
     pub async fn open_dispute(&self, dispute: Value) -> MarketResponse {
-        self.call(|reply| MarketCommand::OpenDispute { dispute, reply }).await
+        self.call(|reply| MarketCommand::OpenDispute { dispute, reply })
+            .await
     }
-    pub async fn arbitrate(&self, dispute_id: String, arbitrator: String, guilty: bool) -> MarketResponse {
-        self.call(|reply| MarketCommand::Arbitrate { dispute_id, arbitrator, guilty, reply }).await
+    pub async fn arbitrate(
+        &self,
+        dispute_id: String,
+        arbitrator: String,
+        guilty: bool,
+    ) -> MarketResponse {
+        self.call(|reply| MarketCommand::Arbitrate {
+            dispute_id,
+            arbitrator,
+            guilty,
+            reply,
+        })
+        .await
     }
     pub async fn deposit(&self, account: String, amount: Money) -> MarketResponse {
-        self.call(|reply| MarketCommand::Deposit { account, amount, reply }).await
+        self.call(|reply| MarketCommand::Deposit {
+            account,
+            amount,
+            reply,
+        })
+        .await
     }
     pub async fn balance(&self, account: String) -> MarketResponse {
-        self.call(|reply| MarketCommand::Balance { account, reply }).await
+        self.call(|reply| MarketCommand::Balance { account, reply })
+            .await
     }
     pub async fn conservation(&self) -> MarketResponse {
-        self.call(|reply| MarketCommand::Conservation { reply }).await
+        self.call(|reply| MarketCommand::Conservation { reply })
+            .await
     }
     /// 独立审计（v2.5.9）
     pub async fn audit(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::Audit { reply }).await
     }
     pub async fn leaderboard(&self, limit: usize) -> MarketResponse {
-        self.call(|reply| MarketCommand::Leaderboard { limit, reply }).await
+        self.call(|reply| MarketCommand::Leaderboard { limit, reply })
+            .await
     }
     pub async fn stats(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::Stats { reply }).await
@@ -441,28 +579,41 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
     match cmd {
         MarketCommand::RegisterAgent { card, reply } => {
             match serde_json::from_value::<RegisterAgentInput>(card) {
-                Ok(input) => {
-                    match input.into_card() {
-                        Ok(c) => match market.register_agent(c) {
-                            Ok(id) => {
-                                let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                                    "status": "registered", "agent_id": id
-                                })));
-                            }
-                            Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-                        },
-                        Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+                Ok(input) => match input.into_card() {
+                    Ok(c) => match market.register_agent(c) {
+                        Ok(id) => {
+                            let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                                "status": "registered", "agent_id": id
+                            })));
+                        }
+                        Err(e) => {
+                            let _ = reply.send(MarketResponse::err(e));
+                        }
+                    },
+                    Err(e) => {
+                        let _ = reply.send(MarketResponse::err(e));
                     }
+                },
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(format!("卡片格式错误: {e}")));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(format!("卡片格式错误: {e}"))); }
             }
         }
-        MarketCommand::GetAgent { agent_id, reply } => {
-            match market.get_agent(&agent_id) {
-                Some(a) => { let _ = reply.send(MarketResponse::ok(serde_json::to_value(a).unwrap())); }
-                None => { let _ = reply.send(MarketResponse::err(format!("NOT_FOUND: agent 不存在: {agent_id}"))); }
+        MarketCommand::GetAgent { agent_id, reply } => match market.get_agent(&agent_id) {
+            Some(a) => match serde_json::to_value(a) {
+                Ok(v) => {
+                    let _ = reply.send(MarketResponse::ok(v));
+                }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(format!("序列化失败: {e}")));
+                }
+            },
+            None => {
+                let _ = reply.send(MarketResponse::err(format!(
+                    "NOT_FOUND: agent 不存在: {agent_id}"
+                )));
             }
-        }
+        },
         MarketCommand::Discover { skill, reply } => {
             let agents: Vec<&MarketAgentCard> = market.discover_by_skill(&skill);
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
@@ -495,19 +646,33 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                             })));
                         }
                         Err(gaps) => {
-                            let _ = reply.send(MarketResponse::err(format!("任务校验失败: {}", gaps.join("; "))));
+                            let _ = reply.send(MarketResponse::err(format!(
+                                "任务校验失败: {}",
+                                gaps.join("; ")
+                            )));
                         }
                     }
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(format!("任务格式错误: {e}"))); }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(format!("任务格式错误: {e}")));
+                }
             }
         }
-        MarketCommand::GetTask { task_id, reply } => {
-            match market.get_task(&task_id) {
-                Some(t) => { let _ = reply.send(MarketResponse::ok(serde_json::to_value(t).unwrap())); }
-                None => { let _ = reply.send(MarketResponse::err(format!("NOT_FOUND: task 不存在: {task_id}"))); }
+        MarketCommand::GetTask { task_id, reply } => match market.get_task(&task_id) {
+            Some(t) => match serde_json::to_value(t) {
+                Ok(v) => {
+                    let _ = reply.send(MarketResponse::ok(v));
+                }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(format!("序列化失败: {e}")));
+                }
+            },
+            None => {
+                let _ = reply.send(MarketResponse::err(format!(
+                    "NOT_FOUND: task 不存在: {task_id}"
+                )));
             }
-        }
+        },
         MarketCommand::ListTasks { reply } => {
             // 通过搜索无法直接列出，用统计 + 空查询；这里复用 get_task 不可行，
             // 改为遍历：AgentMarket 未暴露迭代器，用 leaderboard 之外的方式。
@@ -524,41 +689,58 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 "tasks": tasks,
             })));
         }
-        MarketCommand::SubmitBid { bid, reply } => {
-            match serde_json::from_value::<Bid>(bid) {
-                Ok(b) => match market.submit_bid(b) {
-                    Ok(_) => { let _ = reply.send(MarketResponse::ok(serde_json::json!({"status": "bid_submitted"}))); }
-                    Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-                },
-                Err(e) => { let _ = reply.send(MarketResponse::err(format!("投标格式错误: {e}"))); }
-            }
-        }
-        MarketCommand::MatchTask { task_id, reply } => {
-            match market.match_task(&task_id) {
-                Ok(agent_id) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "matched", "task_id": task_id, "agent_id": agent_id
-                    })));
+        MarketCommand::SubmitBid { bid, reply } => match serde_json::from_value::<Bid>(bid) {
+            Ok(b) => match market.submit_bid(b) {
+                Ok(_) => {
+                    let _ = reply.send(MarketResponse::ok(
+                        serde_json::json!({"status": "bid_submitted"}),
+                    ));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
+                }
+            },
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(format!("投标格式错误: {e}")));
             }
-        }
+        },
+        MarketCommand::MatchTask { task_id, reply } => match market.match_task(&task_id) {
+            Ok(agent_id) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "matched", "task_id": task_id, "agent_id": agent_id
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
         MarketCommand::SubmitResult { envelope, reply } => {
             match serde_json::from_value::<ResultEnvelope>(envelope) {
                 Ok(e) => match market.submit_result(e) {
-                    Ok(_) => { let _ = reply.send(MarketResponse::ok(serde_json::json!({"status": "result_submitted"}))); }
-                    Err(err) => { let _ = reply.send(MarketResponse::err(err)); }
+                    Ok(_) => {
+                        let _ = reply.send(MarketResponse::ok(
+                            serde_json::json!({"status": "result_submitted"}),
+                        ));
+                    }
+                    Err(err) => {
+                        let _ = reply.send(MarketResponse::err(err));
+                    }
                 },
-                Err(e) => { let _ = reply.send(MarketResponse::err(format!("结果格式错误: {e}"))); }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(format!("结果格式错误: {e}")));
+                }
             }
         }
         MarketCommand::VerifyResult {
-            task_id, round, members, signed_votes, now, reply,
+            task_id,
+            round,
+            members,
+            signed_votes,
+            now,
+            reply,
         } => {
             // v2.5.9：只接受固定委员集成员的有效签名票，不再合成 qa-N 委员与票
-            match market.verify_result_authenticated(
-                &task_id, round, members, signed_votes, now,
-            ) {
+            match market.verify_result_authenticated(&task_id, round, members, signed_votes, now) {
                 Ok(decision) => {
                     let tag = match decision {
                         QaDecision::Stop => "stop",
@@ -571,19 +753,21 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                         "accepted": decision == QaDecision::Stop,
                     })));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-            }
-        }
-        MarketCommand::SettleTask { task_id, reply } => {
-            match market.settle_task(&task_id) {
-                Ok(amount) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "settled", "task_id": task_id, "amount": amount
-                    })));
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
+        MarketCommand::SettleTask { task_id, reply } => match market.settle_task(&task_id) {
+            Ok(amount) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "settled", "task_id": task_id, "amount": amount
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
         MarketCommand::ResumeRework { task_id, reply } => {
             match market.resume_after_rework(&task_id) {
                 Ok(()) => {
@@ -591,7 +775,9 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                         "status": "running", "task_id": task_id
                     })));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
+                }
             }
         }
         MarketCommand::ReopenTask { task_id, reply } => {
@@ -601,59 +787,87 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                         "status": "open", "task_id": task_id
                     })));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-            }
-        }
-        MarketCommand::RejectTask { task_id, reply } => {
-            match market.reject_task(&task_id) {
-                Ok(()) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "rejected", "task_id": task_id
-                    })));
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
+        MarketCommand::RejectTask { task_id, reply } => match market.reject_task(&task_id) {
+            Ok(()) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "rejected", "task_id": task_id
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
         MarketCommand::OpenDispute { dispute, reply } => {
-            let dispute_id = dispute.get("dispute_id").and_then(|v| v.as_str())
-                .unwrap_or(&format!("dispute-{}", uuid::Uuid::new_v4())).to_string();
-            let task_id = dispute.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let complainant = dispute.get("complainant").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let reason = dispute.get("reason").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let dispute_id = dispute
+                .get("dispute_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or(&format!("dispute-{}", uuid::Uuid::new_v4()))
+                .to_string();
+            let task_id = dispute
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let complainant = dispute
+                .get("complainant")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let reason = dispute
+                .get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             match market.open_dispute(&dispute_id, &task_id, &complainant, &reason) {
                 Ok(_) => {
                     let _ = reply.send(MarketResponse::ok(serde_json::json!({
                         "status": "dispute_opened", "dispute_id": dispute_id
                     })));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
-            }
-        }
-        MarketCommand::Arbitrate { dispute_id, arbitrator, guilty, reply } => {
-            match market.arbitrate(&dispute_id, &arbitrator, guilty) {
-                Ok((verdict, slashed)) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "arbitrated",
-                        "dispute_id": dispute_id,
-                        "arbitrator": arbitrator,
-                        "verdict": verdict,
-                        "slash_amount": slashed,
-                    })));
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
                 }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
             }
         }
-        MarketCommand::Deposit { account, amount, reply } => {
-            match market.deposit(&account, amount) {
-                Ok(_) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "deposited", "account": account,
-                        "amount": amount, "balance": market.balance(&account),
-                    })));
-                }
-                Err(e) => { let _ = reply.send(MarketResponse::err(e)); }
+        MarketCommand::Arbitrate {
+            dispute_id,
+            arbitrator,
+            guilty,
+            reply,
+        } => match market.arbitrate(&dispute_id, &arbitrator, guilty) {
+            Ok((verdict, slashed)) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "arbitrated",
+                    "dispute_id": dispute_id,
+                    "arbitrator": arbitrator,
+                    "verdict": verdict,
+                    "slash_amount": slashed,
+                })));
             }
-        }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
+        MarketCommand::Deposit {
+            account,
+            amount,
+            reply,
+        } => match market.deposit(&account, amount) {
+            Ok(_) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "deposited", "account": account,
+                    "amount": amount, "balance": market.balance(&account),
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
         MarketCommand::Balance { account, reply } => {
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
                 "account": account, "balance": market.balance(&account),
@@ -683,7 +897,9 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 .into_iter()
                 .map(|(id, score)| serde_json::json!({"agent_id": id, "reputation": score}))
                 .collect();
-            let _ = reply.send(MarketResponse::ok(serde_json::json!({"leaderboard": board})));
+            let _ = reply.send(MarketResponse::ok(
+                serde_json::json!({"leaderboard": board}),
+            ));
         }
         MarketCommand::Stats { reply } => {
             let _ = reply.send(MarketResponse::ok(serde_json::json!({

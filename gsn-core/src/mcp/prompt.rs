@@ -22,15 +22,24 @@ pub struct PromptMessage {
 
 impl PromptMessage {
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: PromptRole::User, content: content.into() }
+        Self {
+            role: PromptRole::User,
+            content: content.into(),
+        }
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self { role: PromptRole::Assistant, content: content.into() }
+        Self {
+            role: PromptRole::Assistant,
+            content: content.into(),
+        }
     }
 
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: PromptRole::System, content: content.into() }
+        Self {
+            role: PromptRole::System,
+            content: content.into(),
+        }
     }
 }
 
@@ -78,14 +87,21 @@ impl PromptDefinition {
     }
 
     /// 渲染提示模板：替换 {argument} 占位符
-    pub fn render(&self, messages: &[PromptMessage], args: &serde_json::Map<String, serde_json::Value>) -> Vec<PromptMessage> {
+    pub fn render(
+        &self,
+        messages: &[PromptMessage],
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<PromptMessage> {
         messages
             .iter()
             .map(|m| {
                 let mut rendered = m.content.clone();
                 for (key, value) in args {
                     let placeholder = format!("{{{}}}", key);
-                    let replacement = value.as_str().map(|s| s.to_string()).unwrap_or_else(|| value.to_string());
+                    let replacement = value
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| value.to_string());
                     rendered = rendered.replace(&placeholder, &replacement);
                 }
                 PromptMessage {

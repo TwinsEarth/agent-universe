@@ -199,9 +199,8 @@ impl PersistentStore {
             eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
             e.into_inner()
         });
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, name, skills, stake, reputation, created_at FROM agents",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT agent_id, name, skills, stake, reputation, created_at FROM agents")?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredAgent {
                 agent_id: row.get(0)?,
@@ -485,7 +484,14 @@ impl PersistentStore {
             "UPDATE relays SET healthy = ?2, status = ?3, limit_sec = ?4,
                               data_bytes = ?5, last_check = ?6
              WHERE relay_id = ?1",
-            params![relay_id, healthy as i64, status, limit_sec, data_bytes, last_check],
+            params![
+                relay_id,
+                healthy as i64,
+                status,
+                limit_sec,
+                data_bytes,
+                last_check
+            ],
         )?;
         Ok(())
     }
@@ -500,8 +506,11 @@ impl PersistentStore {
             "UPDATE relays SET fail_count = fail_count + 1, last_check = ?2 WHERE relay_id = ?1",
             params![relay_id, last_check],
         )?;
-        let fail_count: i64 =
-            conn.query_row("SELECT fail_count FROM relays WHERE relay_id = ?1", params![relay_id], |r| r.get(0))?;
+        let fail_count: i64 = conn.query_row(
+            "SELECT fail_count FROM relays WHERE relay_id = ?1",
+            params![relay_id],
+            |r| r.get(0),
+        )?;
         if fail_count >= 3 {
             conn.execute(
                 "UPDATE relays SET healthy = 0, status = 'dead' WHERE relay_id = ?1",
@@ -548,7 +557,9 @@ impl PersistentStore {
             e.into_inner()
         });
         let count: u64 =
-            conn.query_row("SELECT COUNT(*) FROM relays WHERE healthy = 1", [], |row| row.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM relays WHERE healthy = 1", [], |row| {
+                row.get(0)
+            })?;
         Ok(count)
     }
 
@@ -600,8 +611,7 @@ impl PersistentStore {
             eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
             e.into_inner()
         });
-        let mut stmt =
-            conn.prepare("SELECT seq, payload FROM ledger_entries ORDER BY seq ASC")?;
+        let mut stmt = conn.prepare("SELECT seq, payload FROM ledger_entries ORDER BY seq ASC")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -630,7 +640,9 @@ impl PersistentStore {
             e.into_inner()
         });
         let mut stmt = conn
-            .prepare("SELECT seq, payload, prev_hash, record_hash FROM ledger_entries ORDER BY seq ASC")
+            .prepare(
+                "SELECT seq, payload, prev_hash, record_hash FROM ledger_entries ORDER BY seq ASC",
+            )
             .map_err(|_| 0u64)?;
         let rows = stmt
             .query_map([], |row| {
@@ -787,8 +799,8 @@ mod tests {
     use crate::marketplace::{Money, SettlementReason};
 
     fn tmp_db(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir()
-            .join(format!("gsn_persist_v261_{}_{}", std::process::id(), tag));
+        let dir =
+            std::env::temp_dir().join(format!("gsn_persist_v261_{}_{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir.join("gsn.db")
@@ -960,6 +972,10 @@ mod tests {
             .unwrap();
         }
         let s = PersistentStore::open(&path).unwrap();
-        assert_eq!(s.verify_ledger_chain(), Err(u64::MAX), "锚定 head 不符必须报 u64::MAX");
+        assert_eq!(
+            s.verify_ledger_chain(),
+            Err(u64::MAX),
+            "锚定 head 不符必须报 u64::MAX"
+        );
     }
 }

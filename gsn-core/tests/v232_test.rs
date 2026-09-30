@@ -7,11 +7,7 @@ use serde_json::json;
 
 #[test]
 fn test_mcp_request_construction() {
-    let req = McpRequest::new(
-        RequestId::Number(1),
-        McpMethod::ToolsList,
-        json!({}),
-    );
+    let req = McpRequest::new(RequestId::Number(1), McpMethod::ToolsList, json!({}));
     assert_eq!(req.method, "tools/list");
     assert_eq!(req.jsonrpc, "2.0");
     assert!(matches!(req.method_enum(), McpMethod::ToolsList));
@@ -19,10 +15,7 @@ fn test_mcp_request_construction() {
 
 #[test]
 fn test_mcp_response_success() {
-    let resp = McpResponse::success(
-        RequestId::Number(1),
-        json!({ "tools": [] }),
-    );
+    let resp = McpResponse::success(RequestId::Number(1), json!({ "tools": [] }));
     assert!(resp.is_success());
     assert!(resp.error.is_none());
 }
@@ -40,8 +33,14 @@ fn test_mcp_response_error() {
 
 #[test]
 fn test_mcp_method_from_str() {
-    assert_eq!("initialize".parse::<McpMethod>().unwrap(), McpMethod::Initialize);
-    assert_eq!("tools/call".parse::<McpMethod>().unwrap(), McpMethod::ToolsCall);
+    assert_eq!(
+        "initialize".parse::<McpMethod>().unwrap(),
+        McpMethod::Initialize
+    );
+    assert_eq!(
+        "tools/call".parse::<McpMethod>().unwrap(),
+        McpMethod::ToolsCall
+    );
     assert_eq!("unknown".parse::<McpMethod>().unwrap(), McpMethod::Custom);
 }
 
@@ -93,7 +92,8 @@ fn test_resource_definition() {
         ResourceUri::new("gsn://did:1/card"),
         "Agent Card".to_string(),
         "application/json".to_string(),
-    ).with_cid("bafy...".to_string());
+    )
+    .with_cid("bafy...".to_string());
     assert!(res.gsn_cid.is_some());
 }
 
@@ -101,12 +101,10 @@ fn test_resource_definition() {
 
 #[test]
 fn test_prompt_render() {
-    let prompt = PromptDefinition::new("socratic_hint".to_string(), "苏格拉底提示".to_string())
-        .socratic();
+    let prompt =
+        PromptDefinition::new("socratic_hint".to_string(), "苏格拉底提示".to_string()).socratic();
 
-    let messages = vec![
-        PromptMessage::user("请帮我解释 {concept}"),
-    ];
+    let messages = vec![PromptMessage::user("请帮我解释 {concept}")];
 
     let mut args = serde_json::Map::new();
     args.insert("concept".to_string(), json!("光合作用"));
@@ -130,14 +128,24 @@ fn test_mcp_server_initialize() {
 #[test]
 fn test_mcp_server_tools_list() {
     let mut server = McpServer::new("test".to_string());
-    server.register_tool(ToolDefinition::new("search".to_string(), "搜索".to_string()));
-    server.register_tool(ToolDefinition::new("generate".to_string(), "生成".to_string()));
+    server.register_tool(ToolDefinition::new(
+        "search".to_string(),
+        "搜索".to_string(),
+    ));
+    server.register_tool(ToolDefinition::new(
+        "generate".to_string(),
+        "生成".to_string(),
+    ));
 
     // v2.6.8：未 initialize 前受保护方法返回 -32002
     let pre = McpRequest::new(RequestId::Number(0), McpMethod::ToolsList, json!({}));
     assert!(!server.handle(&pre).is_success());
     // 先握手
-    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
+    server.handle(&McpRequest::new(
+        RequestId::Number(0),
+        McpMethod::Initialize,
+        json!({}),
+    ));
 
     let req = McpRequest::new(RequestId::Number(1), McpMethod::ToolsList, json!({}));
     let resp = server.handle(&req);
@@ -148,7 +156,11 @@ fn test_mcp_server_tools_list() {
 #[test]
 fn test_mcp_server_tools_call_not_found() {
     let mut server = McpServer::new("test".to_string());
-    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
+    server.handle(&McpRequest::new(
+        RequestId::Number(0),
+        McpMethod::Initialize,
+        json!({}),
+    ));
     let req = McpRequest::new(
         RequestId::Number(1),
         McpMethod::ToolsCall,
@@ -167,7 +179,11 @@ fn test_mcp_server_prompts() {
     let prompt = PromptDefinition::new("explain".to_string(), "解释概念".to_string());
     let messages = vec![PromptMessage::user("解释 {topic}")];
     server.register_prompt(prompt, messages);
-    server.handle(&McpRequest::new(RequestId::Number(0), McpMethod::Initialize, json!({})));
+    server.handle(&McpRequest::new(
+        RequestId::Number(0),
+        McpMethod::Initialize,
+        json!({}),
+    ));
 
     let list_req = McpRequest::new(RequestId::Number(1), McpMethod::PromptsList, json!({}));
     let list_resp = server.handle(&list_req);
@@ -222,14 +238,20 @@ fn test_task_envelope() {
 #[test]
 fn test_task_envelope_verification_affordability() {
     let cheap = TaskEnvelope::new(
-        "r".to_string(), "c".to_string(), "cid".to_string(), "o".to_string(),
+        "r".to_string(),
+        "c".to_string(),
+        "cid".to_string(),
+        "o".to_string(),
     )
     .with_verification(VerificationLevel::L0Sample)
     .with_budget(100);
     assert!(cheap.verification_affordable());
 
     let expensive = TaskEnvelope::new(
-        "r".to_string(), "c".to_string(), "cid".to_string(), "o".to_string(),
+        "r".to_string(),
+        "c".to_string(),
+        "cid".to_string(),
+        "o".to_string(),
     )
     .with_verification(VerificationLevel::L4Committee)
     .with_budget(10);
@@ -241,11 +263,7 @@ fn test_task_envelope_verification_affordability() {
 #[test]
 fn test_receipt() {
     let result = b"task output data";
-    let receipt = Receipt::new(
-        "task-1".to_string(),
-        "did:executor".to_string(),
-        result,
-    );
+    let receipt = Receipt::new("task-1".to_string(), "did:executor".to_string(), result);
 
     assert!(receipt.verify_result(result));
     assert!(!receipt.verify_result(b"wrong data"));
@@ -267,8 +285,14 @@ fn test_receipt_dispute() {
 fn test_verification_level_properties() {
     assert_eq!(VerificationLevel::L0Sample.as_str(), "L0");
     assert_eq!(VerificationLevel::L4Committee.as_str(), "L4");
-    assert!(VerificationLevel::L0Sample.cost_multiplier() < VerificationLevel::L1Redundant.cost_multiplier());
-    assert!(VerificationLevel::L0Sample.finality_seconds() < VerificationLevel::L4Committee.finality_seconds());
+    assert!(
+        VerificationLevel::L0Sample.cost_multiplier()
+            < VerificationLevel::L1Redundant.cost_multiplier()
+    );
+    assert!(
+        VerificationLevel::L0Sample.finality_seconds()
+            < VerificationLevel::L4Committee.finality_seconds()
+    );
 }
 
 #[test]
@@ -333,7 +357,8 @@ fn test_aca_message_task_proposal() {
         "cid".to_string(),
         "out".to_string(),
     );
-    let msg = AcaMessage::propose_task("did:req".to_string(), "did:exec".to_string(), envelope).unwrap();
+    let msg =
+        AcaMessage::propose_task("did:req".to_string(), "did:exec".to_string(), envelope).unwrap();
     assert_eq!(msg.msg_type, MessageType::TaskProposal);
     assert!(!msg.is_broadcast());
     let parsed = msg.parse_envelope().unwrap();
@@ -343,7 +368,8 @@ fn test_aca_message_task_proposal() {
 #[test]
 fn test_aca_message_receipt() {
     let receipt = Receipt::new("task-1".to_string(), "did:exec".to_string(), b"result");
-    let msg = AcaMessage::deliver_receipt("did:exec".to_string(), "did:req".to_string(), receipt).unwrap();
+    let msg = AcaMessage::deliver_receipt("did:exec".to_string(), "did:req".to_string(), receipt)
+        .unwrap();
     assert_eq!(msg.msg_type, MessageType::Receipt);
     let parsed = msg.parse_receipt().unwrap();
     assert_eq!(parsed.task_id, "task-1");
@@ -365,7 +391,11 @@ fn test_protocol_object_lifecycle() {
     )
     .with_verification(VerificationLevel::L1Redundant);
 
-    let receipt = Receipt::new(envelope.task_id.clone(), "did:exec".to_string(), b"output result");
+    let receipt = Receipt::new(
+        envelope.task_id.clone(),
+        "did:exec".to_string(),
+        b"output result",
+    );
 
     let mut rep = MultiReputation::new("did:exec".to_string());
     rep.record_success(ReputationDimension::Quality, 100.0);
@@ -383,9 +413,9 @@ fn test_protocol_object_lifecycle() {
 fn test_erasure_recover_from_parity() {
     // v2.8.9（GAP §2.2）：真正丢失数据片，仅靠校验片重建——
     // 旧版把 6 个分片全交回，等于没测恢复。
-    let coder = ErasureCoder::new(4, 2);
+    let coder = ErasureCoder::new(4, 2).unwrap();
     let data = b"important data that needs redundancy";
-    let shards = coder.encode(data);
+    let shards = coder.encode(data).unwrap();
 
     // 丢掉 2 个数据片（index 0、2），仅保留数据片 1、3 + 校验片 4、5 = 4 个存活
     let surviving: Vec<DecodedShard> = shards
@@ -402,12 +432,13 @@ fn test_erasure_recover_from_parity() {
 #[test]
 fn test_erasure_too_many_lost() {
     // XOR 编码最多恢复 1 个丢失 shard；丢失 2 个应返回错误
-    let coder = ErasureCoder::new(4, 2);
+    let coder = ErasureCoder::new(4, 2).unwrap();
     let data = b"test data for erasure coding recovery";
-    let shards = coder.encode(data);
+    let shards = coder.encode(data).unwrap();
 
     // 丢失 2 个 data shard（只保留 2 个 data）
-    let partial: Vec<_> = shards.iter()
+    let partial: Vec<_> = shards
+        .iter()
         .filter(|s| s.index == 0 || s.index == 3)
         .cloned()
         .collect();
@@ -419,9 +450,9 @@ fn test_erasure_too_many_lost() {
 
 #[test]
 fn test_erasure_verify_parity() {
-    let coder = ErasureCoder::new(4, 2);
+    let coder = ErasureCoder::new(4, 2).unwrap();
     let data = b"verify parity test data";
-    let shards = coder.encode(data);
+    let shards = coder.encode(data).unwrap();
     assert!(coder.verify_parity(&shards));
 }
 
@@ -451,6 +482,11 @@ fn test_contracts_exist() {
     ];
     for c in &contracts {
         let path = base.join("../").join(c);
-        assert!(path.exists(), "contract missing: {} (resolved: {})", c, path.display());
+        assert!(
+            path.exists(),
+            "contract missing: {} (resolved: {})",
+            c,
+            path.display()
+        );
     }
 }

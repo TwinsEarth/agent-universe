@@ -1,8 +1,8 @@
 //! UniFFI 导出（移动端）
 
+use crate::net::InMemoryNode;
 use std::sync::Arc;
 use std::sync::RwLock;
-use crate::net::InMemoryNode;
 
 pub struct GsnClient {
     node: Arc<RwLock<InMemoryNode>>,

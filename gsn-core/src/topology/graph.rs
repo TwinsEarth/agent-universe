@@ -1,5 +1,5 @@
 //! 网络拓扑图
-//! 
+//!
 //! 表示智能体网络的连接关系和演化
 
 use std::collections::{HashMap, HashSet};
@@ -41,8 +41,11 @@ impl TopologyGraph {
     pub fn add_edge(&mut self, from: String, to: String) {
         self.nodes.insert(from.clone());
         self.nodes.insert(to.clone());
-        
-        self.edges.entry(from.clone()).or_default().insert(to.clone());
+
+        self.edges
+            .entry(from.clone())
+            .or_default()
+            .insert(to.clone());
         self.edges.entry(to).or_default().insert(from);
     }
 
@@ -56,7 +59,8 @@ impl TopologyGraph {
     }
 
     pub fn neighbors_of(&self, did: &str) -> Vec<&String> {
-        self.edges.get(did)
+        self.edges
+            .get(did)
             .map(|s| s.iter().collect())
             .unwrap_or_default()
     }
@@ -98,7 +102,7 @@ impl TopologyGraph {
 
         while let Some((node, depth)) = queue.first().cloned() {
             queue.remove(0);
-            
+
             if node == to {
                 return Some(depth);
             }

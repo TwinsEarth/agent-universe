@@ -1,11 +1,11 @@
 //! 群体智能核心模块
-//! 
+//!
 //! 群体智能 = 网络结构的 Scaling Law
 //! 从 token 网络结构向智能体网络结构演进
 
-use std::collections::HashMap;
-use crate::identity::Did;
 use crate::agent::AgentCard;
+use crate::identity::Did;
+use std::collections::HashMap;
 
 /// 群体中的智能体节点
 #[derive(Debug, Clone)]
@@ -45,9 +45,11 @@ impl AgentNode {
     pub fn record_task(&mut self, success: bool) {
         self.tasks_completed += 1;
         if success {
-            self.success_rate = (self.success_rate * (self.tasks_completed - 1) as f64 + 1.0) / self.tasks_completed as f64;
+            self.success_rate = (self.success_rate * (self.tasks_completed - 1) as f64 + 1.0)
+                / self.tasks_completed as f64;
         } else {
-            self.success_rate = (self.success_rate * (self.tasks_completed - 1) as f64) / self.tasks_completed as f64;
+            self.success_rate = (self.success_rate * (self.tasks_completed - 1) as f64)
+                / self.tasks_completed as f64;
         }
     }
 
@@ -136,10 +138,13 @@ impl Swarm {
 
     /// 按能力筛选并排序节点
     pub fn select_by_capability(&self, capability: &str, limit: usize) -> Vec<&AgentNode> {
-        let mut candidates: Vec<&AgentNode> = self.nodes.values()
+        let mut candidates: Vec<&AgentNode> = self
+            .nodes
+            .values()
             .filter(|n| n.online && n.card.capabilities.iter().any(|c| c == capability))
             .collect();
-        candidates.sort_by(|a, b| b.score().partial_cmp(&a.score()).unwrap());
+        // total_cmp 对 NaN 有确定顺序（不 panic），即使外部注入了 NaN 成功率
+        candidates.sort_by(|a, b| b.score().total_cmp(&a.score()));
         candidates.truncate(limit);
         candidates
     }

@@ -2,9 +2,9 @@
 //!
 //! 增强版 Task：输入 CID、输出要求、验证策略、隐私要求、预算
 
+use super::verification::VerificationLevel;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::verification::VerificationLevel;
 
 /// 隐私要求
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

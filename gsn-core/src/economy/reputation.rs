@@ -1,5 +1,5 @@
 //! 信誉分系统
-//! 
+//!
 //! 信誉 = 贡献 × 成功率 × 时间衰减
 //! 信誉是智能体在网络中的"信用分数"
 
@@ -40,27 +40,30 @@ impl ReputationSystem {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        
-        self.records.insert(agent_did.clone(), ReputationRecord {
-            agent_did,
-            score: self.initial_score,
-            tasks_completed: 0,
-            tasks_failed: 0,
-            total_value: 0,
-            last_updated: now,
-        });
+
+        self.records.insert(
+            agent_did.clone(),
+            ReputationRecord {
+                agent_did,
+                score: self.initial_score,
+                tasks_completed: 0,
+                tasks_failed: 0,
+                total_value: 0,
+                last_updated: now,
+            },
+        );
     }
 
     pub fn record_success(&mut self, agent_did: &str, value: u64) {
         if let Some(record) = self.records.get_mut(agent_did) {
             record.tasks_completed += 1;
             record.total_value += value;
-            
+
             // 成功增加信誉
             let gain = (value as f64 * 0.01).round() as i32;
             let new_score = (record.score as i32 + gain).min(self.max_score as i32);
             record.score = new_score.max(0) as u16;
-            
+
             record.last_updated = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
@@ -71,10 +74,10 @@ impl ReputationSystem {
     pub fn record_failure(&mut self, agent_did: &str, penalty: u16) {
         if let Some(record) = self.records.get_mut(agent_did) {
             record.tasks_failed += 1;
-            
+
             let new_score = (record.score as i32 - penalty as i32).max(0);
             record.score = new_score as u16;
-            
+
             record.last_updated = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())

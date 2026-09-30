@@ -85,7 +85,8 @@ mod tests {
         r.join("did:aip:0002".into());
         // 第三个节点只进扁平图、不进分层（模拟分层表缺失）
         r.flat.add_node("did:aip:dead".into());
-        r.flat.add_edge("did:aip:0001".into(), "did:aip:dead".into());
+        r.flat
+            .add_edge("did:aip:0001".into(), "did:aip:dead".into());
         // 目标不在分层表 -> 回退扁平
         let (hops, backend) = r.route("did:aip:0001", "did:aip:dead");
         assert_eq!(backend, RouteBackend::Flat);

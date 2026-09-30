@@ -17,7 +17,7 @@ pub mod tokenizer;
 pub use adapter::{DeepSeekAdapter, DeepSeekClient, DeepSeekConfig, MockDeepSeekClient};
 pub use protocol::Protocol;
 pub use recipe::{
-    DeepSeekModel, DsChatRequest, DsChatResponse, DsChoice, DsMessage, DsRole, DsSampling,
-    DsUsage, Recipe,
+    DeepSeekModel, DsChatRequest, DsChatResponse, DsChoice, DsMessage, DsRole, DsSampling, DsUsage,
+    Recipe,
 };
-pub use tokenizer::{ContextBudget, estimate_tokens, message_tokens};
+pub use tokenizer::{estimate_tokens, message_tokens, ContextBudget};

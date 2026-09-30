@@ -151,9 +151,22 @@ fn build_platform_command(
     cfg: &SandboxConfig,
 ) -> Result<std::process::Command, SandboxError> {
     let mut inner = String::new();
+    let is_node = resolved == "node";
     // 每条资源限制失败即中止（exit 200），绝不静默不受限地 exec 目标。
     // 地址空间（-v）单位 KB；内存 MB → KB
-    let vmem_kb = u64::from(cfg.resources.mem_mb) * 1024;
+    //
+    // Node/V8：启动时 mmap 预留大块虚拟地址（CodeRange，跨版本大小不同，
+    // 新版可达 1GB+），是虚拟预留而非实际占用。ulimit -v 无法区分预留与
+    // 实际占用，按 mem_mb 设会导致高版本 Node 启动即被信号杀死（CI 红）。
+    // 因此 Node 的实际内存由 V8 官方 `--max-old-space-size`（下方）限制，
+    // ulimit -v 只给 V8 预留留足余量（至少 2GB，大内存时 mem_mb+1GB）。
+    // Python：不预留大虚拟地址，ulimit -v 精确等于 mem_mb。
+    let vmem_mb = if is_node {
+        u64::from(cfg.resources.mem_mb).max(1024) + 1024
+    } else {
+        u64::from(cfg.resources.mem_mb)
+    };
+    let vmem_kb = vmem_mb * 1024;
     // CPU 时间（-t）单位秒，毫秒向上取整，至少 1 秒
     let cpu_secs = u64::from(cfg.resources.cpu_millis).div_ceil(1_000).max(1);
     inner.push_str(&format!("ulimit -v {vmem_kb} || exit 200; "));
@@ -170,6 +183,12 @@ fn build_platform_command(
     // Rust 侧 kill 该 pid 即可无孤儿地强杀。
     inner.push_str("exec ");
     inner.push_str(&shell_quote(resolved));
+    if is_node {
+        // V8 老生代堆上限（MB）：留 96MB 给运行时/栈/外部内存，至少 16MB。
+        // 超出即 V8「heap out of memory」非零退出——实际 JS 内存被强制。
+        let heap = u64::from(cfg.resources.mem_mb).saturating_sub(96).max(16);
+        inner.push_str(&format!(" --max-old-space-size={heap}"));
+    }
     for a in args {
         inner.push(' ');
         inner.push_str(&shell_quote(a));

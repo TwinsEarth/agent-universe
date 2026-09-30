@@ -306,8 +306,11 @@ pub fn process_declaration() -> CapabilityDeclaration {
                 .to_string(),
         });
     } else {
-        // Unix：bash ulimit 强制内存(-v，虚拟地址空间，见 config 注释)、
-        // CPU 时间(-t)、进程数(-u)、句柄(-n)。均在 Linux 上实测生效。
+        // Unix：bash ulimit 强制 CPU 时间(-t)、进程数(-u)、句柄(-n)。
+        // 内存：Python 用 ulimit -v（虚拟地址，精确）；Node/V8 因启动预留
+        // 大块虚拟 CodeRange，ulimit -v 无法可靠限制，改用 V8
+        // --max-old-space-size 限制 JS 堆，ulimit -v 给预留余量并兜底总
+        // 虚拟地址（Buffer 外部内存不被 heap flag 限制，靠 vmem 兜底）。
         enforced.push(MemoryLimit);
         enforced.push(CpuLimit);
         enforced.push(ProcessCountLimit);

@@ -269,3 +269,21 @@ fn v277_cpu_time_limit_kills_busy_loop() {
         r.wall_ms
     );
 }
+
+// v2.9.1：Node 的 JS 老生代堆受 `--max-old-space-size` 限制（V8 官方）。
+// 注意：Buffer 属外部内存，不受此 flag 限制，由 ulimit -v 总虚拟地址兜底。
+#[cfg(unix)]
+#[test]
+fn v277_node_heap_limit_blocks_large_allocation() {
+    let id = "v277-node-heap";
+    let mut s = ProcessSandbox::new(id);
+    let mut cfg = mk_cfg(id);
+    cfg.work_dir_base = Some(std::env::temp_dir());
+    cfg.resources.mem_mb = 128; // heap flag = 128-96 = 32MB
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    // 用 JS 对象填充（受老生代堆限制），不是 Buffer（外部内存）
+    let code = "const a=[]; let i=0; while(true){a.push({x:i++, y:String(i).repeat(40)});}";
+    let r = s.run_code(CodeLanguage::JavaScript, code).unwrap();
+    assert_ne!(r.exit_code, 0, "node heap overflow should fail, got {r:?}");
+}

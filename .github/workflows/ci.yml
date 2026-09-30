@@ -20,6 +20,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 固定 Node 版本：沙箱 JS 测试用 node；runner 预装 node 随镜像漂移（新版
+      # V8 虚拟预留更大，导致 ulimit -v 下启动失败）。固定版本保证可复现。
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

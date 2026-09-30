@@ -73,7 +73,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                           ├── v2.8.9 (Claim Verification - 弱公钥拒绝接入/贡献验证 DID 绑定/生产 panic 类型化/NAT 守卫锁值/纠删码真恢复/毒化告警 - GAP §2.2)
                                                                                                                                                                           │     （v2.8.8 按用户指示跳过）
                                                                                                                                                                           ├── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2)
-                                                                                                                                                                          └── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡) ← 当前
+                                                                                                                                                                          ├── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡)
+                                                                                                                                                                          └── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交) ← 当前
 ```
 
 ## 大版本详情
@@ -531,6 +532,21 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v2.9.2 - CI 工程化：Windows 矩阵 + 静态关卡（gsn-core 0.2.92）
+
+- **Windows 矩阵接入**：rust-test 由 ubuntu/macos 扩为 ubuntu/macos/windows，fmt/build/test/
+  clippy 全链在 Windows 上执行。winjob.rs（Job Object）、process.rs Windows 分支等此前
+  无任何 CI 覆盖的专属代码，现在每个 PR 都被编译与测试。
+- **静态关卡（static-gates job）**：
+  - `check-no-panics.mjs`：剥离注释/字符串/char、移除 `#[cfg(test)]` 后扫描，匹配
+    `.unwrap()/.expect()/panic!/unreachable!/todo!/unimplemented!`（不匹配 assert!），
+    生产代码命中即红灯（本版 TOTAL=0）。
+  - `check-unsafe-containment.mjs`：每个 unsafe 项必须有对应 `// SAFETY:` 理由，
+    winjob.rs 3 unsafe / 3 SAFETY。
+- **两脚本正式提交**：v2.9.1 时脚本本地就绪但 untracked，本版入库并接入 CI。
+- **验证**：Linux 全量测试全绿（172 lib + 全部集成测试，0 failed/0 ignored）、clippy 零警告、
+  cargo fmt 干净；Windows 与 macOS 由 CI 矩阵验证（本地为 Linux）。
 
 ### v2.9.1 - 沙箱能力声明闸门 + 生产 panic 归零（gsn-core 0.2.91）
 

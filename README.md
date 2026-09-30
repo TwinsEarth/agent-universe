@@ -273,7 +273,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.1（v2.8.8 跳过），详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过），详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -341,6 +341,7 @@ npm install @twinsearth/agent-universe
 | v2.8.9 | **Claim Verification** | **弱公钥拒绝接入 register_peer/委员/贡献验证；贡献验证 DID↔公钥绑定（一把密钥不能伪造 DID 绕去重）；审计点名生产 panic 全部类型化；NAT 守卫锁值 Unknown、纠删码测试真丢数据片靠校验片重建；锁毒化 into_inner 恢复全部告警（GAP §2.2）。v2.8.8 按指示跳过** |
 | v2.9.0 | **Workbench** | **桌面工作台大版本（继续 Tauri 2，参考 DeepSeek Harness）：9 大视图、默认工作区、过程展示分级、托盘常驻/单实例、后台任务、Excel/CSV/TSV 预览、模型提供商统一入口、终端、Subagent/团队、插件管理；`?all=1` 真实任务/智能体列表；client-build 三平台构建工作台、ci 增 workbench-check** |
 | v2.9.1 | **Sandbox Capability** | **沙箱能力声明闸门：边界要么强制执行、要么显式 waiver（带理由），否则拒绝；默认不执行（NullExecutor/后端禁用）；`trusted_local` 平台感知 waiver（Linux 网络/FS/磁盘，macOS 额外内存）；内存/CPU 跨平台（Linux ulimit -v、macOS 无 RLIMIT_AS 诚实标 unenforced、Node --max-old-space-size 全平台）；生产代码 panic 归零（静态关卡验证，v2.9.2 接入 CI）；快照持久化错误改为告警；cargo fmt 关卡** |
+| v2.9.2 | **CI Engineering** | **rust-test 矩阵接入 Windows（fmt/build/test/clippy，winjob 等专属代码首次有 CI）；新增 static-gates job：check-no-panics（生产 panic 站点必为 0）+ check-unsafe-containment（每个 unsafe 有 SAFETY 理由）；两个静态检查脚本正式入库** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

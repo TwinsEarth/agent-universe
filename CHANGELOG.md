@@ -2,6 +2,18 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v2.9.2] - 2026-10-01
+
+### CI 工程化：Windows 矩阵 + 静态关卡接入
+
+- **Windows 矩阵**：rust-test 矩阵加入 `windows-latest`，cargo fmt/build/test/clippy 首次在
+  Windows 上跑（此前 v2.9.1 仅 ubuntu/macos；winjob.rs 等 Windows 专属代码此前无 CI 覆盖）。
+- **静态关卡接入 CI**：新增 `static-gates` job，跑 `check-no-panics.mjs`（剥离注释/字符串/
+  char 后扫描，生产代码 panic 站点必须为 0）与 `check-unsafe-containment.mjs`（每个 unsafe
+  必须有对应 `// SAFETY:` 理由）。两个脚本随本版正式提交（v2.9.1 仅本地就绪）。
+- 验证：Linux 全量测试全绿（172 lib + 各集成测试）、clippy 零警告、cargo fmt 干净；
+  Windows 行为由 CI 矩阵验证。
+
 ## [v2.9.1] - 2026-10-01
 
 ### 沙箱能力声明闸门 + 生产 panic 归零 + 快照持久化告警

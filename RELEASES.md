@@ -78,7 +78,8 @@ v1.0.0 (Genesis)
 │     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0)
 │           └── v3.1.0 (Business Plugins - 业务插件化/官方插件 entry 模块/信誉overall+市场match 真实算法/boot_official 随内核自动装配 9 个 T1 - gsn-core 0.3.10)
 │                 └── v3.2.0 (Business Plugins II - 业务插件化深化/结算audit 独立审计+任务route 路由+卡片validate 校验/5 个官方插件承载真实业务/除零隐患类型化 - gsn-core 0.3.20)
-│                       └── v3.2.1 (PMB Secure Messaging - PMB 消息 HMAC-SHA256 签名+nonce 防重放+常量时间比较/validate_sender 七道/host send_to·publish·open_inbox 端到端接线/静态关卡 stripLiterals 三 bug 修复/7 处生产 panic 类型化 - gsn-core 0.3.21) ← 当前
+│                       └── v3.2.1 (PMB Secure Messaging - PMB 消息 HMAC-SHA256 签名+nonce 防重放+常量时间比较/validate_sender 七道/host send_to·publish·open_inbox 端到端接线/静态关卡 stripLiterals 三 bug 修复/7 处生产 panic 类型化 - gsn-core 0.3.21)
+│                             └── v3.2.2 (Business Plugins III - 业务化第 6 个官方插件 swarm-emergence/detect 群体智能涌现检测·吞吐量增长 collaboration+延迟下降 load_balancing/移植 swarm emergence.rs/6 个官方插件承载真实业务 - gsn-core 0.3.22) ← 当前
 ```
 
 ## 大版本详情
@@ -536,6 +537,25 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.2.2 - 业务化 swarm-emergence：群体智能涌现检测 detect（gsn-core 0.3.22）
+
+**小版本（只更新 swarm-emergence 插件，对系统与其它插件零影响）**：把第 6 个官方插件
+从通用 exec 承载业务化为随插件承载真实 `detect` 算法。
+
+- **问题根因**：swarm-emergence 此前清单在、插件能跑，但真实算法锁在单体
+  `swarm/emergence.rs`、插件没有可调用业务方法（违反「没有调用点的修复不算修复」）。
+- **detect entry**（`plugin/official/mod.rs` 新增 `EMERGENCE_ENTRY`、接入
+  `official_entry_source`）：输入 `history`（`[timestamp, throughput, latency]`）、
+  `threshold`、`window_size`；取最近窗口与更早窗口对比——吞吐量增长超阈值 →
+  `collaboration`（协同涌现）、延迟下降超阈值 → `load_balancing`（负载均衡涌现）。
+  严格对齐单体倒序窗口（older 可能不足 window）与严格 `>` 判定；窗口不足/无基线 → 空信号。
+- **f64**：throughput/latency/strength 是性能指标（非金额），f64 合理；JSON 取数天然不含
+  NaN/Infinity。
+- **验证**：全量 **554 passed / 0 failed**（基线 551 + 3 个隔离测试）；clippy 零警告；
+  fmt 已应用；no-panics 0 sites；unsafe-containment 通过（未新增 unsafe）。
+- **边界**：仍剩 3 个通用 exec 插件（agent-skill / chain-anchor / chain-bridge）；
+  `fault_tolerance`/`evolution` 在单体 detect 本就不产出，忠实移植未额外实现。
 
 ### v3.2.1 - PMB 安全通信：消息 HMAC 签名 + nonce 防重放 + 总线接线（gsn-core 0.3.21）
 

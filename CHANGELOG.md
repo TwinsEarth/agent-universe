@@ -2,6 +2,28 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.2.2] - 2026-10-01
+
+### 小版本：业务化第 6 个官方插件 swarm-emergence（群体智能涌现检测）
+
+- **背景（根因）**：9 个官方插件中仍有 4 个是通用 exec 承载（清单在、插件能跑，但真实
+  算法锁在单体、插件本身没有可调用业务方法）。按「没有调用点的修复不算修复」，本版把
+  `swarm-emergence` 业务化——它在单体中有真实、独立的 `swarm/emergence.rs::detect`。
+- **detect entry**（`plugin/official/mod.rs` 新增 `EMERGENCE_ENTRY`，并接入
+  `official_entry_source`）：输入 `history`（每条 `[timestamp, throughput, latency]`）、
+  `threshold`、`window_size`。取最近窗口与更早窗口对比：
+  - 吞吐量增长超阈值 → `collaboration`（协同涌现）；
+  - 延迟下降超阈值 → `load_balancing`（负载均衡涌现）。
+  窗口不足/无对比基线 → 空信号；严格对齐单体的倒序窗口（older 可能不足 window）与
+  严格 `>` 判定。
+- 性能指标（throughput/latency/strength）用 f64 合理（非金额 Money）；entry 从 JSON 取数，
+  天然不含 NaN/Infinity。
+- 验证：cargo test 全量 **554 passed / 0 failed**（基线 551 + 新增 3 个隔离测试）；
+  clippy `--all-targets` 零警告；fmt 已应用；no-panics 关卡 **0 sites**；unsafe-containment
+  通过（本版未新增 unsafe）。
+- 边界：仍剩 3 个通用 exec 插件（agent-skill / chain-anchor / chain-bridge）；
+  `fault_tolerance`/`evolution` 在单体 detect 本就不产出，忠实移植未额外实现。
+
 ## [v3.2.1] - 2026-10-01
 
 ### 小版本：PMB 安全通信 —— 消息 HMAC 签名 + nonce 防重放 + 总线端到端接线

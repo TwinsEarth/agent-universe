@@ -330,6 +330,53 @@ def validate(payload):
     return {"valid": len(errors) == 0, "errors": errors}
 "#;
 
+/// swarm-emergence 插件 entry：移植自 `swarm/emergence.rs::EmergenceDetector::detect`。
+///
+/// 输入：`history`（每条 `[timestamp, throughput, latency]`）、`threshold`、`window_size`；
+/// 输出：最近窗口相对更早窗口的两类涌现信号——
+/// 吞吐量增长超阈值 → `collaboration`、延迟下降超阈值 → `load_balancing`。
+const EMERGENCE_ENTRY: &str = r#"# swarm-emergence official plugin (T1)
+# detects emergent swarm behavior (swarm/emergence.rs EmergenceDetector)
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.swarm-emergence",
+            "tier": "official", "methods": ["status", "detect"]}
+
+def detect(payload):
+    history = payload.get("history", [])
+    threshold = float(payload.get("threshold", 0.5))
+    window = int(payload.get("window_size", 3))
+    empty = {"signals": [], "window_size": window}
+    if window <= 0 or len(history) < window:
+        return empty
+    n = len(history)
+    # recent = 最后 window 个；older = 之前最多 window 个（可能不足 window，与 Rust 对齐）。
+    recent = history[n - window:]
+    older = history[max(0, n - window * 2):n - window]
+    if not older:
+        return empty
+    signals = []
+    # 吞吐量增长（Collaboration）
+    rt = sum(float(r[1]) for r in recent) / len(recent)
+    ot = sum(float(r[1]) for r in older) / len(older)
+    if ot > 0.0:
+        growth = (rt - ot) / ot
+        if growth > threshold:
+            signals.append({"signal_type": "collaboration", "strength": growth,
+                            "description": "吞吐量增长 %.1f%%，检测到协同涌现" % (growth * 100.0)})
+    # 延迟下降（LoadBalancing）
+    rl = sum(float(r[2]) for r in recent) / len(recent)
+    ol = sum(float(r[2]) for r in older) / len(older)
+    if ol > 0.0:
+        improvement = (ol - rl) / ol
+        if improvement > threshold:
+            signals.append({"signal_type": "load_balancing", "strength": improvement,
+                            "description": "延迟下降 %.1f%%，检测到负载均衡涌现" % (improvement * 100.0)})
+    return {"signals": signals, "window_size": window,
+            "recent_throughput": rt, "older_throughput": ot,
+            "recent_latency": rl, "older_latency": ol}
+"#;
+
 /// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
 pub fn official_entry_source(name: &str) -> Option<EntrySource> {
     match name {
@@ -357,6 +404,11 @@ pub fn official_entry_source(name: &str) -> Option<EntrySource> {
             language: "python",
             filename: "plugin.py",
             source: CARD_ENTRY,
+        }),
+        OFF_SWARM_EMERGENCE => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: EMERGENCE_ENTRY,
         }),
         _ => None,
     }
@@ -392,14 +444,17 @@ mod tests {
 
     #[test]
     fn entry_source_for_business_plugins() {
-        // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card。
+        // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card；
+        // v3.2.2 swarm-emergence。
         assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
         assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
         assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
         assert!(official_entry_source(OFF_SCHEDULER_TASK).is_some());
         assert!(official_entry_source(OFF_AGENT_CARD).is_some());
-        // 其余 4 个暂为通用 exec 承载。
+        assert!(official_entry_source(OFF_SWARM_EMERGENCE).is_some());
+        // 其余 3 个暂为通用 exec 承载。
         assert!(official_entry_source(OFF_AGENT_SKILL).is_none());
+        assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_none());
         assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
     }
 }

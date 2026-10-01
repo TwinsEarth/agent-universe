@@ -575,4 +575,65 @@ mod tests {
         assert!(v["errors"].as_array().unwrap().len() >= 4, "got {v}");
         inst.stop().unwrap();
     }
+
+    // ── v3.2.2 entry 业务模块（swarm-emergence）────────────────────
+    #[test]
+    fn swarm_emergence_detects_throughput_growth() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SWARM_EMERGENCE);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 更早窗口 throughput=100，最近窗口 throughput=200（+100%）；latency 不变。
+        let payload = br#"{
+          "window_size": 3, "threshold": 0.5,
+          "history": [
+            [0,100,50],[1,100,50],[2,100,50],
+            [3,200,50],[4,200,50],[5,200,50]
+          ]
+        }"#;
+        let out = inst.call("detect", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let sigs = v["signals"].as_array().unwrap();
+        assert_eq!(sigs.len(), 1, "got {v}");
+        assert_eq!(sigs[0]["signal_type"], "collaboration");
+        let strength = sigs[0]["strength"].as_f64().unwrap();
+        assert!((strength - 1.0).abs() < 1e-9, "got {strength}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn swarm_emergence_detects_latency_drop() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SWARM_EMERGENCE);
+        let mut inst = rt.spawn(&m).unwrap();
+        // throughput 不变（不触发增长）；latency 100→40（-60%）。
+        let payload = br#"{
+          "window_size": 3, "threshold": 0.5,
+          "history": [
+            [0,100,100],[1,100,100],[2,100,100],
+            [3,100,40],[4,100,40],[5,100,40]
+          ]
+        }"#;
+        let out = inst.call("detect", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        let sigs = v["signals"].as_array().unwrap();
+        assert_eq!(sigs.len(), 1, "got {v}");
+        assert_eq!(sigs[0]["signal_type"], "load_balancing");
+        let strength = sigs[0]["strength"].as_f64().unwrap();
+        assert!((strength - 0.6).abs() < 1e-9, "got {strength}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn swarm_emergence_insufficient_history() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SWARM_EMERGENCE);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 不足一个窗口 → 无信号。
+        let payload = br#"{"window_size":3,"threshold":0.5,
+          "history":[[0,100,50],[1,100,50]]}"#;
+        let out = inst.call("detect", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["signals"].as_array().unwrap().len(), 0, "got {v}");
+        inst.stop().unwrap();
+    }
 }

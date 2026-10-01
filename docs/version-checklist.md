@@ -3,7 +3,7 @@
 > **用途**：发版时**照此表逐项核对**，配合 `scripts/bump-version.sh` 一键改值。
 > 以后新增任何带版本号的文件，**必须同步补登记到本表**，避免每次发版丢三落四。
 >
-> 当前版本：**npm 3.4.2** ｜ **Rust gsn-core 0.3.42**
+> 当前版本：**npm 3.4.5** ｜ **Rust gsn-core 0.3.45**
 > 对应规则：npm `X.Y.Z` ↔ Rust `0.2.YZ`（Y×10+Z）。例：2.5.6 → 0.2.56；2.6.0 → 0.2.60。
 
 ---
@@ -14,51 +14,51 @@
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| A1 | `package.json`（根） | `"version"` | 3.4.2 | npm 主包 `@twinsearth/agent-universe` |
-| A2 | `js/package.json` | `"version"` | 3.4.2 | JS SDK |
-| A3 | `js/package-lock.json` | 根 `"version"` + self `"version"`（2 处） | 3.4.2 | lock 自引用 |
-| A4 | `js/index.js` | `const version = '...'` | 3.4.2 | 运行时导出版本，**ci.yml 校验它** |
-| A5 | `js/lib/aca.js` | `version: opts.version \|\| '...'` | 3.4.2 | ACA envelope 默认版本 |
-| A6 | `js/lib/mcp.js` | `clientInfo: {..., version: '...'}` | 3.4.2 | MCP 握手 clientInfo |
-| A7 | `js/test/test.js` | `test('版本号为 ...')` + `assert.strictEqual(version, '...')` | 3.4.2 | 版本断言，改版本号必须同步改 |
+| A1 | `package.json`（根） | `"version"` | 3.4.5 | npm 主包 `@twinsearth/agent-universe` |
+| A2 | `js/package.json` | `"version"` | 3.4.5 | JS SDK |
+| A3 | `js/package-lock.json` | 根 `"version"` + self `"version"`（2 处） | 3.4.5 | lock 自引用 |
+| A4 | `js/index.js` | `const version = '...'` | 3.4.5 | 运行时导出版本，**ci.yml 校验它** |
+| A5 | `js/lib/aca.js` | `version: opts.version \|\| '...'` | 3.4.5 | ACA envelope 默认版本 |
+| A6 | `js/lib/mcp.js` | `clientInfo: {..., version: '...'}` | 3.4.5 | MCP 握手 clientInfo |
+| A7 | `js/test/test.js` | `test('版本号为 ...')` + `assert.strictEqual(version, '...')` | 3.4.5 | 版本断言，改版本号必须同步改 |
 | A8 | `lib/{aca,dht,keychain,market,mcp,models}.js`（根，6 个） | `module.exports = require('../js/lib/X.js')` | — | **v2.5.8 新增**：让根发布包暴露 `/lib/*` 子路径（根包此前只含 `js/`，客户端 import `/lib/market.js` 落空，GAP §9.5）；不含版本号，bump 无需改 |
 
 ### B. Tauri 客户端 `client/`
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| B1 | `client/package.json` | `"version"` | 3.4.2 | |
-| B2 | `client/package-lock.json` | 根 + self（2 处） | 3.4.2 | |
-| B3 | `client/src-tauri/Cargo.toml` | `version = "..."` | 3.4.2 | Tauri 壳 Cargo |
-| B4 | `client/src-tauri/Cargo.toml` | `description = "...vX.Y.Z ..."` 里的版本 | v3.4.2 | 描述串 |
-| B5 | `client/src-tauri/tauri.conf.json` | `"version"` | 3.4.2 | |
-| B6 | `client/src-tauri/tauri.conf.json` | `"title": "Agent Universe vX.Y.Z"` | v3.4.2 | 窗口标题 |
-| B7 | `client/src-tauri/src/lib.rs` | `"...".to_string()`（运行时版本） | 3.4.2 | |
-| B8 | `client/README.md` | 开头"vX.Y.Z 跨平台客户端" + 下载文件名里的 `_X.Y.Z_` / `-vX.Y.Z.` | 3.4.2 | 当前版本描述与产物名 |
-| B9 | `client/platforms/{android,linux,macos,windows}.md` | `releases/tag/vX.Y.Z` 链接 | v3.4.2 | 成品下载指向的 Release |
+| B1 | `client/package.json` | `"version"` | 3.4.5 | |
+| B2 | `client/package-lock.json` | 根 + self（2 处） | 3.4.5 | |
+| B3 | `client/src-tauri/Cargo.toml` | `version = "..."` | 3.4.5 | Tauri 壳 Cargo |
+| B4 | `client/src-tauri/Cargo.toml` | `description = "...vX.Y.Z ..."` 里的版本 | v3.4.5 | 描述串 |
+| B5 | `client/src-tauri/tauri.conf.json` | `"version"` | 3.4.5 | |
+| B6 | `client/src-tauri/tauri.conf.json` | `"title": "Agent Universe vX.Y.Z"` | v3.4.5 | 窗口标题 |
+| B7 | `client/src-tauri/src/lib.rs` | `"...".to_string()`（运行时版本） | 3.4.5 | |
+| B8 | `client/README.md` | 开头"vX.Y.Z 跨平台客户端" + 下载文件名里的 `_X.Y.Z_` / `-vX.Y.Z.` | 3.4.5 | 当前版本描述与产物名 |
+| B9 | `client/platforms/{android,linux,macos,windows}.md` | `releases/tag/vX.Y.Z` 链接 | v3.4.5 | 成品下载指向的 Release |
 | B10 | `client/platforms/ios.md` | **不含任何版本号 / Release 链接** | — | 仅讲 iOS 构建步骤；bump 时**不期待**它产生 diff（v2.5.8 核实，勿误判为遗漏） |
-| B11 | `client/index.html` | `<title>Agent Universe vX.Y.Z` + 版本徽标 `vX.Y.Z · Universal` | v3.4.2 | **v2.5.7 补登记**（GAP §9.3）；bump 脚本 `s/vX.Y.Z/vNEW/g` |
+| B11 | `client/index.html` | `<title>Agent Universe vX.Y.Z` + 版本徽标 `vX.Y.Z · Universal` | v3.4.5 | **v2.5.7 补登记**（GAP §9.3）；bump 脚本 `s/vX.Y.Z/vNEW/g` |
 | B12 | `client/package.json` | dependencies `"@twinsearth/agent-universe": "file:.."` | file:.. | **v2.5.8 改**（原 registry `^2.5.8`）：构建直接打包仓库根源码，根治"tag 触发构建时本版本 npm 包尚未发布"的时序竞争；不含版本号 |
 | B13 | `client/.npmrc` | `install-links=true` | — | **v2.5.8 新增**：让 `file:..` 按 files 白名单打包成 node_modules 内真实拷贝（默认 false 建 symlink，Vite 解析到 node_modules 外源码、CJS 不被转换致 build 失败） |
 | B14 | `client/src/main.js` | `import AU from '.../lib/market.js'; const { AgentMarket, MIN_STAKE } = AU;` | — | **v2.5.8 改**（原命名导入）：default 导入整个 module.exports 再解构，规避 rollup 对 re-export CJS 命名导出的静态识别失败；Vite build 已验证通过 |
-| B15 | `client/package.json` | devDependencies `"@tauri-apps/cli": "2.5.8"` | 3.4.2 | **v2.5.8 固定**（原浮动 `"^2"`）：锁定确切 CLI 版本，保证 `gen/android` 模板可复现、不随最新版漂移；不含 SDK 版本号，bump SDK 时**不期待** diff，仅升级 CLI 时手改 |
+| B15 | `client/package.json` | devDependencies `"@tauri-apps/cli": "2.5.8"` | 3.4.5 | **v2.5.8 固定**（原浮动 `"^2"`）：锁定确切 CLI 版本，保证 `gen/android` 模板可复现、不随最新版漂移；不含 SDK 版本号，bump SDK 时**不期待** diff，仅升级 CLI 时手改 |
 | B16 | `client/src-tauri/.gitignore` | `/gen` | — | **v2.5.8 新增**：移动平台生成物（`gen/android`、`gen/schemas`）不入库，由 `tauri android init` 按锁定 CLI 全新生成；根治"已提交生成代码与 CLI 版本漂移导致 buildSrc 混搭"。原误提交的 44 个 gen 文件已 `git rm --cached` 移除 |
 
 ### C. Tauri 桌面壳 `desktop/`
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| C1 | `desktop/package.json` | `"version"` | 3.4.2 | |
-| C2 | `desktop/package-lock.json` | 根 + self（2 处） | 3.4.2 | |
-| C3 | `desktop/src-tauri/Cargo.toml` | `version = "..."` | 3.4.2 | |
-| C4 | `desktop/src-tauri/Cargo.toml` | `description` 里的版本 | v3.4.2 | |
-| C5 | `desktop/src-tauri/tauri.conf.json` | `"version"` | 3.4.2 | |
-| C6 | `desktop/src-tauri/tauri.conf.json` | `"title": "Agent Universe vX.Y.Z"` | v3.4.2 | |
-| C7 | `desktop/src-tauri/src/lib.rs` | `"...".to_string()` | 3.4.2 | |
-| C8 | `desktop/src/main.js` | 头注释 `// Agent Universe vX.Y.Z ...` | v3.4.2 | |
+| C1 | `desktop/package.json` | `"version"` | 3.4.5 | |
+| C2 | `desktop/package-lock.json` | 根 + self（2 处） | 3.4.5 | |
+| C3 | `desktop/src-tauri/Cargo.toml` | `version = "..."` | 3.4.5 | |
+| C4 | `desktop/src-tauri/Cargo.toml` | `description` 里的版本 | v3.4.5 | |
+| C5 | `desktop/src-tauri/tauri.conf.json` | `"version"` | 3.4.5 | |
+| C6 | `desktop/src-tauri/tauri.conf.json` | `"title": "Agent Universe vX.Y.Z"` | v3.4.5 | |
+| C7 | `desktop/src-tauri/src/lib.rs` | `"...".to_string()` | 3.4.5 | |
+| C8 | `desktop/src/main.js` | 头注释 `// Agent Universe vX.Y.Z ...` | v3.4.5 | |
 | C9 | `desktop/src-tauri/Cargo.lock` | **不存在 / 被 .gitignore 忽略** | — | desktop 壳 lock 不入库；勿误判为缺口 |
-| C10 | `desktop/index.html` | `<title>Agent Universe vX.Y.Z` + `#sdk-version` 徽标 `vX.Y.Z` | v3.4.2 | **v2.5.7 补登记**（GAP §9.3） |
-| C11 | `desktop/README.md` | 头部 `vX.Y.Z 轻桌面客户端` + 内嵌 `agent-universe@X.Y.Z` | v3.4.2 | **v2.5.7 补登记**（GAP §9.3） |
+| C10 | `desktop/index.html` | `<title>Agent Universe vX.Y.Z` + `#sdk-version` 徽标 `vX.Y.Z` | v3.4.5 | **v2.5.7 补登记**（GAP §9.3） |
+| C11 | `desktop/README.md` | 头部 `vX.Y.Z 轻桌面客户端` + 内嵌 `agent-universe@X.Y.Z` | v3.4.5 | **v2.5.7 补登记**（GAP §9.3） |
 | C12 | `desktop/package.json` | dependencies `"@twinsearth/agent-universe": "file:.."` | file:.. | **v2.5.8 改**（原 `^2.5.8`），理由同 B12 |
 | C13 | `desktop/.npmrc` | `install-links=true` | — | **v2.5.8 新增**，理由同 B13 |
 | C14 | `desktop/src/main.js` | `import AU from '.../lib/market.js'; const { AgentMarket, MIN_STAKE } = AU;` | — | **v2.5.8 改**（原命名导入），理由同 B14；Vite build 已验证通过 |
@@ -67,33 +67,33 @@
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| D1 | `gsn-core/Cargo.toml` | `version = "0.2.XX"` | 3.4.2 | **Rust 语义化，不写 2.5.8** |
-| D2 | `gsn-core/Cargo.toml` | `description = "...vX.Y.Z: ..."` 里的 npm 版本 | v3.4.2 | 描述串跟 npm |
-| D3 | `gsn-core/src/bin/gsn.rs` | `println!("agent-universe vX.Y.Z")` | v3.4.2 | `gsn --version` 输出 |
-| D4 | `gsn-core/src/lib.rs` | 头注释 `//! ... vX.Y.Z` | v3.4.2 | 库文档头 |
-| D5 | `gsn-core/Cargo.lock` | `[[package]] name="gsn-core"` 下的 `version` | 3.4.2 | **lock 同步**（bump 脚本按包名块改，不误伤依赖） |
-| D6 | `client/src-tauri/Cargo.lock` | `[[package]] name="au-client-universal"` 下的 `version` | 3.4.2 | client 壳 lock |
+| D1 | `gsn-core/Cargo.toml` | `version = "0.2.XX"` | 3.4.5 | **Rust 语义化，不写 2.5.8** |
+| D2 | `gsn-core/Cargo.toml` | `description = "...vX.Y.Z: ..."` 里的 npm 版本 | v3.4.5 | 描述串跟 npm |
+| D3 | `gsn-core/src/bin/gsn.rs` | `println!("agent-universe vX.Y.Z")` | v3.4.5 | `gsn --version` 输出 |
+| D4 | `gsn-core/src/lib.rs` | 头注释 `//! ... vX.Y.Z` | v3.4.5 | 库文档头 |
+| D5 | `gsn-core/Cargo.lock` | `[[package]] name="gsn-core"` 下的 `version` | 3.4.5 | **lock 同步**（bump 脚本按包名块改，不误伤依赖） |
+| D6 | `client/src-tauri/Cargo.lock` | `[[package]] name="au-client-universal"` 下的 `version` | 3.4.5 | client 壳 lock |
 | D7 | `desktop/src-tauri/Cargo.lock` | `[[package]] name="au-client"` 下的 `version` | — | desktop 壳 lock（不入库 / 不存在则跳过） |
-| D8 | `conformance/money-vectors.json` | 顶层 `"version": "vX.Y.Z"` | v3.4.2 | **v2.5.8 新增**跨语言金额向量：Rust `test_money_vector_matches_conformance` 与 JS 测试读取同一文件、逐账户逐聚合值一致；bump 脚本同步其 version |
-| D9 | `VERSION`（仓库根） | 文件全文，唯一权威版本号 | 3.4.2 | **v2.6.2 新增（GAP §9.3）**：所有版本声明的唯一来源；bump 第一步即写它，check-version.sh 读它断言。手工改任何包版本造成漂移会被 CI 红灯拦下 |
+| D8 | `conformance/money-vectors.json` | 顶层 `"version": "vX.Y.Z"` | v3.4.5 | **v2.5.8 新增**跨语言金额向量：Rust `test_money_vector_matches_conformance` 与 JS 测试读取同一文件、逐账户逐聚合值一致；bump 脚本同步其 version |
+| D9 | `VERSION`（仓库根） | 文件全文，唯一权威版本号 | 3.4.5 | **v2.6.2 新增（GAP §9.3）**：所有版本声明的唯一来源；bump 第一步即写它，check-version.sh 读它断言。手工改任何包版本造成漂移会被 CI 红灯拦下 |
 | D10 | `scripts/check-version.sh` | 版本一致性断言（本身无版本字段） | — | **v2.6.2 新增**：读 VERSION 断言根 / js / client / desktop package.json、aip-sdk-py、Tauri 壳、gsn-core 全部一致；ci.yml / publish.yml / release.yml 均在 gate 跑，漂移即红；bump-version.sh 末尾自动调用 |
-| D11 | `contracts/package.json` | `"version"`（**独立线，不随 VERSION bump**） | 3.4.2 | **v2.6.2 新增**：Solidity 合约包语义化版本独立演进，bump-version.sh 不改它、check-version.sh 不要求其等于 VERSION；合约升级时在 contracts/ 手动 bump 并更新本行 |
+| D11 | `contracts/package.json` | `"version"`（**独立线，不随 VERSION bump**） | 3.4.5 | **v2.6.2 新增**：Solidity 合约包语义化版本独立演进，bump-version.sh 不改它、check-version.sh 不要求其等于 VERSION；合约升级时在 contracts/ 手动 bump 并更新本行 |
 
 ### E. Python SDK
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| E1 | `aip-sdk-py/pyproject.toml` | `version = "..."` | 3.4.2 | |
-| E2 | `aip-sdk-py/aip/__init__.py` | `__version__ = "..."` | 3.4.2 | **v2.5.7 补登记**（GAP §9.3），长期漂移 |
-| E3 | `aip-sdk-py/aip/mcp_client.py` | `_SDK_VERSION = "..."` | 3.4.2 | **v2.5.7 补登记**（GAP §9.3），MCP 握手 clientInfo |
-| E4 | `aip-sdk-py/aip/aca.py` | `version: str = "..."` 默认值 | 3.4.2 | **v2.5.7 补登记**（GAP §9.3） |
+| E1 | `aip-sdk-py/pyproject.toml` | `version = "..."` | 3.4.5 | |
+| E2 | `aip-sdk-py/aip/__init__.py` | `__version__ = "..."` | 3.4.5 | **v2.5.7 补登记**（GAP §9.3），长期漂移 |
+| E3 | `aip-sdk-py/aip/mcp_client.py` | `_SDK_VERSION = "..."` | 3.4.5 | **v2.5.7 补登记**（GAP §9.3），MCP 握手 clientInfo |
+| E4 | `aip-sdk-py/aip/aca.py` | `version: str = "..."` 默认值 | 3.4.5 | **v2.5.7 补登记**（GAP §9.3） |
 
 ### F. CI / 工作流
 
 | # | 文件 | 字段 / 位置 | 当前值 | 说明 |
 |---|---|---|---|---|
-| F1 | `.github/workflows/ci.yml` | `au.version!=='X.Y.Z'` 校验 | 3.4.2 | CI 强制版本一致 |
-| F2 | `.github/workflows/client-build.yml` | 注释里的示例 tag `（如 vX.Y.Z）` | v3.4.2 | 注释，不影响构建 |
+| F1 | `.github/workflows/ci.yml` | `au.version!=='X.Y.Z'` 校验 | 3.4.5 | CI 强制版本一致 |
+| F2 | `.github/workflows/client-build.yml` | 注释里的示例 tag `（如 vX.Y.Z）` | v3.4.5 | 注释，不影响构建 |
 | F3 | `.github/workflows/publish.yml` | 不写死版本，用 `GITHUB_REF_NAME`；含 npm-publish job | — | 打 tag 自动发 Release+npm；**必须配 `NPM_TOKEN` secret，缺失则 npm-publish job 红灯失败（v2.5.8 起不再静默跳过）** |
 | F4 | `.github/workflows/client-build.yml` | android job 先 `rm -rf src-tauri/gen/android` 再 `tauri android init`（去掉 `|| true`）；desktop job 加条件 `github.event_name=='push'`；APK 上传 `tag_name` 取 `inputs.release_tag`（为空则取 `github.ref_name`） | — | **v2.5.7 修复 Android 构建失败**：增量 init 致 buildSrc 新旧混搭（新版 BuildTask 必填 `projectDir`，旧版 RustPlugin 未赋值），全新生成保证配套。事后可用 workflow_dispatch 填 release_tag（如 v2.5.7）单独补跑 Android 并补传 APK，不重跑桌面 |
 

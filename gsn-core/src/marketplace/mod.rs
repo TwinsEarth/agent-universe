@@ -34,6 +34,7 @@ pub use task::{ErrorType, ResultEnvelope, TaskSpec, TaskState, VerificationPolic
 
 use std::collections::{HashMap, HashSet};
 
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 /// 质押锁定账户（注册时从自有余额转入）
@@ -397,6 +398,91 @@ impl AgentMarket {
         }
 
         Ok(winner)
+    }
+
+    // ===== v3.5.0 主数据面接管：插件喂数据 / 应用插件结果 =====
+
+    /// 构造 market-match 插件期望的投标 payload（含每投标者信誉与延迟）。
+    ///
+    /// 供插件编排器在主数据面 match 前喂给 `market-match.match`；宿主不再
+    /// 在主路由里自行计算中标，而是把真实投标交给插件决策。
+    pub fn bids_for_plugin(&self, task_id: &str) -> Result<Value, String> {
+        let bids = self
+            .bids
+            .get(task_id)
+            .ok_or_else(|| format!("任务 {} 无投标", task_id))?;
+        let arr: Vec<Value> = bids
+            .iter()
+            .map(|b| {
+                let rep = self
+                    .reputation_mgr
+                    .reputation(&b.agent_id)
+                    .map(|r| r.overall())
+                    .unwrap_or(0.5);
+                json!({
+                    "agent_id": b.agent_id,
+                    "price": b.proposed_price,
+                    "reputation": rep,
+                    "latency_ms": b.estimated_latency_ms,
+                })
+            })
+            .collect();
+        Ok(json!({ "bids": arr }))
+    }
+
+    /// 应用 market-match 插件算出的中标方（校验 winner 是有效投标者之一）。
+    ///
+    /// 与旧 [`match_task`](Self::match_task) 的区别：中标决策由插件产出，
+    /// 这里只校验 winner 合法性并更新状态 / owner / 中标价（宿主应用）。
+    pub fn match_task_with_winner(
+        &mut self,
+        task_id: &str,
+        winner: &str,
+    ) -> Result<String, String> {
+        let winning_price = {
+            let bids = self
+                .bids
+                .get(task_id)
+                .ok_or_else(|| format!("任务 {} 无投标", task_id))?;
+            bids.iter()
+                .find(|b| b.agent_id == winner)
+                .map(|b| b.proposed_price)
+                .ok_or_else(|| format!("插件中标方 {winner} 不是任务 {task_id} 的有效投标者"))?
+        };
+        if let Some(task) = self.tasks.get_mut(task_id) {
+            task.state = task.state.transition(TaskState::Matched)?;
+            task.owner = Some(winner.to_string());
+            task.winner_price = Some(winning_price);
+        }
+        Ok(winner.to_string())
+    }
+
+    /// 取投标者四维信誉（喂给 economy-reputation 插件 `overall`）。
+    /// 新注册、尚未产生信誉的 agent 由默认信誉（0.5）兜底。
+    pub fn reputation_dimensions(&self, agent_id: &str) -> (f64, f64, f64, f64) {
+        self.reputation_mgr
+            .reputation(agent_id)
+            .map(|r| (r.quality, r.speed, r.honesty, r.availability))
+            .unwrap_or((0.5, 0.5, 0.5, 0.5))
+    }
+
+    /// 构造 scheduler-task 插件期望的候选节点 payload（发布前可路由性预检）。
+    ///
+    /// 已注册 agent 作为候选，`load=0`（发布时无在途负载），延迟给默认值；
+    /// 让发布在有候选时经插件确认可路由。
+    pub fn routing_candidates_for_plugin(&self) -> Value {
+        let nodes: Vec<Value> = self
+            .agents
+            .values()
+            .map(|c| {
+                json!({
+                    "did": c.agent_id,
+                    "load": 0,
+                    "latency_ms": 100,
+                })
+            })
+            .collect();
+        json!({ "nodes": nodes })
     }
 
     // ===== F4/F5: 执行与验证 =====
@@ -907,6 +993,39 @@ impl AgentMarket {
     /// 当前只追加结算流水（持久化增量来源）
     pub fn settlement_records(&self) -> &[SettlementRecord] {
         self.settlement.records()
+    }
+
+    /// 账本快照（流水 + 全部余额，v3.5.0：供插件编排器喂给独立审计插件）。
+    ///
+    /// 流水序列化为 `reason/amount/from_account/to_account` 形状（`SettlementReason`
+    /// 默认 serde 即变体名，与 market-settle 插件 `audit` 期望的 `Deposited`/
+    /// `Slashed` 等一致），余额为 `{账户: 整数}`。
+    pub fn ledger_snapshot(&self) -> serde_json::Value {
+        let records: Vec<serde_json::Value> = self
+            .settlement
+            .records()
+            .iter()
+            .map(|r| {
+                serde_json::json!({
+                    "task_id": r.task_id,
+                    "from_account": r.from_account,
+                    "to_account": r.to_account,
+                    "amount": r.amount,
+                    "reason": r.reason,
+                    "timestamp": r.timestamp,
+                })
+            })
+            .collect();
+        let balances: serde_json::Map<String, serde_json::Value> = self
+            .settlement
+            .balances_snapshot()
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::json!(v)))
+            .collect();
+        serde_json::json!({
+            "records": records,
+            "balances": serde_json::Value::Object(balances),
+        })
     }
 
     /// 从持久化流水恢复账本（替换结算引擎）；恢复后应再跑独立审计确认

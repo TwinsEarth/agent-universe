@@ -225,6 +225,14 @@ impl SettlementEngine {
         self.balances.get(account).copied().unwrap_or(Money::ZERO)
     }
 
+    /// 全部账户余额快照（v3.5.0：供插件编排器喂给独立审计插件）。
+    ///
+    /// 返回 `BTreeMap`（账户排序稳定），与流水快照配合，让 market-settle
+    /// 插件能在主数据面结算前独立重放并逐账户比对。
+    pub fn balances_snapshot(&self) -> std::collections::BTreeMap<String, Money> {
+        self.balances.iter().map(|(k, v)| (k.clone(), *v)).collect()
+    }
+
     /// 内部转账：要求 from 有足额资金，不改变总余额
     pub fn transfer(&mut self, from: &str, to: &str, amount: Money) -> Result<(), String> {
         if !amount.is_positive() {

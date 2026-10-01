@@ -5,6 +5,7 @@
 //! gsn-daemon 的 TCP HTTP 服务器与测试都可直接调用。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::plugin::PluginOrchestratorHandle;
 use serde_json::{json, Value};
 
 /// 路由结果
@@ -160,6 +161,7 @@ pub async fn route(
     full_path: &str,
     body: &str,
     market: &MarketActorHandle,
+    orchestrator: Option<&PluginOrchestratorHandle>,
     info: &NodeInfo,
 ) -> Routed {
     let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
@@ -221,7 +223,12 @@ pub async fn route(
             // POST /api/v1/agents → 注册（用 body）
             if method == "POST" {
                 if let Some(v) = parsed_body {
-                    return from_mr(market.register_agent(v).await, 201);
+                    // B1：编排器可用时先经 agent-card 插件校验卡片再注册；否则走单体 market。
+                    let resp = match orchestrator {
+                        Some(o) => o.register_agent_gated(v).await,
+                        None => market.register_agent(v).await,
+                    };
+                    return from_mr(resp, 201);
                 }
                 return Routed::bad_request("缺少注册卡片");
             }
@@ -274,7 +281,12 @@ pub async fn route(
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            return from_mr(market.match_task(id).await, 200);
+            // B1：编排器可用时投标交 market-match 插件决策再应用 winner；否则走单体 market。
+            let resp = match orchestrator {
+                Some(o) => o.match_task_gated(id).await,
+                None => market.match_task(id).await,
+            };
+            return from_mr(resp, 200);
         }
         Some(RouteTarget::TaskResults(id)) => {
             if method != "POST" {
@@ -319,7 +331,12 @@ pub async fn route(
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            return from_mr(market.settle_task(id).await, 200);
+            // B1：编排器可用时先经 market-settle 插件审计账本，passed 才结算；否则走单体 market。
+            let resp = match orchestrator {
+                Some(o) => o.settle_task_gated(id).await,
+                None => market.settle_task(id).await,
+            };
+            return from_mr(resp, 200);
         }
         Some(RouteTarget::TaskResume(id)) => {
             if method != "POST" {

@@ -17,7 +17,33 @@ use crate::plugin::manifest::{
     Capabilities, ManifestSignature, PluginInfo, PluginLimits, PluginManifest,
 };
 use crate::plugin::runtime::native::NativeRuntime;
+use crate::storage::persist::PersistentStore;
+use serde_json::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
+
+/// T0 系统插件接线的宿主句柄（daemon 启动时构造；某字段为 `None` 表示
+/// 该能力在本进程不可用，对应方法不注册 —— 不编造运行状态）。
+#[derive(Clone, Default)]
+pub struct SystemHandles {
+    /// 持久化存储（同步 SQLite）：SYS_STORAGE / SYS_CHAIN 用。
+    pub store: Option<Arc<PersistentStore>>,
+    /// 网络命令句柄（异步）：SYS_NET 用。
+    pub peer_cmd_tx: Option<crate::node::PeerCmdTx>,
+}
+
+impl SystemHandles {
+    /// 接线存储句柄。
+    pub fn with_store(mut self, store: Arc<PersistentStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+    /// 接线网络句柄。
+    pub fn with_peer(mut self, tx: crate::node::PeerCmdTx) -> Self {
+        self.peer_cmd_tx = Some(tx);
+        self
+    }
+}
 
 /// 系统插件：身份。
 pub const SYS_IDENTITY: &str = "com.twinsearth.sys.identity";
@@ -64,11 +90,21 @@ fn rt_err<E: std::fmt::Display>(e: E) -> crate::plugin::error::PluginError {
     crate::plugin::error::PluginError::Runtime(e.to_string())
 }
 
+/// 在同步处理器中阻塞等待一个异步网络查询。
+///
+/// 系统插件处理器经 [`crate::plugin::host::PluginHost::call`] 调用，
+/// 而编排器/插件 API 的 host.call 都在 `spawn_blocking` 线程上执行；
+/// 该线程不驱动 runtime，故 `Handle::block_on` 不会自死锁。
+fn block_on_net<T>(fut: impl std::future::Future<Output = T>) -> Result<T, String> {
+    let h = tokio::runtime::Handle::try_current().map_err(|e| format!("异步运行时不可用: {e}"))?;
+    Ok(h.block_on(fut))
+}
+
 /// 把系统插件的真实处理器注册到 T0 运行时。
 ///
 /// 目前 [`SYS_IDENTITY`] 提供真实可用的方法；其余 T0 插件的能力由宿主装配
 /// （网络守护进程、存储句柄）在 [`crate::plugin::host::PluginHost`] 中接线。
-pub fn register_handlers(rt: &mut NativeRuntime) {
+pub fn register_handlers(rt: &mut NativeRuntime, handles: &SystemHandles) {
     // mint_did：铸造新身份 → {did, public_key}。
     // 私钥由 keyring/宿主保存，这里只返回公钥与 DID（不把私钥泄出进程）。
     rt.register_handler(SYS_IDENTITY, "mint_did", |_m, payload| {
@@ -134,25 +170,153 @@ pub fn register_handlers(rt: &mut NativeRuntime) {
         .map_err(rt_err)
     });
 
-    // 其余 T0 系统插件：注册真实的 status 方法，声明其职责。
-    // 真实的网络/存储/链句柄由宿主在装配时接线（daemon 启动时），这里返回
-    // 代码里真实存在的职责声明，不编造运行状态。
-    for (id, declared) in [
-        (
-            SYS_NET,
-            &["libp2p-transport", "kademlia-dht", "gossipsub"][..],
-        ),
-        (SYS_STORAGE, &["crdt", "erasure-coding"][..]),
-        (SYS_CHAIN, &["evm-light-client", "chain-anchor"][..]),
-    ] {
-        let id_owned = id.to_string();
-        let declared_owned = declared.to_vec();
-        rt.register_handler(id, "status", move |_m, _p| {
+    // ===== SYS_NET：网络（真实 daemon peer 句柄） =====
+    let net_declared = ["libp2p-transport", "kademlia-dht", "gossipsub"];
+    rt.register_handler(SYS_NET, "status", move |_m, _p| {
+        serde_json::to_vec(&serde_json::json!({
+            "plugin": SYS_NET,
+            "declared_capabilities": net_declared,
+        }))
+        .map_err(rt_err)
+    });
+    if let Some(peer_tx) = &handles.peer_cmd_tx {
+        // peer_info：本机 peer 信息。
+        let tx = peer_tx.clone();
+        rt.register_handler(SYS_NET, "peer_info", move |_m, _p| {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            block_on_net(tx.send(crate::node::PeerCommand::GetInfo { reply }))
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("网络 actor 不可达"))?;
+            let info = block_on_net(rx)
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("peer_info 无响应"))?;
+            serde_json::to_vec(&info).map_err(rt_err)
+        });
+        // list_peers：已连接对等节点。
+        let tx = peer_tx.clone();
+        rt.register_handler(SYS_NET, "list_peers", move |_m, _p| {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            block_on_net(tx.send(crate::node::PeerCommand::ListPeers { reply }))
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("网络 actor 不可达"))?;
+            let peers = block_on_net(rx)
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("list_peers 无响应"))?;
+            serde_json::to_vec(&serde_json::json!({ "peers": peers, "count": peers.len() }))
+                .map_err(rt_err)
+        });
+        // nat_status：AutoNAT 检测的 NAT 状态（不猜测）。
+        let tx = peer_tx.clone();
+        rt.register_handler(SYS_NET, "nat_status", move |_m, _p| {
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            block_on_net(tx.send(crate::node::PeerCommand::NatStatus { reply }))
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("网络 actor 不可达"))?;
+            let nat = block_on_net(rx)
+                .map_err(rt_err)?
+                .map_err(|_| rt_err("nat_status 无响应"))?;
+            serde_json::to_vec(&serde_json::json!({ "nat_type": nat })).map_err(rt_err)
+        });
+    }
+
+    // ===== SYS_STORAGE：存储（真实 store 句柄，同步查询） =====
+    let storage_declared = ["crdt", "erasure-coding"];
+    rt.register_handler(SYS_STORAGE, "status", move |_m, _p| {
+        serde_json::to_vec(&serde_json::json!({
+            "plugin": SYS_STORAGE,
+            "declared_capabilities": storage_declared,
+        }))
+        .map_err(rt_err)
+    });
+    if let Some(store) = &handles.store {
+        // stats：各表计数。
+        let s = store.clone();
+        rt.register_handler(SYS_STORAGE, "stats", move |_m, _p| {
             serde_json::to_vec(&serde_json::json!({
-                "plugin": id_owned,
-                "declared_capabilities": declared_owned,
+                "agents": s.agent_count().map_err(rt_err)?,
+                "tasks": s.task_count().map_err(rt_err)?,
+                "relays": s.relay_count().map_err(rt_err)?,
+                "healthy_relays": s.healthy_relay_count().map_err(rt_err)?,
+                "ledger_records": s.ledger_count().map_err(rt_err)?,
             }))
             .map_err(rt_err)
+        });
+        // list_agents：持久化的 agent。
+        let s = store.clone();
+        rt.register_handler(SYS_STORAGE, "list_agents", move |_m, _p| {
+            let agents = s.load_agents().map_err(rt_err)?;
+            let arr: Vec<Value> = agents
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "agent_id": a.agent_id, "name": a.name, "skills": a.skills,
+                        "stake": a.stake, "reputation": a.reputation, "created_at": a.created_at,
+                    })
+                })
+                .collect();
+            serde_json::to_vec(&serde_json::json!({ "agents": arr, "count": arr.len() }))
+                .map_err(rt_err)
+        });
+        // list_tasks：持久化的 task。
+        let s = store.clone();
+        rt.register_handler(SYS_STORAGE, "list_tasks", move |_m, _p| {
+            let tasks = s.load_tasks().map_err(rt_err)?;
+            let arr: Vec<Value> = tasks
+                .iter()
+                .map(|t| {
+                    serde_json::json!({
+                        "task_id": t.task_id, "goal": t.goal, "state": t.state,
+                        "owner": t.owner, "budget": t.budget, "winner_price": t.winner_price,
+                        "verification_policy": t.verification_policy, "requester": t.requester,
+                        "deadline": t.deadline, "created_at": t.created_at,
+                    })
+                })
+                .collect();
+            serde_json::to_vec(&serde_json::json!({ "tasks": arr, "count": arr.len() }))
+                .map_err(rt_err)
+        });
+    }
+
+    // ===== SYS_CHAIN：链上锚定（本地锚定记录；RPC 离线，诚实标注） =====
+    let chain_declared = ["evm-light-client", "chain-anchor"];
+    rt.register_handler(SYS_CHAIN, "status", move |_m, _p| {
+        serde_json::to_vec(&serde_json::json!({
+            "plugin": SYS_CHAIN,
+            "declared_capabilities": chain_declared,
+            "rpc": "offline",
+        }))
+        .map_err(rt_err)
+    });
+    if let Some(store) = &handles.store {
+        // record_anchor：把一条锚定证明存入本地记录（kv_meta: chain_anchors）。
+        let s = store.clone();
+        rt.register_handler(SYS_CHAIN, "record_anchor", move |_m, payload| {
+            let v: Value = serde_json::from_slice(payload).map_err(rt_err)?;
+            let anchor = v.get("anchor").cloned().unwrap_or(v);
+            let mut list: Vec<Value> = s
+                .get_meta("chain_anchors")
+                .map_err(rt_err)?
+                .and_then(|x| serde_json::from_str(&x).ok())
+                .unwrap_or_default();
+            list.push(anchor);
+            s.set_meta(
+                "chain_anchors",
+                &serde_json::to_string(&list).map_err(rt_err)?,
+            )
+            .map_err(rt_err)?;
+            serde_json::to_vec(&serde_json::json!({ "recorded": true, "total": list.len() }))
+                .map_err(rt_err)
+        });
+        // list_anchors：读取本地锚定记录。
+        let s = store.clone();
+        rt.register_handler(SYS_CHAIN, "list_anchors", move |_m, _p| {
+            let list: Vec<Value> = s
+                .get_meta("chain_anchors")
+                .map_err(rt_err)?
+                .and_then(|x| serde_json::from_str(&x).ok())
+                .unwrap_or_default();
+            serde_json::to_vec(&serde_json::json!({ "anchors": list, "count": list.len() }))
+                .map_err(rt_err)
         });
     }
 }
@@ -174,7 +338,7 @@ mod tests {
     #[test]
     fn mint_and_parse_did_roundtrip() {
         let mut rt = NativeRuntime::new();
-        register_handlers(&mut rt);
+        register_handlers(&mut rt, &SystemHandles::default());
         let mut inst = rt.spawn(&system_manifest(SYS_IDENTITY, "3.0.0")).unwrap();
         let minted = inst.call("mint_did", b"{}").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&minted).unwrap();
@@ -192,7 +356,7 @@ mod tests {
     #[test]
     fn mint_did_from_seed_is_deterministic() {
         let mut rt = NativeRuntime::new();
-        register_handlers(&mut rt);
+        register_handlers(&mut rt, &SystemHandles::default());
         let mut inst = rt.spawn(&system_manifest(SYS_IDENTITY, "3.0.0")).unwrap();
         let seed = "01".repeat(32);
         let p = serde_json::to_vec(&serde_json::json!({"seed": seed})).unwrap();
@@ -204,11 +368,175 @@ mod tests {
     #[test]
     fn parse_bad_did_reports_invalid() {
         let mut rt = NativeRuntime::new();
-        register_handlers(&mut rt);
+        register_handlers(&mut rt, &SystemHandles::default());
         let mut inst = rt.spawn(&system_manifest(SYS_IDENTITY, "3.0.0")).unwrap();
         let p = serde_json::to_vec(&serde_json::json!({"did": "not-a-did"})).unwrap();
         let r = inst.call("parse_did", &p).unwrap();
         let v: serde_json::Value = serde_json::from_slice(&r).unwrap();
         assert_eq!(v["valid"], false);
+    }
+
+    // ── B3：系统插件真实句柄接线 ──
+    fn tmp_db_path(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("gsn_sys_b3_{}_{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("gsn.db")
+    }
+
+    fn sample_agent() -> crate::storage::persist::StoredAgent {
+        crate::storage::persist::StoredAgent {
+            agent_id: "did:nau:bob".into(),
+            name: "Bob".into(),
+            skills: "python".into(),
+            stake: 100,
+            reputation: 0.7,
+            created_at: "2026-01-01".into(),
+        }
+    }
+
+    fn sample_task() -> crate::storage::persist::StoredTask {
+        crate::storage::persist::StoredTask {
+            task_id: "t-1".into(),
+            goal: "do".into(),
+            state: "Open".into(),
+            owner: None,
+            budget: 500,
+            created_at: "2026-01-01".into(),
+            winner_price: None,
+            verification_policy: "None".into(),
+            requester: "did:nau:req".into(),
+            deadline: 0,
+        }
+    }
+
+    #[test]
+    fn storage_stats_and_lists_reflect_store() {
+        use crate::plugin::host::PluginHost;
+        let store = Arc::new(PersistentStore::open(tmp_db_path("storage")).unwrap());
+        store.upsert_agent(&sample_agent()).unwrap();
+        store.upsert_task(&sample_task()).unwrap();
+        let mut host = PluginHost::new("3.4.5", None);
+        host.boot_system(&SystemHandles::default().with_store(store.clone()))
+            .unwrap();
+
+        let sv: Value =
+            serde_json::from_slice(&host.call(SYS_STORAGE, "stats", b"{}").unwrap()).unwrap();
+        assert_eq!(sv["agents"], 1);
+        assert_eq!(sv["tasks"], 1);
+
+        let lav: Value =
+            serde_json::from_slice(&host.call(SYS_STORAGE, "list_agents", b"{}").unwrap()).unwrap();
+        assert_eq!(lav["count"], 1);
+        assert_eq!(lav["agents"][0]["agent_id"], "did:nau:bob");
+
+        let ltv: Value =
+            serde_json::from_slice(&host.call(SYS_STORAGE, "list_tasks", b"{}").unwrap()).unwrap();
+        assert_eq!(ltv["count"], 1);
+        assert_eq!(ltv["tasks"][0]["task_id"], "t-1");
+    }
+
+    #[test]
+    fn chain_record_and_list_anchors() {
+        use crate::plugin::host::PluginHost;
+        let store = Arc::new(PersistentStore::open(tmp_db_path("chain")).unwrap());
+        let mut host = PluginHost::new("3.4.5", None);
+        host.boot_system(&SystemHandles::default().with_store(store.clone()))
+            .unwrap();
+
+        let p1 = serde_json::to_vec(&serde_json::json!({
+            "anchor": {"cid": "a"}, "tx": "0x1"
+        }))
+        .unwrap();
+        let rv: Value =
+            serde_json::from_slice(&host.call(SYS_CHAIN, "record_anchor", &p1).unwrap()).unwrap();
+        assert_eq!(rv["recorded"], true);
+
+        // 直传（无 anchor 包装）也接受。
+        let p2 = serde_json::to_vec(&serde_json::json!({"cid": "b"})).unwrap();
+        host.call(SYS_CHAIN, "record_anchor", &p2).unwrap();
+
+        let lv: Value =
+            serde_json::from_slice(&host.call(SYS_CHAIN, "list_anchors", b"{}").unwrap()).unwrap();
+        assert_eq!(lv["count"], 2);
+
+        // status 诚实标注 rpc offline。
+        let stv: Value =
+            serde_json::from_slice(&host.call(SYS_CHAIN, "status", b"{}").unwrap()).unwrap();
+        assert_eq!(stv["rpc"], "offline");
+    }
+
+    #[test]
+    fn methods_absent_without_handles() {
+        use crate::plugin::host::PluginHost;
+        let mut host = PluginHost::new("3.4.5", None);
+        host.boot_system(&SystemHandles::default()).unwrap();
+        // 未接线：对应方法不注册（NotFound）。
+        assert!(host.call(SYS_CHAIN, "list_anchors", b"{}").is_err());
+        assert!(host.call(SYS_NET, "peer_info", b"{}").is_err());
+        // status 始终可用。
+        assert!(host.call(SYS_NET, "status", b"{}").is_ok());
+    }
+
+    #[tokio::test]
+    async fn net_methods_query_peer_handle() {
+        use crate::node::{PeerCommand, PeerInfo};
+        use crate::plugin::host::PluginHost;
+        let (peer_tx, mut peer_rx) = tokio::sync::mpsc::channel::<PeerCommand>(16);
+        // 消费 PeerCommand 的 mock swarm actor。
+        tokio::spawn(async move {
+            while let Some(cmd) = peer_rx.recv().await {
+                match cmd {
+                    PeerCommand::GetInfo { reply } => {
+                        let _ = reply.send(PeerInfo {
+                            peer_id: "12D3".into(),
+                            connected: 3,
+                            routing_entries: 5,
+                            listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".into()],
+                            bootstrapped: vec![],
+                            nat_status: "Public".into(),
+                        });
+                    }
+                    PeerCommand::ListPeers { reply } => {
+                        let _ = reply.send(vec!["peer-a".into(), "peer-b".into()]);
+                    }
+                    PeerCommand::NatStatus { reply } => {
+                        let _ = reply.send("Public".into());
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        let mut host = PluginHost::new("3.4.5", None);
+        host.boot_system(&SystemHandles::default().with_peer(peer_tx))
+            .unwrap();
+
+        // 与真实编排器一致：host.call 在 spawn_blocking 线程执行。
+        let (b, mut host) = tokio::task::spawn_blocking(move || {
+            host.call(SYS_NET, "peer_info", b"{}").map(|b| (b, host))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let iv: Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(iv["peer_id"], "12D3");
+        assert_eq!(iv["connected"], 3);
+
+        let (b, mut host) = tokio::task::spawn_blocking(move || {
+            host.call(SYS_NET, "list_peers", b"{}").map(|b| (b, host))
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        let pv: Value = serde_json::from_slice(&b).unwrap();
+        assert_eq!(pv["count"], 2);
+
+        let b3 = tokio::task::spawn_blocking(move || host.call(SYS_NET, "nat_status", b"{}"))
+            .await
+            .unwrap()
+            .unwrap();
+        let nv: Value = serde_json::from_slice(&b3).unwrap();
+        assert_eq!(nv["nat_type"], "Public");
     }
 }

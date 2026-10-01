@@ -149,8 +149,10 @@ impl PluginHost {
     }
 
     /// 装配 T0 系统插件（随内核，进程内）。
-    pub fn boot_system(&mut self) -> PluginResult<Vec<String>> {
-        system::register_handlers(&mut self.native);
+    ///
+    /// `handles` 接线 daemon 真实句柄（存储/网络）；未接线的能力对应方法不注册。
+    pub fn boot_system(&mut self, handles: &system::SystemHandles) -> PluginResult<Vec<String>> {
+        system::register_handlers(&mut self.native, handles);
         let mut started = Vec::new();
         for manifest in system::bundled_manifests(&self.version) {
             let id = manifest.plugin.name.clone();
@@ -462,7 +464,7 @@ mod tests {
     #[test]
     fn boot_system_starts_all_system_plugins() {
         let mut host = PluginHost::new("3.0.0", None);
-        let started = host.boot_system().unwrap();
+        let started = host.boot_system(&system::SystemHandles::default()).unwrap();
         assert_eq!(started.len(), 4);
         let routes = host.route_table();
         for id in system::system_ids() {
@@ -473,7 +475,7 @@ mod tests {
     #[test]
     fn system_identity_callable_via_host() {
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         let out = host.call(system::SYS_IDENTITY, "mint_did", b"{}").unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
         assert!(v["did"].as_str().unwrap().starts_with("did:nau:"));
@@ -485,7 +487,7 @@ mod tests {
         let id = official::OFF_MARKET_MATCH;
         let manifest = signed_official(id, &dev);
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         // 未加官方根 → 安装失败（T1 副签验证）。
         assert!(host.install(manifest.clone()).is_err());
         // 加官方根（dev 兼任根，测试用）→ 安装成功。
@@ -521,7 +523,7 @@ mod tests {
         let id = official::OFF_MARKET_MATCH;
         let manifest = signed_official(id, &dev);
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(manifest).unwrap();
         host.uninstall(id).unwrap();
@@ -532,7 +534,7 @@ mod tests {
     #[test]
     fn system_plugin_cannot_uninstall() {
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         assert!(host.uninstall(system::SYS_IDENTITY).is_err());
     }
 
@@ -542,7 +544,7 @@ mod tests {
         let id = official::OFF_MARKET_MATCH;
         let manifest = signed_official(id, &dev);
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(manifest.clone()).unwrap();
 
@@ -561,7 +563,7 @@ mod tests {
         let dev = Keypair::generate();
         let id = official::OFF_MARKET_MATCH;
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         let root_hex = hex::encode(dev.public_key());
         host.add_official_root(&root_hex);
         host.install(signed_official(id, &dev)).unwrap();
@@ -590,7 +592,7 @@ mod tests {
             std::env::temp_dir().join(format!("au-host-hr-{}-{}", std::process::id(), n));
         std::fs::create_dir_all(&data_dir).unwrap();
         let mut host = PluginHost::new("3.0.0", Some(data_dir.clone()));
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(signed_official(id, &dev)).unwrap();
         let mut new_m = official::official_manifest(id, "3.0.1");
@@ -622,7 +624,7 @@ mod tests {
         m.sign_with(&dev).unwrap();
         m.counter_sign_with(&dev).unwrap();
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         assert!(host.load_legacy(m).is_ok());
         assert_eq!(host.route_table().get(id), Some(&PluginState::Running));
@@ -633,7 +635,7 @@ mod tests {
         let dev = Keypair::generate();
         let source = official::OFF_MARKET_MATCH;
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(signed_official(source, &dev)).unwrap();
         // 注册一个可消费的目标收件箱。
@@ -659,7 +661,7 @@ mod tests {
         let dev = Keypair::generate();
         let source = official::OFF_MARKET_MATCH;
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(signed_official(source, &dev)).unwrap();
         let rx1 = host.open_inbox("bridge-peer-b1").unwrap();
@@ -689,7 +691,7 @@ mod tests {
     #[test]
     fn inbox_without_token_cannot_send() {
         let mut host = PluginHost::new("3.0.0", None);
-        host.boot_system().unwrap();
+        host.boot_system(&system::SystemHandles::default()).unwrap();
         // 收件箱没有能力令牌 → 代表它发送会被第 2/3 道令牌检查拒绝。
         let _rx = host.open_inbox("mute-inbox").unwrap();
         let r = host.send_to(

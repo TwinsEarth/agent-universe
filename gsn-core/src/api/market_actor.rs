@@ -245,6 +245,26 @@ pub enum MarketCommand {
     Stats {
         reply: oneshot::Sender<MarketResponse>,
     },
+    /// 账本快照（流水 + 全部余额，v3.5.0：插件编排器喂给独立审计插件）
+    LedgerSnapshot {
+        reply: oneshot::Sender<MarketResponse>,
+    },
+    /// v3.5.0：构造 market-match 插件投标 payload（含信誉/延迟）
+    BidsForPlugin {
+        task_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
+    /// v3.5.0：应用 market-match 插件中标方
+    MatchTaskWithWinner {
+        task_id: String,
+        winner: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
+    /// v3.5.0：取投标者四维信誉（喂给 economy-reputation 插件）
+    ReputationDimensions {
+        agent_id: String,
+        reply: oneshot::Sender<MarketResponse>,
+    },
 }
 
 /// 市场响应
@@ -571,6 +591,30 @@ impl MarketActorHandle {
     }
     pub async fn stats(&self) -> MarketResponse {
         self.call(|reply| MarketCommand::Stats { reply }).await
+    }
+    /// 账本快照（流水 + 余额，v3.5.0：插件编排器喂给独立审计插件）。
+    pub async fn ledger_snapshot(&self) -> MarketResponse {
+        self.call(|reply| MarketCommand::LedgerSnapshot { reply })
+            .await
+    }
+    /// 构造 market-match 插件投标 payload（含信誉/延迟）。
+    pub async fn bids_for_plugin(&self, task_id: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::BidsForPlugin { task_id, reply })
+            .await
+    }
+    /// 应用 market-match 插件中标方。
+    pub async fn match_task_with_winner(&self, task_id: String, winner: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::MatchTaskWithWinner {
+            task_id,
+            winner,
+            reply,
+        })
+        .await
+    }
+    /// 取投标者四维信誉（喂给 economy-reputation 插件）。
+    pub async fn reputation_dimensions(&self, agent_id: String) -> MarketResponse {
+        self.call(|reply| MarketCommand::ReputationDimensions { agent_id, reply })
+            .await
     }
 }
 
@@ -907,6 +951,34 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 "task_count": market.task_count(),
                 "dispute_count": market.dispute_count(),
                 "settled_count": market.settled_count(),
+            })));
+        }
+        MarketCommand::LedgerSnapshot { reply } => {
+            let _ = reply.send(MarketResponse::ok(market.ledger_snapshot()));
+        }
+        MarketCommand::BidsForPlugin { task_id, reply } => {
+            let _ = reply.send(match market.bids_for_plugin(&task_id) {
+                Ok(v) => MarketResponse::ok(v),
+                Err(e) => MarketResponse::err(e),
+            });
+        }
+        MarketCommand::MatchTaskWithWinner {
+            task_id,
+            winner,
+            reply,
+        } => {
+            let _ = reply.send(match market.match_task_with_winner(&task_id, &winner) {
+                Ok(v) => MarketResponse::ok(serde_json::json!({ "winner": v })),
+                Err(e) => MarketResponse::err(e),
+            });
+        }
+        MarketCommand::ReputationDimensions { agent_id, reply } => {
+            let (q, s, h, a) = market.reputation_dimensions(&agent_id);
+            let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                "quality": q,
+                "speed": s,
+                "honesty": h,
+                "availability": a,
             })));
         }
     }

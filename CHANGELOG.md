@@ -2,6 +2,26 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.4.5] - 2026-10-01
+
+### 小版本：A 类接地修复 + B1 主数据面编排接管 + B3 系统插件接线
+
+- **A 类接地核实**：v3.4.2 §7「已知未修项」全部过时并更正——`persist` 调用零命中、
+  按中标价结算已在 v2.9.1（`6f6b842`）修复、REST 现用单一 `REST_BEARER_TOKEN` 无 DID 问题。
+- **A 类实际修复**：`marketplace/mod.rs` 补 `use serde_json::{json, Value}`（修复半成品
+  8 编译错误）；`market_actor.rs` 补齐 `bids_for_plugin`/`match_task_with_winner`/
+  `reputation_dimensions` 三个公开方法。
+- **B1 主数据面接管**：编排器重写为持有 market 的业务网关，6 个纯插件决策 + 3 个 gated
+  业务闸门（register_agent_gated / match_task_gated / settle_task_gated）；rest.rs 三点
+  走「插件决策→宿主应用」，node.rs 接线，未构造编排器时 Option 降级到单体 market。
+- **B3 系统插件接线**：新增 `SystemHandles`（store/peer）+ `block_on_net`；SYS_NET 真实
+  peer_info/list_peers/nat_status、SYS_STORAGE 真实 stats/list_agents/list_tasks、SYS_CHAIN
+  真实 record_anchor/list_anchors（status 诚实标注 rpc offline）；`boot_system(handles)`。
+- **版本语义偏离**：B1/B3 原被 v3.4.2 判为 major（v4.0.0），经明确指令在本 patch 推进，
+  已在发布文档说明并保留原判定。
+- **新增 11 个回归测试**（编排器 7 + B3 4，修复前会失败）；全量 577 passed / 0 failed。
+- 详见 `releases/v3.4.5.md`。B2（插件主动通信）留待 v3.5.0。
+
 ## [v3.4.2] - 2026-10-01
 
 ### 小版本：全局审核版本 —— 补齐插件生命周期/信任/黑名单接线 + 架构合规关卡

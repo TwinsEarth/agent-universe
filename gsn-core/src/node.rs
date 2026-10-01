@@ -1504,6 +1504,11 @@ async fn run_api_server(
     use crate::mcp::sse;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    // B1：主数据面编排器——绑定插件宿主与 market，在 register/match/settle 三点
+    // 走「插件决策 → 宿主应用」。循环外构造一次，每连接 clone。
+    let orchestrator =
+        crate::plugin::PluginOrchestratorHandle::new(plugin_host.clone(), market.clone());
+
     let addr = format!("{}:{}", listen, api_port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     println!("✅ HTTP API 监听: http://{}", addr);
@@ -1525,6 +1530,7 @@ async fn run_api_server(
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
         let plugin_host = plugin_host.clone();
+        let orchestrator = orchestrator.clone();
 
         tokio::spawn(async move {
             // 读取完整请求（v2.8.5：加读超时与请求体上限，防 slow-loris / 内存 DoS）
@@ -1840,7 +1846,15 @@ async fn run_api_server(
                 uptime_ms: start.elapsed().as_millis(),
             };
 
-            let routed = rest::route(&method, &raw_path, &body, &market, &info).await;
+            let routed = rest::route(
+                &method,
+                &raw_path,
+                &body,
+                &market,
+                Some(&orchestrator),
+                &info,
+            )
+            .await;
 
             // 注册 agent 落 SQLite + DHT
             if method == "POST"
@@ -2102,11 +2116,15 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v3.0.0：一切插件化内核（PluginHost）。装配随内核的 T0 系统插件，
     // 并通过 /api/v1/plugins 暴露 list / call / install / reload / uninstall。
     // 进程沙箱工作目录放在 data-dir 下。
+    // B3：T0 系统插件接线真实 daemon 句柄（存储 + 网络）。
+    let system_handles = crate::plugin::system::SystemHandles::default()
+        .with_store(store.clone())
+        .with_peer(peer_cmd_tx.clone());
     let mut plugin_host = crate::plugin::PluginHost::new(
         env!("CARGO_PKG_VERSION"),
         Some(args.data_dir.join("plugins")),
     );
-    match plugin_host.boot_system() {
+    match plugin_host.boot_system(&system_handles) {
         Ok(started) => println!(
             "✅ Plugin Host 已启动：{} 个 T0 系统插件（{}）",
             started.len(),
@@ -2214,7 +2232,8 @@ mod http_security_tests {
     #[test]
     fn plugin_api_stop_start_routes_reachable() {
         let mut host = PluginHost::new("3.4.2", None);
-        host.boot_system().expect("boot system plugins");
+        host.boot_system(&crate::plugin::system::SystemHandles::default())
+            .expect("boot system plugins");
         let idp = "/api/v1/plugins/com.twinsearth.sys.identity";
 
         // 初始 Running

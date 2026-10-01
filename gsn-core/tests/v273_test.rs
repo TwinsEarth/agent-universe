@@ -32,7 +32,7 @@ fn info() -> NodeInfo {
 }
 
 async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let r = route(method, path, body, market, &info()).await;
+    let r = route(method, path, body, market, None, &info()).await;
     (r.status, r.body)
 }
 

@@ -83,7 +83,8 @@ v1.0.0 (Genesis)
 │                               └── v3.2.3 (Business Plugins IV - 业务化第 7 个官方插件 agent-skill/discover 按技能标签精确匹配发现智能体·技能反向索引/移植 marketplace discover_by_skill/chain-anchor·chain-bridge 单体无独立算法不编造·7 个官方插件承载真实业务 - gsn-core 0.3.23)
 │                                 └── v3.3.0 (Business Plugins V - 业务化第 8 个官方插件 chain-anchor/anchor+verify 离线锚定构造·纯 Python keccak256 实现/移植 AgentCardAnchor.sol/授权锚定者·不可变首写+双校验/8 个官方插件承载真实业务 - gsn-core 0.3.30)
 │                                   └── v3.4.0 (Business Plugins VI - 业务化第 9 个官方插件 chain-bridge/跨链信誉桥接·验证者管理+record 幂等/冲突+法定人数+四维中位数定稿/移植 ReputationRegistry.sol/修复 GAP §9.4/9 个官方插件全部业务化 - gsn-core 0.3.40)
-│                                     └── v3.4.2 (Global Audit - 全局审核版本/补齐插件生命周期 stop/start+trust+blacklist 查询/unblock 接线+entry 架构合规关卡/A 类 G1-G4 修复/B 类主数据面接管标注 v4.0.0 - gsn-core 0.3.42) ← 当前
+│                                     └── v3.4.2 (Global Audit - 全局审核版本/补齐插件生命周期 stop/start+trust+blacklist 查询/unblock 接线+entry 架构合规关卡/A 类 G1-G4 修复/B 类主数据面接管标注 v4.0.0 - gsn-core 0.3.42)
+│                                           └── v3.4.5 (A-Class Grounding + B1 Orchestrator - A 类接地核实更正 §7 全部过时+patch 接线/B1 主数据面编排接管 register/match/settle 三 gated 闸门/B3 系统插件接线 net/storage/chain 真实方法+SystemHandles/block_on_net/版本语义偏离说明 - gsn-core 0.3.45) ← 当前
 ```
 
 ## 大版本详情
@@ -541,6 +542,24 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.4.5 - A 类接地修复 + B1 主数据面编排接管 + B3 系统插件接线（gsn-core 0.3.45）
+
+**小版本（patch，按「先 A 类、再 B 类」推进）**：先接地核实并修复 A 类，再把审计 §4 判为
+major 的 B1/B3 落地（B2 留待 v3.5.0）。完整说明见 [releases/v3.4.5.md](releases/v3.4.5.md)。
+
+- **A 类接地核实（更正 v3.4.2 §7）**：`persist` 调用零命中、按中标价结算已在 v2.9.1
+  （`6f6b842`）修复、REST 现用单一 `REST_BEARER_TOKEN` 无 DID 分隔问题——三项全部过时。
+- **A 类实际修复**：`marketplace/mod.rs` 补 `use serde_json::{json, Value}`（8 编译错误）；
+  `market_actor.rs` 补齐 bids_for_plugin/match_task_with_winner/reputation_dimensions。
+- **B1 主数据面接管**：编排器重写为持有 market 的业务网关，6 纯插件决策 + 3 gated 闸门
+  （register/match/settle），rest.rs 三点走「插件决策→宿主应用」，Option 降级向后兼容。
+- **B3 系统插件接线**：SystemHandles（store/peer）+ block_on_net；SYS_NET 真实
+  peer_info/list_peers/nat_status、SYS_STORAGE 真实 stats/list_agents/list_tasks、SYS_CHAIN
+  真实 record_anchor/list_anchors（status 诚实标注 rpc offline）。
+- **版本语义偏离**：B1/B3 原判 major，经明确指令在本 patch 推进，已说明并保留原判定。
+- **验证**：全量 577 passed / 0 failed（566 + 编排器 7 + B3 4），clippy 零警告、fmt 通过、
+  三道静态关卡通过。
 
 ### v3.4.2 - 全局审核版本：补齐插件生命周期/信任/黑名单接线 + 架构合规关卡（gsn-core 0.3.42）
 

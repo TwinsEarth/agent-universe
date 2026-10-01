@@ -24,6 +24,8 @@
 //! - [`system`]：系统插件（T0）；
 //! - [`official`]：官方插件（T1）；
 //! - [`host`]：宿主装配器（[`host::PluginHost`]）。
+//! - [`orchestrator`]：插件编排器（[`orchestrator::PluginOrchestratorHandle`]），
+//!   让主数据面业务经插件决策（v3.5.0）。
 
 pub mod arbiter;
 pub mod blacklist;
@@ -37,6 +39,7 @@ pub mod tier;
 
 pub mod host;
 pub mod official;
+pub mod orchestrator;
 pub mod runtime;
 pub mod system;
 
@@ -49,5 +52,6 @@ pub use error::{PluginError, PluginResult};
 pub use host::PluginHost;
 pub use lifecycle::{PluginLifecycle, PluginState};
 pub use manifest::PluginManifest;
+pub use orchestrator::PluginOrchestratorHandle;
 pub use registry::PluginRegistry;
 pub use runtime::{PluginInstance, PluginRuntime, RuntimeCapabilities};

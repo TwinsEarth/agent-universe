@@ -2,6 +2,32 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.3.0] - 2026-10-01
+
+### 中版本：业务化第 8 个官方插件 chain-anchor（离线锚定构造与双校验）
+
+- **背景（根因）**：v3.2.3 后仅剩 2 个通用 exec 承载。进一步探查发现 chain-anchor 的真实
+  算法不在 Rust 单体，而在真实 Solidity 合约 `contracts/src/AgentCardAnchor.sol`。按
+  「没有调用点的修复不算修复」，本版把它离线移植并业务化。
+- **技术闸门**：合约锚定键是 keccak256（Ethereum，domain byte `0x01`），不是 NIST
+  SHA3（`0x06`）；Rust 端无 keccak 依赖，故在 entry 内纯 Python 实现 Keccak-f[1600]。
+  - 调试闭环：分段二分锁定 bug 在 permutation 内（padding 换成 0x06 仍不符），**根因
+    是硬编码 24 个轮常数 RC 表从 RC[2] 起约 12 个抄错**；以 pycryptodome `keccak.c:275`
+    权威表替换后，空串 `c5d246…`、`abc` `4e0365…` 及 0/15/135/136/137/200/256/272
+    长度全部通过。
+- **anchor/verify entry**（`plugin/official/mod.rs` 新增 `ANCHOR_ENTRY`，并接入
+  `official_entry_source`）：
+  - `anchor`：cid/agent_did 非空、锚定者已授权、cidHash 首写后不可变（不可覆盖），
+    写 `{cidHash, agentDidHash, anchoredAt, anchorer}`；
+  - `verify`：记录存在 && `anchoredAt>0` && `agentDidHash==keccak256(agent_did)`（双校验）；
+  - 另有 `get_anchor`、owner 管理的 `add_anchorer`/`remove_anchorer`。
+- **诚实边界**：离线不做 RPC、不读 `block.timestamp`，不声称真实上链；`anchoredAt` 由
+  调用方传入单调时间戳；状态经 payload 传入、写方法返回更新后状态。
+- 验证：cargo test 全量 **560 passed / 0 failed**（基线 557 + 新增 3 个隔离测试）；
+  clippy `--all-targets` 零警告；fmt 已应用；no-panics 关卡 **0 sites**；unsafe-containment
+  通过（本版未新增 unsafe）。
+- 边界：仅剩 1 个通用 exec 插件（chain-bridge，对应跨链信誉桥接、算法更复杂）。
+
 ## [v3.2.3] - 2026-10-01
 
 ### 小版本：业务化第 7 个官方插件 agent-skill（按技能发现智能体）

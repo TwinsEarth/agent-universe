@@ -716,4 +716,140 @@ mod tests {
         assert_eq!(v["agents"].as_array().unwrap().len(), 0);
         inst.stop().unwrap();
     }
+
+    // ── v3.3.0 chain-anchor entry（离线移植 AgentCardAnchor.sol）────────
+    #[test]
+    fn chain_anchor_then_verify_via_entry() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_ANCHOR);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        // owner 锚定一个 CID
+        let p1 = serde_json::json!({
+            "cid": "bafy-manifest-1",
+            "agent_did": "did:nau:agent-1",
+            "anchorer": owner,
+            "authorized_anchorers": [owner],
+            "anchors": {},
+            "timestamp": 1000
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p1).unwrap())
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true, "got {v}");
+        let anchors = v["anchors"].clone();
+        // verify 正确（cid + did 双校验）
+        let pv = serde_json::json!({
+            "cid": "bafy-manifest-1",
+            "agent_did": "did:nau:agent-1",
+            "anchors": anchors
+        });
+        let out = inst
+            .call("verify", &serde_json::to_vec(&pv).unwrap())
+            .unwrap();
+        let vv: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(vv["valid"], true, "got {vv}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn chain_anchor_duplicate_is_immutable_and_wrong_did_fails() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_ANCHOR);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        let p1 = serde_json::json!({
+            "cid": "bafy-x",
+            "agent_did": "did:nau:a",
+            "anchorer": owner,
+            "authorized_anchorers": [owner],
+            "anchors": {},
+            "timestamp": 1
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p1).unwrap())
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true, "got {v}");
+        let anchors = v["anchors"].clone();
+        // 重复 anchor 同一 cid → 拒绝（首写后不可变）
+        let p2 = serde_json::json!({
+            "cid": "bafy-x",
+            "agent_did": "did:nau:a",
+            "anchorer": owner,
+            "authorized_anchorers": [owner],
+            "anchors": anchors,
+            "timestamp": 2
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p2).unwrap())
+            .unwrap();
+        let v2: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v2["ok"], false, "got {v2}");
+        // 错误 DID verify → 失败（双校验）
+        let anchors2 = v2["anchors"].clone();
+        let pv = serde_json::json!({
+            "cid": "bafy-x",
+            "agent_did": "did:nau:attacker",
+            "anchors": anchors2
+        });
+        let out = inst
+            .call("verify", &serde_json::to_vec(&pv).unwrap())
+            .unwrap();
+        let vv: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(vv["valid"], false, "got {vv}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn chain_anchor_unauthorized_and_empty_rejected() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_ANCHOR);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        // 未授权 anchorer
+        let p = serde_json::json!({
+            "cid": "bafy-y",
+            "agent_did": "did:nau:a",
+            "anchorer": "did:nau:bad",
+            "authorized_anchorers": [owner],
+            "anchors": {},
+            "timestamp": 1
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], false, "got {v}");
+        // 空 cid
+        let p = serde_json::json!({
+            "cid": "",
+            "agent_did": "did:nau:a",
+            "anchorer": owner,
+            "authorized_anchorers": [owner],
+            "anchors": {},
+            "timestamp": 1
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], false, "got {v}");
+        // 空 did
+        let p = serde_json::json!({
+            "cid": "bafy-z",
+            "agent_did": "",
+            "anchorer": owner,
+            "authorized_anchorers": [owner],
+            "anchors": {},
+            "timestamp": 1
+        });
+        let out = inst
+            .call("anchor", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], false, "got {v}");
+        inst.stop().unwrap();
+    }
 }

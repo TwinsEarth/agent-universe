@@ -424,6 +424,155 @@ def discover(payload):
     return result
 "#;
 
+/// chain-anchor 插件 entry：离线移植自 `contracts/src/AgentCardAnchor.sol`（无 RPC，
+/// 不声称真实上链）。内嵌纯 Python keccak256（domain 0x01），实现：
+/// - `anchor`：仅授权锚定者、双 hash 非空、同 cidHash 首写后不可变（不可覆盖）；
+/// - `verify`：已锚定（`anchoredAt>0`）且 agentDidHash 一致（双校验）；
+/// - 另有 `get_anchor` 与 owner 管理的 `add_anchorer` / `remove_anchorer`。
+///
+/// 离线无 `block.timestamp`，`anchoredAt` 由调用方传入单调时间戳。
+const ANCHOR_ENTRY: &str = r#"# chain-anchor official plugin (T1)
+# offline port of contracts/src/AgentCardAnchor.sol (no RPC; does NOT claim real on-chain)
+
+# ---- pure-python keccak256 (Ethereum; domain byte 0x01) ----
+_MASK = (1 << 64) - 1
+_RC = [
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
+    0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+    0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
+    0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
+    0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
+    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
+_ROT = [
+    [0, 36, 3, 41, 18],
+    [1, 44, 10, 45, 2],
+    [62, 6, 43, 15, 61],
+    [28, 55, 25, 21, 56],
+    [27, 20, 39, 8, 14]]
+
+
+def _rol(x, n):
+    if n == 0:
+        return x
+    return ((x << n) | (x >> (64 - n))) & _MASK
+
+
+def keccak256(data):
+    rate = 136
+    msg = bytearray(data)
+    msg.append(0x01)
+    while len(msg) % rate != 0:
+        msg.append(0)
+    msg[-1] |= 0x80
+    S = [[0] * 5 for _ in range(5)]
+    for off in range(0, len(msg), rate):
+        for i in range(rate // 8):
+            x, y = i % 5, i // 5
+            S[x][y] ^= int.from_bytes(msg[off + 8 * i:off + 8 * i + 8], "little")
+        for rnd in range(24):
+            C = [S[x][0] ^ S[x][1] ^ S[x][2] ^ S[x][3] ^ S[x][4] for x in range(5)]
+            D = [C[(x - 1) % 5] ^ _rol(C[(x + 1) % 5], 1) for x in range(5)]
+            for x in range(5):
+                for y in range(5):
+                    S[x][y] ^= D[x]
+            B = [[0] * 5 for _ in range(5)]
+            for x in range(5):
+                for y in range(5):
+                    B[y][(2 * x + 3 * y) % 5] = _rol(S[x][y], _ROT[x][y])
+            for x in range(5):
+                for y in range(5):
+                    S[x][y] = B[x][y] ^ ((~B[(x + 1) % 5][y]) & B[(x + 2) % 5][y])
+            S[0][0] ^= _RC[rnd]
+    out = b""
+    for i in range(rate // 8):
+        x, y = i % 5, i // 5
+        out += S[x][y].to_bytes(8, "little")
+    return out[:32]
+
+
+def _hash_hex(value):
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return keccak256(value).hex()
+
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.chain-anchor",
+            "tier": "official",
+            "methods": ["status", "anchor", "verify", "get_anchor",
+                        "add_anchorer", "remove_anchorer"]}
+
+
+def anchor(payload):
+    cid = payload.get("cid")
+    agent_did = payload.get("agent_did")
+    anchorer = payload.get("anchorer", "")
+    authorized = list(payload.get("authorized_anchorers", []) or [])
+    anchors = dict(payload.get("anchors", {}) or {})
+    timestamp = int(payload.get("timestamp", 0))
+    if cid is None or str(cid) == "":
+        return {"ok": False, "error": "empty cid", "anchors": anchors}
+    if agent_did is None or str(agent_did) == "":
+        return {"ok": False, "error": "empty did", "anchors": anchors}
+    cid_hash = _hash_hex(cid)
+    agent_did_hash = _hash_hex(agent_did)
+    if anchorer not in authorized:
+        return {"ok": False, "error": "not authorized anchorer", "anchors": anchors}
+    if cid_hash in anchors:
+        return {"ok": False, "error": "anchor already exists; immutable", "anchors": anchors}
+    record = {"cidHash": cid_hash, "agentDidHash": agent_did_hash,
+              "anchoredAt": timestamp, "anchorer": anchorer}
+    anchors[cid_hash] = record
+    return {"ok": True, "anchor": record, "anchors": anchors,
+            "cidHash": cid_hash, "agentDidHash": agent_did_hash}
+
+
+def verify(payload):
+    cid = payload.get("cid")
+    agent_did = payload.get("agent_did")
+    anchors = payload.get("anchors", {}) or {}
+    if cid is None or str(cid) == "" or agent_did is None or str(agent_did) == "":
+        return {"valid": False, "error": "empty cid or did"}
+    cid_hash = _hash_hex(cid)
+    agent_did_hash = _hash_hex(agent_did)
+    a = anchors.get(cid_hash)
+    valid = (a is not None and int(a.get("anchoredAt", 0)) > 0
+             and a.get("agentDidHash") == agent_did_hash)
+    return {"valid": valid, "cidHash": cid_hash, "agentDidHash": agent_did_hash}
+
+
+def get_anchor(payload):
+    cid = payload.get("cid")
+    anchors = payload.get("anchors", {}) or {}
+    if cid is None or str(cid) == "":
+        return {"anchor": None}
+    return {"anchor": anchors.get(_hash_hex(cid))}
+
+
+def add_anchorer(payload):
+    actor = payload.get("actor", "")
+    owner = payload.get("owner", "")
+    target = payload.get("anchorer", "")
+    authorized = list(payload.get("authorized_anchorers", []) or [])
+    if actor != owner:
+        return {"ok": False, "error": "not owner"}
+    if target and target not in authorized:
+        authorized.append(target)
+    return {"ok": True, "authorized_anchorers": authorized}
+
+
+def remove_anchorer(payload):
+    actor = payload.get("actor", "")
+    owner = payload.get("owner", "")
+    target = payload.get("anchorer", "")
+    authorized = list(payload.get("authorized_anchorers", []) or [])
+    if actor != owner:
+        return {"ok": False, "error": "not owner"}
+    if target in authorized:
+        authorized.remove(target)
+    return {"ok": True, "authorized_anchorers": authorized}
+"#;
+
 /// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
 pub fn official_entry_source(name: &str) -> Option<EntrySource> {
     match name {
@@ -462,6 +611,11 @@ pub fn official_entry_source(name: &str) -> Option<EntrySource> {
             filename: "plugin.py",
             source: SKILL_ENTRY,
         }),
+        OFF_CHAIN_ANCHOR => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: ANCHOR_ENTRY,
+        }),
         _ => None,
     }
 }
@@ -497,7 +651,7 @@ mod tests {
     #[test]
     fn entry_source_for_business_plugins() {
         // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card；
-        // v3.2.2 swarm-emergence；v3.2.3 agent-skill。
+        // v3.2.2 swarm-emergence；v3.2.3 agent-skill；v3.3.0 chain-anchor。
         assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
         assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
         assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
@@ -505,8 +659,8 @@ mod tests {
         assert!(official_entry_source(OFF_AGENT_CARD).is_some());
         assert!(official_entry_source(OFF_SWARM_EMERGENCE).is_some());
         assert!(official_entry_source(OFF_AGENT_SKILL).is_some());
-        // 其余 2 个暂为通用 exec 承载（单体无独立 anchor/bridge 算法，不编造）。
-        assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_none());
+        assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_some());
+        // chain-bridge 暂为通用 exec 承载（单体无独立 bridge 算法，不编造）。
         assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
     }
 }

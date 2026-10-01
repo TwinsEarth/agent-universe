@@ -1,0 +1,272 @@
+//! 能力模型 —— 能力令牌（Capability Token）与能力矩阵
+//!
+//! # 权限是令牌，不是约定
+//!
+//! 插件在清单里声明所需能力，宿主在加载时**签发能力令牌**；没有令牌的调用在总线入口
+//! 就被拒绝，而不是靠插件自觉。
+//!
+//! 令牌（[`CapabilityToken`]）在加载时签发，随插件实例生命周期存在，绑定到具体清单
+//! 字节（`manifest_digest`），换清单即失效。
+//!
+//! # 能力组
+//!
+//! - **基础能力**（所有级别）：`plugin:lifecycle:read`、`plugin:message:send`、
+//!   `plugin:storage:own`；
+//! - **网络 / 链能力**：T0 全有，T1/T2 声明式，T3 拒绝；
+//! - **内核能力**：仅 T0（`kernel:plugin:manage` 等）。
+
+use crate::plugin::tier::Tier;
+use serde::{Deserialize, Serialize};
+
+/// 插件能力（细粒度、命名空间化）。
+///
+/// 字符串形式为 `group:resource:action`，例如 `plugin:message:send`、`net:dht:read`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// 读取自身生命周期状态（基础，全级别）。
+    #[serde(rename = "plugin:lifecycle:read")]
+    LifecycleRead,
+    /// 向总线发送消息（基础，全级别）。
+    #[serde(rename = "plugin:message:send")]
+    MessageSend,
+    /// 读写自身沙盒目录（基础，全级别）。
+    #[serde(rename = "plugin:storage:own")]
+    StorageOwn,
+
+    /// 读取 DHT。
+    #[serde(rename = "net:dht:read")]
+    DhtRead,
+    /// 写入 DHT。
+    #[serde(rename = "net:dht:write")]
+    DhtWrite,
+    /// 发布 GossipSub。
+    #[serde(rename = "net:gossip:publish")]
+    GossipPublish,
+    /// 订阅 GossipSub。
+    #[serde(rename = "net:gossip:subscribe")]
+    GossipSubscribe,
+
+    /// 读取链上状态。
+    #[serde(rename = "chain:evm:read")]
+    EvmRead,
+    /// 写链上交易。
+    #[serde(rename = "chain:evm:write")]
+    EvmWrite,
+
+    /// 经济结算。
+    #[serde(rename = "economy:settle")]
+    EconomySettle,
+    /// 创建 AgentCard。
+    #[serde(rename = "agent:card:create")]
+    AgentCardCreate,
+    /// 更新 AgentCard。
+    #[serde(rename = "agent:card:update")]
+    AgentCardUpdate,
+    /// 参与群体智能共识。
+    #[serde(rename = "swarm:consensus")]
+    SwarmConsensus,
+
+    /// 管理插件生命周期（内核，仅 T0）。
+    #[serde(rename = "kernel:plugin:manage")]
+    PluginManage,
+    /// 写安全策略（内核，仅 T0）。
+    #[serde(rename = "kernel:policy:write")]
+    PolicyWrite,
+    /// 配置隔离（内核，仅 T0）。
+    #[serde(rename = "kernel:isolation:configure")]
+    IsolationConfigure,
+}
+
+impl Capability {
+    /// 全部已知能力（用于清单能力名校验）。
+    pub const ALL: &[Capability] = &[
+        Capability::LifecycleRead,
+        Capability::MessageSend,
+        Capability::StorageOwn,
+        Capability::DhtRead,
+        Capability::DhtWrite,
+        Capability::GossipPublish,
+        Capability::GossipSubscribe,
+        Capability::EvmRead,
+        Capability::EvmWrite,
+        Capability::EconomySettle,
+        Capability::AgentCardCreate,
+        Capability::AgentCardUpdate,
+        Capability::SwarmConsensus,
+        Capability::PluginManage,
+        Capability::PolicyWrite,
+        Capability::IsolationConfigure,
+    ];
+
+    /// 能力的规范字符串形式。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Capability::LifecycleRead => "plugin:lifecycle:read",
+            Capability::MessageSend => "plugin:message:send",
+            Capability::StorageOwn => "plugin:storage:own",
+            Capability::DhtRead => "net:dht:read",
+            Capability::DhtWrite => "net:dht:write",
+            Capability::GossipPublish => "net:gossip:publish",
+            Capability::GossipSubscribe => "net:gossip:subscribe",
+            Capability::EvmRead => "chain:evm:read",
+            Capability::EvmWrite => "chain:evm:write",
+            Capability::EconomySettle => "economy:settle",
+            Capability::AgentCardCreate => "agent:card:create",
+            Capability::AgentCardUpdate => "agent:card:update",
+            Capability::SwarmConsensus => "swarm:consensus",
+            Capability::PluginManage => "kernel:plugin:manage",
+            Capability::PolicyWrite => "kernel:policy:write",
+            Capability::IsolationConfigure => "kernel:isolation:configure",
+        }
+    }
+
+    /// 从字符串解析能力（清单能力名）。
+    pub fn parse(s: &str) -> Option<Capability> {
+        Capability::ALL.iter().copied().find(|c| c.as_str() == s)
+    }
+
+    /// 是否为内核能力（仅 T0 可拥有）。
+    pub fn is_kernel(self) -> bool {
+        matches!(
+            self,
+            Capability::PluginManage | Capability::PolicyWrite | Capability::IsolationConfigure
+        )
+    }
+
+    /// 是否为基础能力（所有级别默认拥有）。
+    pub fn is_basic(self) -> bool {
+        matches!(
+            self,
+            Capability::LifecycleRead | Capability::MessageSend | Capability::StorageOwn
+        )
+    }
+}
+
+/// 依据级别，决定某项能力是否在「默认授权」范围内。
+///
+/// - 基础能力：全级别授予；
+/// - 网络/链能力：T0 全有，T1/T2 需在清单显式声明并经审批（这里返回 `false` 表示
+///   「不在默认范围，需声明」），T3 永远拒绝（即使声明也不行）；
+/// - 内核能力：仅 T0。
+///
+/// 返回值：
+/// - `Granted`：默认授予；
+/// - `Declarable`：不在默认范围，但该级别可在清单声明并经审批；
+/// - `Denied`：该级别永远不可拥有。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Grant {
+    Granted,
+    Declarable,
+    Denied,
+}
+
+/// 能力矩阵：给定级别与能力，返回授权类别。
+pub fn grant_for(tier: Tier, cap: Capability) -> Grant {
+    if cap.is_basic() {
+        return Grant::Granted;
+    }
+    if cap.is_kernel() {
+        return if tier == Tier::System {
+            Grant::Granted
+        } else {
+            Grant::Denied
+        };
+    }
+    // 网络 / 链 / 经济 / 智能体能力。
+    match tier {
+        Tier::System => Grant::Granted,
+        Tier::Official | Tier::Certified => Grant::Declarable,
+        Tier::ThirdParty | Tier::Blacklist => Grant::Denied,
+    }
+}
+
+/// 能力令牌：加载时签发，绑定到具体清单字节与插件实例。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityToken {
+    /// 令牌所属插件 id。
+    pub plugin_id: String,
+    /// 已授予的能力。
+    pub granted: Vec<Capability>,
+    /// 签发时间（Unix 秒）。
+    pub issued_at: u64,
+    /// 绑定的清单摘要（换清单即失效）。
+    pub manifest_digest: String,
+}
+
+impl CapabilityToken {
+    /// 令牌是否包含某项能力（总线入口检查）。
+    pub fn has(&self, cap: Capability) -> bool {
+        self.granted.contains(&cap)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_capabilities_all_tiers() {
+        for tier in [
+            Tier::System,
+            Tier::Official,
+            Tier::Certified,
+            Tier::ThirdParty,
+        ] {
+            assert_eq!(grant_for(tier, Capability::MessageSend), Grant::Granted);
+            assert_eq!(grant_for(tier, Capability::StorageOwn), Grant::Granted);
+        }
+    }
+
+    #[test]
+    fn kernel_capabilities_system_only() {
+        assert_eq!(
+            grant_for(Tier::System, Capability::PluginManage),
+            Grant::Granted
+        );
+        assert_eq!(
+            grant_for(Tier::Official, Capability::PluginManage),
+            Grant::Denied
+        );
+        assert_eq!(
+            grant_for(Tier::ThirdParty, Capability::PolicyWrite),
+            Grant::Denied
+        );
+    }
+
+    #[test]
+    fn third_party_denied_network_even_if_declared() {
+        // 关键安全属性：T3 即使在清单里声明网络能力，也永远被拒绝。
+        assert_eq!(
+            grant_for(Tier::ThirdParty, Capability::DhtWrite),
+            Grant::Denied
+        );
+        assert_eq!(
+            grant_for(Tier::ThirdParty, Capability::EvmWrite),
+            Grant::Denied
+        );
+        assert_eq!(
+            grant_for(Tier::ThirdParty, Capability::EconomySettle),
+            Grant::Denied
+        );
+    }
+
+    #[test]
+    fn official_certified_declarable() {
+        for tier in [Tier::Official, Tier::Certified] {
+            assert_eq!(grant_for(tier, Capability::DhtWrite), Grant::Declarable);
+            assert_eq!(
+                grant_for(tier, Capability::EconomySettle),
+                Grant::Declarable
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_parse_str() {
+        for cap in Capability::ALL {
+            assert_eq!(Capability::parse(cap.as_str()), Some(*cap));
+        }
+        assert_eq!(Capability::parse("not:a:cap"), None);
+    }
+}

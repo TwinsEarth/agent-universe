@@ -1292,7 +1292,129 @@ async fn handle_network_api(
 
 // ───────────────────────── HTTP API 服务器 ─────────────────────────
 
-// 顶层 HTTP 服务器的依赖注入参数（8 个），聚合为 struct 反而割裂可读性，允许多参数。
+/// v3.0.0 插件 REST 处理：list / call / install / reload / uninstall。
+///
+/// 调用方已在路由层通过 `rest_authorize` 认证闸门；这里只做插件操作。
+/// 全部失败路径返回类型化的 `(状态码, JSON)`，不 panic。
+fn handle_plugin_api(
+    method: &str,
+    path: &str,
+    body: &str,
+    host: &mut crate::plugin::PluginHost,
+) -> (u16, serde_json::Value) {
+    let path = path.split('?').next().unwrap_or(path);
+    let sub = path
+        .trim_start_matches("/api/v1/plugins")
+        .trim_start_matches('/');
+    let segments: Vec<&str> = if sub.is_empty() {
+        Vec::new()
+    } else {
+        sub.split('/').collect()
+    };
+
+    match (method, segments.as_slice()) {
+        // GET /plugins：列出全部插件（id / version / tier / state）。
+        ("GET", []) => {
+            let mut list: Vec<serde_json::Value> = Vec::new();
+            for (id, state) in host.route_table() {
+                let version = host
+                    .registry()
+                    .get(&id)
+                    .map(|r| r.manifest.plugin.version.clone())
+                    .unwrap_or_default();
+                let tier = crate::plugin::tier::Tier::from_name(&id);
+                list.push(serde_json::json!({
+                    "id": id,
+                    "version": version,
+                    "tier": format!("{tier:?}"),
+                    "state": format!("{state:?}"),
+                }));
+            }
+            (
+                200,
+                serde_json::json!({ "host_version": host.version(), "plugins": list }),
+            )
+        }
+        // POST /plugins：安装（body 为完整清单）。
+        ("POST", []) => {
+            match serde_json::from_str::<crate::plugin::manifest::PluginManifest>(body) {
+                Ok(m) => match host.install(m) {
+                    Ok(id) => (201, serde_json::json!({ "installed": id })),
+                    Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+                },
+                Err(e) => (
+                    400,
+                    serde_json::json!({ "error": format!("清单解析失败: {e}") }),
+                ),
+            }
+        }
+        // GET /plugins/{id}：单个插件详情。
+        ("GET", [id]) => match host.route_table().get(*id).cloned() {
+            Some(state) => {
+                let version = host
+                    .registry()
+                    .get(id)
+                    .map(|r| r.manifest.plugin.version.clone())
+                    .unwrap_or_default();
+                let tier = crate::plugin::tier::Tier::from_name(id);
+                (
+                    200,
+                    serde_json::json!({
+                        "id": *id,
+                        "version": version,
+                        "tier": format!("{tier:?}"),
+                        "state": format!("{state:?}"),
+                    }),
+                )
+            }
+            None => (404, serde_json::json!({ "error": "插件未找到" })),
+        },
+        // POST /plugins/{id}/call：调用方法（body: {method, payload}）。
+        ("POST", [id, "call"]) => {
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).unwrap_or_else(|_| serde_json::json!({}));
+            let method_name = parsed
+                .get("method")
+                .and_then(|x| x.as_str())
+                .unwrap_or("status");
+            let args = parsed
+                .get("payload")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+            let arg_bytes = serde_json::to_vec(&args).unwrap_or_default();
+            match host.call(id, method_name, &arg_bytes) {
+                Ok(bytes) => {
+                    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or_else(
+                        |_| serde_json::json!({ "raw": String::from_utf8_lossy(&bytes) }),
+                    );
+                    (200, serde_json::json!({ "result": value }))
+                }
+                Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+            }
+        }
+        // POST /plugins/{id}/reload：热更新（body 为新版本清单）。
+        ("POST", [id, "reload"]) => {
+            match serde_json::from_str::<crate::plugin::manifest::PluginManifest>(body) {
+                Ok(m) => match host.hot_reload(m) {
+                    Ok(_) => (200, serde_json::json!({ "reloaded": *id })),
+                    Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+                },
+                Err(e) => (
+                    400,
+                    serde_json::json!({ "error": format!("清单解析失败: {e}") }),
+                ),
+            }
+        }
+        // DELETE /plugins/{id}：卸载（T0 不可卸载 → 400）。
+        ("DELETE", [id]) => match host.uninstall(id) {
+            Ok(()) => (200, serde_json::json!({ "uninstalled": *id })),
+            Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+        },
+        _ => (404, serde_json::json!({ "error": "未知插件操作" })),
+    }
+}
+
+// 顶层 HTTP 服务器的依赖注入参数（9 个），聚合为 struct 反而割裂可读性，允许多参数。
 #[allow(clippy::too_many_arguments)]
 async fn run_api_server(
     listen: String,
@@ -1304,6 +1426,7 @@ async fn run_api_server(
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
+    plugin_host: Arc<std::sync::Mutex<crate::plugin::PluginHost>>,
 ) -> anyhow::Result<()> {
     use crate::api::rest;
     use crate::mcp::sse;
@@ -1329,6 +1452,7 @@ async fn run_api_server(
         let peer_cmd_tx = peer_cmd_tx.clone();
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
+        let plugin_host = plugin_host.clone();
 
         tokio::spawn(async move {
             // 读取完整请求（v2.8.5：加读超时与请求体上限，防 slow-loris / 内存 DoS）
@@ -1593,6 +1717,44 @@ async fn run_api_server(
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (sandbox {})", method, path_part, status);
+                return;
+            }
+
+            // ───── v3.0.0 插件端点（/api/v1/plugins：list/call/install/reload/uninstall）─────
+            if path_part == "/api/v1/plugins" || path_part.starts_with("/api/v1/plugins/") {
+                let ph = plugin_host.clone();
+                let method_c = method.clone();
+                let path_c = raw_path.clone();
+                let body_c = body.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let mut guard = ph.lock().unwrap_or_else(|e| {
+                        eprintln!("⚠️ plugin: host 锁曾毒化，恢复后继续（请人工核查）");
+                        e.into_inner()
+                    });
+                    handle_plugin_api(&method_c, &path_c, &body_c, &mut guard)
+                })
+                .await;
+                let (status, payload) = match result {
+                    Ok(x) => x,
+                    Err(_) => (500, serde_json::json!({ "error": "plugin 任务异常" })),
+                };
+                let status_text = match status {
+                    200 => "OK",
+                    201 => "Created",
+                    400 => "Bad Request",
+                    404 => "Not Found",
+                    _ => "Internal Server Error",
+                };
+                let resp = http_response(
+                    status,
+                    status_text,
+                    payload.to_string(),
+                    "application/json",
+                    &cors_headers,
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (plugin {})", method, path_part, status);
                 return;
             }
 
@@ -1864,6 +2026,23 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         sb_dir, sb_cfg, 0,
     )));
     println!("✅ Agent Sandbox manager 已启动（/api/v1/sandboxes）");
+
+    // v3.0.0：一切插件化内核（PluginHost）。装配随内核的 T0 系统插件，
+    // 并通过 /api/v1/plugins 暴露 list / call / install / reload / uninstall。
+    // 进程沙箱工作目录放在 data-dir 下。
+    let mut plugin_host = crate::plugin::PluginHost::new(
+        env!("CARGO_PKG_VERSION"),
+        Some(args.data_dir.join("plugins")),
+    );
+    match plugin_host.boot_system() {
+        Ok(started) => println!(
+            "✅ Plugin Host 已启动：{} 个 T0 系统插件（{}）",
+            started.len(),
+            started.join(", ")
+        ),
+        Err(e) => eprintln!("⚠️ Plugin Host 系统插件装配失败: {e}"),
+    }
+    let plugin_host = Arc::new(std::sync::Mutex::new(plugin_host));
     println!("✅ gsn-daemon 启动完成");
 
     run_api_server(
@@ -1876,6 +2055,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         peer_cmd_tx,
         market,
         sandbox_mgr,
+        plugin_host,
     )
     .await?;
 

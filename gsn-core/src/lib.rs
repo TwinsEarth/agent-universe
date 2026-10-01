@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v2.9.2
+//! Agent Universe gsn-core v3.0.0
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -29,6 +29,7 @@ pub mod mode;
 pub mod nat;
 pub mod net;
 pub mod node;
+pub mod plugin;
 pub mod proof;
 pub mod relay_pool;
 pub mod sandbox;

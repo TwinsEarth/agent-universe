@@ -377,6 +377,53 @@ def detect(payload):
             "recent_latency": rl, "older_latency": ol}
 "#;
 
+/// agent-skill 插件 entry：移植自 `marketplace/mod.rs::discover_by_skill`。
+///
+/// 输入：`skill`（技能标签）、`agents`（卡片列表，每个含 `agent_id`、`skills`）；
+/// 先按卡片声明的技能构建反向索引（对齐 `register_agent` 的 `skill_index` 构建），
+/// 再做**精确**（忽略大小写/首尾空白）标签匹配，返回所有声明该技能的卡片。
+const SKILL_ENTRY: &str = r#"# agent-skill official plugin (T1)
+# discovers agents by skill tag (marketplace/mod.rs discover_by_skill)
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.agent-skill",
+            "tier": "official", "methods": ["status", "discover"]}
+
+def discover(payload):
+    skill = payload.get("skill", "")
+    agents = payload.get("agents", [])
+    target = str(skill).strip().lower()
+    result = {"skill": skill, "agents": [], "count": 0}
+    if not target:
+        return result
+    # 构建技能反向索引（对齐 register_agent：skill_index[skill_lower].push(agent_id)）
+    index = {}
+    for a in agents:
+        aid = a.get("agent_id")
+        if aid is None:
+            aid = a.get("id")
+        if aid is None:
+            continue
+        for s in a.get("skills", []):
+            key = str(s).strip().lower()
+            if key not in index:
+                index[key] = []
+            if aid not in index[key]:
+                index[key].append(aid)
+    # 精确匹配查找（对齐 discover_by_skill：skill_index.get(skill.to_lowercase())）
+    ids = index.get(target, [])
+    matched = []
+    for a in agents:
+        aid = a.get("agent_id")
+        if aid is None:
+            aid = a.get("id")
+        if aid in ids:
+            matched.append(a)
+    result["agents"] = matched
+    result["count"] = len(matched)
+    return result
+"#;
+
 /// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
 pub fn official_entry_source(name: &str) -> Option<EntrySource> {
     match name {
@@ -409,6 +456,11 @@ pub fn official_entry_source(name: &str) -> Option<EntrySource> {
             language: "python",
             filename: "plugin.py",
             source: EMERGENCE_ENTRY,
+        }),
+        OFF_AGENT_SKILL => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: SKILL_ENTRY,
         }),
         _ => None,
     }
@@ -445,15 +497,15 @@ mod tests {
     #[test]
     fn entry_source_for_business_plugins() {
         // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card；
-        // v3.2.2 swarm-emergence。
+        // v3.2.2 swarm-emergence；v3.2.3 agent-skill。
         assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
         assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
         assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
         assert!(official_entry_source(OFF_SCHEDULER_TASK).is_some());
         assert!(official_entry_source(OFF_AGENT_CARD).is_some());
         assert!(official_entry_source(OFF_SWARM_EMERGENCE).is_some());
-        // 其余 3 个暂为通用 exec 承载。
-        assert!(official_entry_source(OFF_AGENT_SKILL).is_none());
+        assert!(official_entry_source(OFF_AGENT_SKILL).is_some());
+        // 其余 2 个暂为通用 exec 承载（单体无独立 anchor/bridge 算法，不编造）。
         assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_none());
         assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
     }

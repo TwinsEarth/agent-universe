@@ -636,4 +636,84 @@ mod tests {
         assert_eq!(v["signals"].as_array().unwrap().len(), 0, "got {v}");
         inst.stop().unwrap();
     }
+
+    #[test]
+    fn agent_skill_discover_finds_agents_by_skill() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_AGENT_SKILL);
+        let mut inst = rt.spawn(&m).unwrap();
+        // a、c 声明 python（c 为大写 Python），b 仅 rust。
+        let payload = br#"{
+          "skill": "python",
+          "agents": [
+            {"agent_id":"did:nau:a","name":"A","skills":["python","ml"]},
+            {"agent_id":"did:nau:b","name":"B","skills":["rust"]},
+            {"agent_id":"did:nau:c","name":"C","skills":["Python","data"]}
+          ]
+        }"#;
+        let out = inst.call("discover", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["count"], 2, "got {v}");
+        let ids: Vec<String> = v["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["agent_id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&"did:nau:a".to_string()));
+        assert!(ids.contains(&"did:nau:c".to_string()));
+        assert!(!ids.contains(&"did:nau:b".to_string()));
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn agent_skill_discover_is_exact_not_substring() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_AGENT_SKILL);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 查询 PYTHON：精确标签 Python / python 命中；"Python Developer" 是包含、不命中。
+        let payload = br#"{
+          "skill": "PYTHON",
+          "agents": [
+            {"agent_id":"did:nau:a","skills":["Python"]},
+            {"agent_id":"did:nau:b","skills":["Python Developer"]},
+            {"agent_id":"did:nau:c","skills":["python"]}
+          ]
+        }"#;
+        let out = inst.call("discover", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["count"], 2, "got {v}");
+        let ids: Vec<String> = v["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["agent_id"].as_str().unwrap().to_string())
+            .collect();
+        assert!(ids.contains(&"did:nau:a".to_string()));
+        assert!(ids.contains(&"did:nau:c".to_string()));
+        assert!(
+            !ids.contains(&"did:nau:b".to_string()),
+            "substring must not match"
+        );
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn agent_skill_discover_no_match() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_AGENT_SKILL);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{
+          "skill": "haskell",
+          "agents": [
+            {"agent_id":"did:nau:a","skills":["python"]},
+            {"agent_id":"did:nau:b","skills":["rust"]}
+          ]
+        }"#;
+        let out = inst.call("discover", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["count"], 0, "got {v}");
+        assert_eq!(v["agents"].as_array().unwrap().len(), 0);
+        inst.stop().unwrap();
+    }
 }

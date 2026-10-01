@@ -2,6 +2,27 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.2.3] - 2026-10-01
+
+### 小版本：业务化第 7 个官方插件 agent-skill（按技能发现智能体）
+
+- **背景（根因）**：9 个官方插件中仍有 3 个是通用 exec 承载。按「没有调用点的修复不算
+  修复」，本版把 `agent-skill` 业务化——它在单体中有真实的
+  `marketplace/mod.rs::discover_by_skill`（配合 `register_agent` 维护的技能反向索引）。
+- **discover entry**（`plugin/official/mod.rs` 新增 `SKILL_ENTRY`，并接入
+  `official_entry_source`）：输入 `skill`（技能标签）、`agents`（卡片列表）。先按卡片
+  声明的技能构建反向索引（对齐 `register_agent` 的 `skill_index` 构建），再做
+  **精确**（忽略大小写/首尾空白）标签匹配，返回所有声明该技能的卡片。
+  - 精确匹配而非子串包含（单体 `discover_by_skill` 用 `get`，`search_agents` 才用
+    `contains`）；`"Python"` 命中查询 `"python"`，`"Python Developer"` 不命中。
+  - 同一标签重复声明时索引对同一 id 去重。
+- **诚实边界**：探查确认 `chain-anchor` / `chain-bridge` 在单体中**无独立算法**
+  （`chain/mod.rs` 全文仅 `pub mod pocv;`），不凭空编造，本版不业务化、保留为通用 exec。
+- 验证：cargo test 全量 **557 passed / 0 failed**（基线 554 + 新增 3 个隔离测试）；
+  clippy `--all-targets` 零警告；fmt 已应用；no-panics 关卡 **0 sites**；unsafe-containment
+  通过（本版未新增 unsafe）。
+- 边界：仅剩 2 个通用 exec 插件（chain-anchor / chain-bridge，单体无独立算法）。
+
 ## [v3.2.2] - 2026-10-01
 
 ### 小版本：业务化第 6 个官方插件 swarm-emergence（群体智能涌现检测）

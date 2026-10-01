@@ -77,7 +77,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                           ├── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交)
 │     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0)
 │           └── v3.1.0 (Business Plugins - 业务插件化/官方插件 entry 模块/信誉overall+市场match 真实算法/boot_official 随内核自动装配 9 个 T1 - gsn-core 0.3.10)
-│                 └── v3.2.0 (Business Plugins II - 业务插件化深化/结算audit 独立审计+任务route 路由+卡片validate 校验/5 个官方插件承载真实业务/除零隐患类型化 - gsn-core 0.3.20) ← 当前
+│                 └── v3.2.0 (Business Plugins II - 业务插件化深化/结算audit 独立审计+任务route 路由+卡片validate 校验/5 个官方插件承载真实业务/除零隐患类型化 - gsn-core 0.3.20)
+│                       └── v3.2.1 (PMB Secure Messaging - PMB 消息 HMAC-SHA256 签名+nonce 防重放+常量时间比较/validate_sender 七道/host send_to·publish·open_inbox 端到端接线/静态关卡 stripLiterals 三 bug 修复/7 处生产 panic 类型化 - gsn-core 0.3.21) ← 当前
 ```
 
 ## 大版本详情
@@ -535,6 +536,31 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.2.1 - PMB 安全通信：消息 HMAC 签名 + nonce 防重放 + 总线接线（gsn-core 0.3.21）
+
+**小版本（只更新 PMB 模块，对系统与其它插件零影响）**：让插件总线消息可认证、防伪造、
+防重放，并把总线从"只有测试在收发"接成"宿主端到端可收发"。
+
+- **问题根因**：PMB 此前零密码学保护，防伪造只靠进程内令牌绑定 source；`host.rs` 注册/
+  状态用到 bus 但从不调 `dispatch`（dispatch 仅在 bus 单元测试中），`register` 返回的
+  Receiver 全部被丢弃，消息没有落点。
+- **消息认证**（`bus.rs`）：`PmbMessage` 加 `nonce`/`signature`；每路由注册时生成 32
+  字节随机会话密钥；`signing_bytes`（规范 JSON 视图）、`compute_signature`（HMAC-SHA256）、
+  `constant_time_eq_hex`（常量时间比较）。`validate_sender` 五→七道：第 6 道签名
+  （缺失/不符即拒绝）、第 7 道 nonce（重复即拒绝，seen_nonces 超 1024 淘汰最旧）。
+- **总线接线**（`host.rs`）：`dispatch_for_plugin`（先签名再 dispatch）；`send_to`
+  （点到点 Request）、`publish`（广播 Event）；`open_inbox(id)`（注册纯收件箱路由、置
+  RUNNING、返回 Receiver，桥接进程插件/外部网络传输；无能力令牌、只能接收不能发送）。
+- **静态关卡修复**：`check-no-panics.mjs` 的 `stripLiterals` 三个 bug——`broadcast` 的
+  `br` 误判 byte-raw 前缀、lifetime `'_` 被当 char 吞到文件末尾、重写时误删普通字符
+  fallback；修复后关卡正确报出 7 处真实生产 panic（此前长期报 0）。
+- **7 处 panic 类型化**：`McpMethod::from_wire`（protocol.rs 1 处）、bus.rs validate_sender
+  expect 与 dispatch unwrap（2 处）、`RelayClass::from_wire`（relay_pool 4 处）。
+- **验证**：cargo test 全量 **551 passed / 0 failed**；clippy `--all-targets` 零警告；
+  fmt 已应用；no-panics 0 sites；unsafe-containment 通过。
+- **边界**：签名为对称 HMAC（证明来自持有该路由密钥的一方），不提供非对称来源证明；
+  跨节点端到端非对称签名留待后续。已知未修项沿用。
 
 ### v3.2.0 - 业务插件化深化：结算 audit + 任务 route + 卡片 validate（gsn-core 0.3.20）
 

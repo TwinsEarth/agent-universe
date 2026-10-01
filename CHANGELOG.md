@@ -2,6 +2,36 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.2.1] - 2026-10-01
+
+### 小版本：PMB 安全通信 —— 消息 HMAC 签名 + nonce 防重放 + 总线端到端接线
+
+- **背景（根因）**：插件总线此前**没有任何密码学保护**，防伪造只靠进程内令牌绑定
+  `plugin_id`；`host.rs` 注册/状态用到 bus 但**从不调用 `dispatch`**（dispatch 仅在
+  bus 单元测试中被调用），`register` 返回的 Receiver 全部被丢弃，消息没有落点。
+- **消息认证**（`plugin/bus.rs`）：`PmbMessage` 新增 `nonce`、`signature`；每个路由
+  注册时生成 32 字节随机会话密钥；新增 `signing_bytes`（规范 JSON 视图）、
+  `compute_signature`（**HMAC-SHA256**）、`constant_time_eq_hex`（**常量时间比较**）。
+  `validate_sender` 由五道扩为七道：第 6 道签名（缺失/不符即拒绝，防篡改/伪造）、
+  第 7 道 nonce（重复即拒绝，防重放；seen_nonces 超 1024 淘汰最旧）。
+- **总线接线**（`plugin/host.rs`）：私有 `dispatch_for_plugin`（先签名再 dispatch，宿主
+  发的每条消息都走同一认证闸）；新增 `send_to`（点到点 Request）、`publish`（广播
+  Event）；新增 **`open_inbox(id)`**（注册纯收件箱路由、置 RUNNING、返回 Receiver，
+  用于桥接进程插件/外部网络传输；**无能力令牌、只能接收不能发送**；id 已存在报错）。
+- **静态关卡修复**（`check-no-panics.mjs`）：`stripLiterals` 三个真实 bug——①
+  `broadcast` 的 `br` 被误判为 byte-raw-string 前缀导致 brace 错位（raw 改为严格正则
+  先跑）；② lifetime `'_`（`Formatter<'_>`）被当 char literal 吞到文件末尾（char 分支
+  重写为转义/单字符/lifetime 三类）；③ 重写时误删普通字符 fallback 导致无限循环（已加回）。
+  修复后关卡正确报出 7 处真实生产 panic（此前长期报 0）。
+- **7 处生产 panic 类型化**：`mcp/protocol.rs` 新增 `McpMethod::from_wire`（消除 parse
+  unwrap）；`bus.rs` validate_sender 的 expect 改 `ok_or_else`、dispatch 目标分支合并 get
+  去 unwrap；`relay_pool/mod.rs` 新增 `RelayClass::from_wire`（消除 4 处 parse unwrap）。
+- 验证：cargo test 全量 **551 passed / 0 failed**；clippy `--all-targets` 零警告；fmt
+  已应用；no-panics 关卡 **0 sites**；unsafe-containment 关卡通过。
+- 边界：消息签名为**对称 HMAC**（证明来自持有该路由密钥的一方），不提供非对称来源证明；
+  跨节点端到端非对称签名留待后续版本。已知未修项沿用（persist 错误被丢弃、结算按托管
+  总额、API token 无法表达标准 DID）。
+
 ## [v3.2.0] - 2026-10-01
 
 ### 中版本：业务插件化深化 —— 再 3 个核心官方插件承载真实业务 entry

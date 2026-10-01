@@ -19,7 +19,7 @@
 
 use crate::plugin::arbiter::Arbiter;
 use crate::plugin::blacklist::Blacklist;
-use crate::plugin::bus::PluginBus;
+use crate::plugin::bus::{MessageKind, PluginBus, PmbMessage, Priority, Target};
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::lifecycle::PluginState;
 use crate::plugin::manifest::PluginManifest;
@@ -345,6 +345,85 @@ impl PluginHost {
         inst.call(method, payload)
     }
 
+    /// 代表插件 `source` 构造、签名并投递一条消息（插件间通信的唯一入口）。
+    ///
+    /// 消息由宿主用 source 的会话密钥签名（见 [`PluginBus::sign_message`]），
+    /// 再经 [`PluginBus::dispatch`] 完成全部七道检查（状态/令牌/能力/速率/
+    /// 签名/nonce）。未注册或不在 RUNNING 的 source 会被拒绝。
+    fn dispatch_for_plugin(
+        &mut self,
+        source: &str,
+        target: Target,
+        capability: &str,
+        payload: serde_json::Value,
+        kind: MessageKind,
+    ) -> PluginResult<()> {
+        let issued_at = self.now_ms / 1000;
+        let mut msg = PmbMessage {
+            id: uuid::Uuid::new_v4().to_string(),
+            corr_id: None,
+            source: source.to_string(),
+            target,
+            capability: capability.to_string(),
+            kind,
+            topic: None,
+            payload,
+            issued_at,
+            ttl_ms: 5000,
+            priority: Priority::Normal,
+            nonce: String::new(),
+            signature: String::new(),
+        };
+        self.bus.sign_message(&mut msg)?;
+        self.bus.dispatch(&msg)
+    }
+
+    /// 代表插件 `source` 向单个目标插件发送一条已认证消息。
+    pub fn send_to(
+        &mut self,
+        source: &str,
+        target: &str,
+        capability: &str,
+        payload: serde_json::Value,
+    ) -> PluginResult<()> {
+        self.dispatch_for_plugin(
+            source,
+            Target::Plugin(target.to_string()),
+            capability,
+            payload,
+            MessageKind::Request,
+        )
+    }
+
+    /// 代表插件 `source` 广播一条已认证消息给所有 RUNNING 插件。
+    pub fn publish(
+        &mut self,
+        source: &str,
+        capability: &str,
+        payload: serde_json::Value,
+    ) -> PluginResult<()> {
+        self.dispatch_for_plugin(
+            source,
+            Target::Broadcast,
+            capability,
+            payload,
+            MessageKind::Event,
+        )
+    }
+
+    /// 注册一个纯收件箱路由并置 RUNNING，返回其接收端。
+    ///
+    /// 用于把进程插件/外部网络传输桥接到总线：收件箱**没有能力令牌、不能发送**，
+    /// 只能接收投递给它的消息。id 已存在时返回错误。
+    pub fn open_inbox(&mut self, id: &str) -> PluginResult<std::sync::mpsc::Receiver<PmbMessage>> {
+        if self.registry.contains(id) {
+            return Err(PluginError::Runtime(format!("收件箱 {id} 已存在")));
+        }
+        let rx = self.bus.register(id);
+        self.bus.set_state(id, PluginState::Running)?;
+        Ok(rx)
+    }
+
     /// 总线路由表（插件状态一览）。
     pub fn route_table(&self) -> BTreeMap<String, PluginState> {
         self.bus.route_table()
@@ -547,6 +626,79 @@ mod tests {
         host.add_official_root(&hex::encode(dev.public_key()));
         assert!(host.load_legacy(m).is_ok());
         assert_eq!(host.route_table().get(id), Some(&PluginState::Running));
+    }
+
+    #[test]
+    fn send_to_delivers_authenticated_message() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system().unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(source, &dev)).unwrap();
+        // 注册一个可消费的目标收件箱。
+        let rx = host.open_inbox("bridge-peer-a").unwrap();
+        host.send_to(
+            source,
+            "bridge-peer-a",
+            "plugin:message:send",
+            serde_json::json!({"hello": "world"}),
+        )
+        .unwrap();
+        let got = rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(got.source, source);
+        assert_eq!(got.payload["hello"], "world");
+        assert!(!got.signature.is_empty());
+        assert!(!got.nonce.is_empty());
+    }
+
+    #[test]
+    fn publish_delivers_authenticated_broadcast() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system().unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(source, &dev)).unwrap();
+        let rx1 = host.open_inbox("bridge-peer-b1").unwrap();
+        let rx2 = host.open_inbox("bridge-peer-b2").unwrap();
+        host.publish(
+            source,
+            "plugin:message:send",
+            serde_json::json!({"event": "ping"}),
+        )
+        .unwrap();
+        for rx in [rx1, rx2] {
+            let got = rx
+                .recv_timeout(std::time::Duration::from_millis(200))
+                .unwrap();
+            assert_eq!(got.payload["event"], "ping");
+        }
+    }
+
+    #[test]
+    fn send_to_rejects_unknown_source() {
+        let mut host = PluginHost::new("3.0.0", None);
+        // source 未注册 → 签名阶段即失败。
+        let r = host.send_to("nobody", "x", "plugin:message:send", serde_json::json!({}));
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn inbox_without_token_cannot_send() {
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system().unwrap();
+        // 收件箱没有能力令牌 → 代表它发送会被第 2/3 道令牌检查拒绝。
+        let _rx = host.open_inbox("mute-inbox").unwrap();
+        let r = host.send_to(
+            "mute-inbox",
+            "any",
+            "plugin:message:send",
+            serde_json::json!({}),
+        );
+        assert!(r.is_err());
     }
 
     // 辅助断言。

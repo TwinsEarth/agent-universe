@@ -62,18 +62,24 @@ impl RelayClass {
             RelayClass::General => 3,
         }
     }
+
+    /// 从线上字符串映射分类（未知值 → General；不失败）。
+    /// 与 `FromStr` 等价但不返回 `Result`，避免 `Infallible` 的 unwrap。
+    pub fn from_wire(s: &str) -> RelayClass {
+        match s.to_lowercase().as_str() {
+            "dedicated" => RelayClass::Dedicated,
+            "self_hosted" | "selfhosted" | "own" => RelayClass::SelfHosted,
+            "third_party" | "thirdparty" | "community" => RelayClass::ThirdParty,
+            _ => RelayClass::General,
+        }
+    }
 }
 
 impl std::str::FromStr for RelayClass {
     type Err = std::convert::Infallible;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.to_lowercase().as_str() {
-            "dedicated" => RelayClass::Dedicated,
-            "self_hosted" | "selfhosted" | "own" => RelayClass::SelfHosted,
-            "third_party" | "thirdparty" | "community" => RelayClass::ThirdParty,
-            _ => RelayClass::General,
-        })
+        Ok(RelayClass::from_wire(s))
     }
 }
 
@@ -142,11 +148,11 @@ pub fn select_replacement(relays: &[StoredRelay], in_use: &HashSet<String>) -> O
         if !r.healthy || in_use.contains(&r.relay_id) {
             continue;
         }
-        let cls: RelayClass = r.class.parse().unwrap();
+        let cls: RelayClass = RelayClass::from_wire(&r.class);
         let better = match &best {
             None => true,
             Some(b) => {
-                let bcls: RelayClass = b.class.parse().unwrap();
+                let bcls: RelayClass = RelayClass::from_wire(&b.class);
                 cls.priority() < bcls.priority()
                     || (cls.priority() == bcls.priority() && r.fail_count < b.fail_count)
             }
@@ -163,8 +169,8 @@ pub fn select_replacement(relays: &[StoredRelay], in_use: &HashSet<String>) -> O
 pub fn select_parallel(relays: &[StoredRelay], n: usize) -> Vec<StoredRelay> {
     let mut healthy: Vec<StoredRelay> = relays.iter().filter(|r| r.healthy).cloned().collect();
     healthy.sort_by(|a, b| {
-        let ca = a.class.parse::<RelayClass>().unwrap().priority();
-        let cb = b.class.parse::<RelayClass>().unwrap().priority();
+        let ca = RelayClass::from_wire(&a.class).priority();
+        let cb = RelayClass::from_wire(&b.class).priority();
         ca.cmp(&cb).then(a.fail_count.cmp(&b.fail_count))
     });
     healthy.truncate(n);

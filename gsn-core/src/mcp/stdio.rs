@@ -140,13 +140,15 @@ pub async fn run_stdio() -> anyhow::Result<()> {
 fn initialize_response(id: RequestId, tools: &[ToolDefinition]) -> McpResponse {
     let caps = json!({ "tools": { "listChanged": false } });
     let mut result = initialize_result_value("gsn-agent-market", caps, None);
-    result.as_object_mut().unwrap().insert(
-        "gsn".to_string(),
-        json!({
-            "tool_count": tools.len(),
-            "description": "Agent Universe 智能体市场 MCP 服务",
-        }),
-    );
+    if let Some(map) = result.as_object_mut() {
+        map.insert(
+            "gsn".to_string(),
+            json!({
+                "tool_count": tools.len(),
+                "description": "Agent Universe 智能体市场 MCP 服务",
+            }),
+        );
+    }
     McpResponse::success(id, result)
 }
 

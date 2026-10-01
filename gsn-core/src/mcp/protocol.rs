@@ -55,13 +55,11 @@ impl McpMethod {
             McpMethod::Custom => "custom",
         }
     }
-}
 
-impl std::str::FromStr for McpMethod {
-    type Err = std::convert::Infallible;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
+    /// 从线上字符串映射方法（未知方法 → Custom；不失败）。
+    /// 与 `FromStr` 等价但不返回 `Result`，供调用方避免 `Infallible` 的 unwrap。
+    pub fn from_wire(s: &str) -> McpMethod {
+        match s {
             "initialize" => McpMethod::Initialize,
             "ping" => McpMethod::Ping,
             "tools/list" => McpMethod::ToolsList,
@@ -71,7 +69,15 @@ impl std::str::FromStr for McpMethod {
             "prompts/list" => McpMethod::PromptsList,
             "prompts/get" => McpMethod::PromptsGet,
             _ => McpMethod::Custom,
-        })
+        }
+    }
+}
+
+impl std::str::FromStr for McpMethod {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(McpMethod::from_wire(s))
     }
 }
 
@@ -159,8 +165,8 @@ impl McpRequest {
     }
 
     pub fn method_enum(&self) -> McpMethod {
-        // FromStr::Err = Infallible（未知方法映射为 Custom），unwrap 不会失败。
-        self.method.parse().unwrap()
+        // FromStr::Err = Infallible（未知方法映射为 Custom），直接走不失败的映射。
+        McpMethod::from_wire(&self.method)
     }
 }
 
@@ -251,20 +257,24 @@ pub fn initialize_result_value(
     capabilities: Value,
     instructions: Option<&str>,
 ) -> Value {
-    let mut v = serde_json::json!({
-        "protocolVersion": MCP_PROTOCOL_VERSION,
-        "serverInfo": {
+    // 直接用 Object Map 构造，避免对 json! 结果 as_object_mut().unwrap()。
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "protocolVersion".to_string(),
+        Value::String(MCP_PROTOCOL_VERSION.to_string()),
+    );
+    map.insert(
+        "serverInfo".to_string(),
+        serde_json::json!({
             "name": server_name,
             "version": env!("CARGO_PKG_VERSION"),
-        },
-        "capabilities": capabilities,
-    });
+        }),
+    );
+    map.insert("capabilities".to_string(), capabilities);
     if let Some(text) = instructions {
-        v.as_object_mut()
-            .unwrap()
-            .insert("instructions".to_string(), serde_json::json!(text));
+        map.insert("instructions".to_string(), serde_json::json!(text));
     }
-    v
+    Value::Object(map)
 }
 
 /// 服务器能力声明

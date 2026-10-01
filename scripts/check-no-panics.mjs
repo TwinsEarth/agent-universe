@@ -65,38 +65,26 @@ function stripLiterals(src) {
       i = j;
       continue;
     }
-    // string: b"..." or "...", also raw strings r#"..."# / br#"..."#
-    if (c === '"' || (c === 'b' && src[i + 1] === '"') || (c === 'r' && src[i + 1] === '"') ||
-        (c === 'r' && src[i + 1] === '#') || (c === 'b' && src[i + 1] === 'r')) {
-      // raw string
-      const m = /^(?:b)?r(#*)"/.exec(src.slice(i));
-      if (m) {
-        const hashes = m[1].length;
-        const opener = i + m[0].length;
-        const close = '"' + '#'.repeat(hashes);
-        let j = opener;
-        while (j < n && src.slice(j, j + close.length) !== close) j++;
-        j = Math.min(n, j + close.length);
-        out += blank(src.slice(i, j));
-        i = j;
-        continue;
-      }
-      if (c === '"' || c === 'b') {
-        let j = i + (c === 'b' ? 2 : 1);
-        while (j < n && src[j] !== '"') {
-          if (src[j] === '\\') j++;
-          j++;
-        }
-        j = Math.min(n, j + 1);
-        out += blank(src.slice(i, j));
-        i = j;
-        continue;
-      }
+    // 字符串字面量：raw（r#"..."# / br#"..."#）、byte（b"..."）、普通（"..."）。
+    // 每一种都必须先用前缀正则/前瞻严格确认，避免把函数名里恰好出现的
+    // `br`/`b`/`r`（如 broadcast）误判为字符串开头而吃到后面的大括号。
+    // 1) raw string —— 前缀必须是 r(#*)" 或 br(#*)"。
+    const rawM = /^(?:b)?r(#*)"/.exec(src.slice(i));
+    if (rawM) {
+      const hashes = rawM[1].length;
+      const opener = i + rawM[0].length;
+      const close = '"' + '#'.repeat(hashes);
+      let j = opener;
+      while (j < n && src.slice(j, j + close.length) !== close) j++;
+      j = Math.min(n, j + close.length);
+      out += blank(src.slice(i, j));
+      i = j;
+      continue;
     }
-    // char literal
-    if (c === "'") {
-      let j = i + 1;
-      while (j < n && src[j] !== "'") {
+    // 2) byte string —— b 后必须紧跟引号。
+    if (c === 'b' && src[i + 1] === '"') {
+      let j = i + 2;
+      while (j < n && src[j] !== '"') {
         if (src[j] === '\\') j++;
         j++;
       }
@@ -105,8 +93,56 @@ function stripLiterals(src) {
       i = j;
       continue;
     }
-    // lifetime label like 'a — leave untouched (single quote followed by ident
-    // then a non-char context); only treat as literal when closed.
+    // 3) 普通字符串。
+    if (c === '"') {
+      let j = i + 1;
+      while (j < n && src[j] !== '"') {
+        if (src[j] === '\\') j++;
+        j++;
+      }
+      j = Math.min(n, j + 1);
+      out += blank(src.slice(i, j));
+      i = j;
+      continue;
+    }
+    // char literal 必须与 lifetime 区分——否则 `Formatter<'_>` 里的 `'` 会被
+    // 当成 char literal 开头，一直吞到文件末尾的下一个 `'`。
+    //   · 转义 char：' 后紧跟 `\`，在同一行内按「转义对」找闭合 '（含 '\''）；
+    //   · 单字符 char：'X'（' 后一个非 ' 非 \ 非换行字符，再紧跟 '）；
+    //   · 其余（'_ / 'a / 'static）是 lifetime，' 当普通字符保留，不吞后续。
+    if (c === "'") {
+      const after = src[i + 1];
+      let j = -1;
+      if (after === '\\') {
+        let k = i + 1;
+        while (k < n && src[k] !== '\n') {
+          if (src[k] === '\\') {
+            k += 2;
+            continue;
+          }
+          if (src[k] === "'") break;
+          k++;
+        }
+        if (k < n && src[k] === "'") j = k + 1;
+      } else if (
+        after !== undefined &&
+        after !== "'" &&
+        after !== '\n' &&
+        src[i + 2] === "'"
+      ) {
+        j = i + 3;
+      }
+      if (j >= 0) {
+        out += blank(src.slice(i, j));
+        i = j;
+        continue;
+      }
+      // lifetime label：保留 ' 为普通字符，不吞后续内容。
+      out += c;
+      i++;
+      continue;
+    }
+    // 普通字符：原样保留并推进。
     out += c;
     i++;
   }

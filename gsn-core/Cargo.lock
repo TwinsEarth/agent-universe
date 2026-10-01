@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "gsn-core"
-version = "0.3.20"
+version = "0.3.21"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -882,6 +882,7 @@ dependencies = [
  "ed25519-dalek",
  "futures",
  "hex",
+ "hmac",
  "libp2p",
  "rand 0.8.8",
  "reed-solomon-erasure",

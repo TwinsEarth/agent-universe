@@ -135,10 +135,40 @@ curl -X POST http://127.0.0.1:4001/api/v1/plugins/com.example.myplugin/reload ..
 curl -X DELETE http://127.0.0.1:4001/api/v1/plugins/com.example.myplugin ...
 ```
 
-## 十、提交前检查清单
+## 十、安全通信（PMB 消息签名）
+
+插件间消息（PMB）在 v3.2.1 起强制**消息认证**，防止伪造 source、篡改 payload 与重放：
+
+- **会话密钥**：每个路由在 `register` 时由宿主生成 32 字节随机会话密钥（仅保存在宿主
+  内存，不落盘，重启后重新生成）。
+- **签名**：发送前 `sign_message` 对消息规范字节（12 个字段，不含 signature）计算
+  **HMAC-SHA256**，写入 `signature`（hex）。
+- **nonce**：每条消息填一个 UUID v4 `nonce`，接收方在 `seen_nonces` 中去重。
+- **校验**：`validate_sender` 七道闸——
+  - 第 6 道：签名缺失或与按会话密钥重算结果不符 → 拒绝（**常量时间比较**，防时序侧信道）；
+  - 第 7 道：nonce 为空或已出现 → 拒绝（防重放）；已见 nonce 超过 1024 条时淘汰最旧。
+- 宿主侧通过 `host.send_to(...)` / `host.publish(...)` 发送，二者都会先签名再 `dispatch`，
+  插件无需自行实现签名。
+
+> 该签名为**对称 HMAC**：它证明消息来自"持有该路由会话密钥的一方"且未被篡改，**不提供**
+> 非对称来源证明；跨节点/跨宿主的端到端非对称签名留待后续版本。
+
+## 十一、收件箱桥接（open_inbox）
+
+把进程插件 / 外部网络传输桥接到总线时，用 `host.open_inbox(id)` 注册一个**纯收件箱**：
+
+- 宿主注册该路由并置 `Running`，返回一个 `std::sync::mpsc::Receiver<PmbMessage>`；
+- 收件箱**没有能力令牌、不能发送、只能接收**投递给它的消息；
+- `id` 已存在（含已注册插件）时返回错误。
+
+外部桥接侧从 Receiver 读到的消息已带 `nonce`/`signature`，可据此做进一步转发或核验。
+
+## 十二、提交前检查清单
 
 - [ ] id 前缀与目标级别一致；版本/abi 正确。
 - [ ] 只申请最小必要能力；能力名合法。
 - [ ] 无法强制的边界已逐条写明 waiver 理由。
 - [ ] 开发者签名（T1/T2 含官方副签）；`module_sha256` 与 entry 一致。
-- [ ] 本地 `cargo test`、clippy、fmt 通过；安装/调用/卸载端到端验证。
+- [ ] 总线消息经 `send_to`/`publish` 发出（已签名）；收件箱只用于接收、不代发。
+- [ ] 本地 `cargo test`、clippy、fmt、no-panics、unsafe-containment 全部通过；
+  安装/调用/卸载端到端验证。

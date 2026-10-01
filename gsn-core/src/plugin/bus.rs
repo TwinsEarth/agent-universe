@@ -86,6 +86,70 @@ pub struct PmbMessage {
     pub ttl_ms: u64,
     /// 优先级。
     pub priority: Priority,
+    /// 随机 nonce（唯一，防重放；签名覆盖）。
+    pub nonce: String,
+    /// 发送方对本条消息（除本字段外）规范化字节的 HMAC-SHA256 签名（hex）。
+    /// 见 [`PluginBus::sign_message`]。
+    pub signature: String,
+}
+
+/// 会话密钥长度（HMAC-SHA256，32 字节）。
+pub const SESSION_KEY_LEN: usize = 32;
+
+/// 每个插件记忆的已用 nonce 上限（防重放窗口，超出按时间丢弃最旧）。
+pub const MAX_SEEN_NONCES: usize = 1024;
+
+/// 计算消息的签名载荷（除 `signature` 外的全部字段，顺序固定 → 跨语言可复现）。
+fn signing_bytes(msg: &PmbMessage) -> PluginResult<Vec<u8>> {
+    let view = serde_json::json!({
+        "id": msg.id,
+        "corr_id": msg.corr_id,
+        "source": msg.source,
+        "target": msg.target,
+        "capability": msg.capability,
+        "kind": msg.kind,
+        "topic": msg.topic,
+        "payload": msg.payload,
+        "issued_at": msg.issued_at,
+        "ttl_ms": msg.ttl_ms,
+        "priority": msg.priority,
+        "nonce": msg.nonce,
+    });
+    serde_json::to_vec(&view).map_err(|e| PluginError::Bus(format!("签名载荷序列化失败: {e}")))
+}
+
+/// 用会话密钥对消息（除 `signature` 外）计算 HMAC-SHA256，返回 hex 签名。
+///
+/// 签名覆盖随机 nonce 与签发时间，因此可同时校验完整性、来源与新鲜度。
+pub fn compute_signature(msg: &PmbMessage, key: &[u8]) -> PluginResult<String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let bytes = signing_bytes(msg)?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|e| PluginError::Bus(format!("签名失败: {e}")))?;
+    mac.update(&bytes);
+    Ok(hex::encode(mac.finalize().into_bytes()))
+}
+
+/// 常量时间比较两个小写 hex 字符串是否相等（防时序侧信道）。
+/// 长度不同或含非法 hex 字符时返回 false。
+fn constant_time_eq_hex(a: &str, b: &str) -> bool {
+    let da = match hex::decode(a) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let db = match hex::decode(b) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if da.len() != db.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in da.iter().zip(db.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// 滑动窗口速率限制。
@@ -124,12 +188,16 @@ impl RateLimit {
     }
 }
 
-/// 路由项：插件 id → 投递队列 + 状态 + 令牌 + 速率 + 违规计数。
+/// 路由项：插件 id → 投递队列 + 状态 + 令牌 + 速率 + 会话密钥 + 违规计数。
 struct RouteEntry {
     tx: Sender<PmbMessage>,
     state: PluginState,
     token: Option<CapabilityToken>,
     rate: RateLimit,
+    /// 会话密钥（注册时随机生成，HMAC 签名用）。
+    key: [u8; SESSION_KEY_LEN],
+    /// 已见 nonce（防重放）。
+    seen_nonces: std::collections::BTreeSet<String>,
     violations: u32,
 }
 
@@ -189,6 +257,10 @@ impl PluginBus {
     }
 
     /// 注册路由，返回该插件的接收端（同步、进程内）。
+    ///
+    /// 注册时为插件随机生成会话密钥（HMAC 签名用）；插件可用
+    /// [`PluginBus::sign_message`] 对要发出的消息签名，或用
+    /// [`PluginBus::session_key`] 取出密钥自行签名。
     pub fn register(&mut self, plugin_id: &str) -> Receiver<PmbMessage> {
         let (tx, rx) = channel();
         self.routes.insert(
@@ -199,10 +271,41 @@ impl PluginBus {
                 token: None,
                 // 默认每秒 100 条。
                 rate: RateLimit::new(1000, 100),
+                key: Self::random_key(),
+                seen_nonces: std::collections::BTreeSet::new(),
                 violations: 0,
             },
         );
         rx
+    }
+
+    /// 生成随机会话密钥。
+    fn random_key() -> [u8; SESSION_KEY_LEN] {
+        use rand::RngCore;
+        let mut k = [0u8; SESSION_KEY_LEN];
+        rand::thread_rng().fill_bytes(&mut k);
+        k
+    }
+
+    /// 取某插件的会话密钥（仅用于该插件自行签名；插件拿不到其它插件的密钥）。
+    pub fn session_key(&self, plugin_id: &str) -> Option<[u8; SESSION_KEY_LEN]> {
+        self.routes.get(plugin_id).map(|e| e.key)
+    }
+
+    /// 用消息 source 对应插件的会话密钥就地签名（填入 nonce 与 signature）。
+    ///
+    /// 若消息已带 nonce 则沿用、否则生成随机 nonce；source 未注册时返回错误。
+    /// 这是插件发出消息前的标准步骤。
+    pub fn sign_message(&mut self, msg: &mut PmbMessage) -> PluginResult<()> {
+        let key =
+            self.routes.get(&msg.source).map(|e| e.key).ok_or_else(|| {
+                PluginError::Bus(format!("发送方 {} 未注册，无法签名", msg.source))
+            })?;
+        if msg.nonce.is_empty() {
+            msg.nonce = uuid::Uuid::new_v4().to_string();
+        }
+        msg.signature = compute_signature(msg, &key)?;
+        Ok(())
     }
 
     /// 注册宿主接收端。
@@ -291,6 +394,7 @@ impl PluginBus {
             .routes
             .get(&msg.source)
             .ok_or_else(|| PluginError::Bus(format!("发送方 {} 未注册", msg.source)))?;
+        let session_key = entry.key;
 
         // 1. 发送方 RUNNING。
         if entry.state != PluginState::Running {
@@ -333,6 +437,30 @@ impl PluginBus {
         if !ok {
             return Err(self.reject(msg, format!("发送方 {} 超出速率配额", msg.source)));
         }
+
+        // 6. 签名：用发送方会话密钥重算 HMAC，必须与消息携带的 signature 一致。
+        //    任何字段被篡改、伪造 source 或换密钥都会在此失败。
+        let expected = compute_signature(msg, &session_key)?;
+        if msg.signature.is_empty() || !constant_time_eq_hex(&expected, &msg.signature) {
+            return Err(self.reject(msg, "消息签名无效或缺失（可能被篡改/伪造）".to_string()));
+        }
+
+        // 7. nonce 防重放：同一 nonce 只接受一次（签名覆盖 nonce，故攻击者无法
+        //    复用签名后只改 nonce）。窗口满时丢弃最旧的 nonce。
+        if msg.nonce.is_empty() {
+            return Err(self.reject(msg, "消息缺少 nonce".to_string()));
+        }
+        let entry = self.routes.get_mut(&msg.source).ok_or_else(|| {
+            PluginError::Bus(format!("发送方 {} 未注册（nonce 检查）", msg.source))
+        })?;
+        if !entry.seen_nonces.insert(msg.nonce.clone()) {
+            return Err(self.reject(msg, "重放消息：nonce 已被使用".to_string()));
+        }
+        if entry.seen_nonces.len() > MAX_SEEN_NONCES {
+            if let Some(oldest) = entry.seen_nonces.iter().next().cloned() {
+                entry.seen_nonces.remove(&oldest);
+            }
+        }
         Ok(())
     }
 
@@ -353,19 +481,18 @@ impl PluginBus {
                 }
             }
             Target::Plugin(id) => {
-                let target_state = self
+                let entry = self
                     .routes
                     .get(id)
-                    .map(|e| e.state)
                     .ok_or_else(|| PluginError::Bus(format!("目标 {} 未注册", id)))?;
                 // 4. 目标 RUNNING 且未隔离。
-                if target_state != PluginState::Running {
+                if entry.state != PluginState::Running {
                     return Err(self.reject(
                         msg,
-                        format!("目标 {} 不在 RUNNING（{:?}）", id, target_state),
+                        format!("目标 {} 不在 RUNNING（{:?}）", id, entry.state),
                     ));
                 }
-                let tx = self.routes.get(id).unwrap().tx.clone();
+                let tx = entry.tx.clone();
                 tx.send(msg.clone())
                     .map_err(|e| PluginError::Bus(format!("目标投递失败: {e}")))?;
             }
@@ -426,7 +553,15 @@ mod tests {
             issued_at,
             ttl_ms: 5000,
             priority: Priority::Normal,
+            nonce: String::new(),
+            signature: String::new(),
         }
+    }
+
+    /// 用 source 对应插件的密钥对消息签名（dispatch 前的标准步骤）。
+    fn signed(bus: &mut PluginBus, mut m: PmbMessage) -> PmbMessage {
+        bus.sign_message(&mut m).unwrap();
+        m
     }
 
     fn token_for(id: &str, caps: &[Capability]) -> CapabilityToken {
@@ -451,13 +586,16 @@ mod tests {
         let mut bus = PluginBus::new();
         let rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
         bring_up(&mut bus, "a", &[Capability::MessageSend]);
-        bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ))
-        .unwrap();
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        bus.dispatch(&m).unwrap();
         let got = rx_b
             .recv_timeout(std::time::Duration::from_millis(100))
             .unwrap();
@@ -470,12 +608,17 @@ mod tests {
         bring_up(&mut bus, "b", &[Capability::MessageSend]);
         // a 没有 MessageSend 能力。
         bring_up(&mut bus, "a", &[]);
-        let r = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
+        // 即使消息已正确签名，也因能力不足被拒。
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let r = bus.dispatch(&m);
         assert!(r.is_err());
         assert_eq!(bus.violations("a"), 1);
     }
@@ -487,25 +630,34 @@ mod tests {
         let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
         // 注册 a，令牌绑定 a，但用 c 的名义发送。
         let _rx_a = bring_up(&mut bus, "a", &[Capability::MessageSend]);
-        let r = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
-        // 正常 a→b 应成功；伪造场景：令牌 plugin_id 与 source 不一致。
+        // 正常 a→b 应成功（已签名）。
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let r = bus.dispatch(&m);
         assert!(r.is_ok());
         // 手动构造一个 source 与令牌不一致的情况：
         bus.register("c");
         bus.set_state("c", PluginState::Running).unwrap();
         bus.set_token("c", token_for("different", &[Capability::MessageSend]))
             .unwrap();
-        let r2 = bus.dispatch(&msg(
-            "c",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            2,
-        ));
+        // 用 c 的密钥签名，但令牌绑定 different → 第3道 source 校验失败。
+        let m2 = signed(
+            &mut bus,
+            msg(
+                "c",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                2,
+            ),
+        );
+        let r2 = bus.dispatch(&m2);
         assert!(r2.is_err());
     }
 
@@ -516,7 +668,8 @@ mod tests {
         // 不推进到 RUNNING。
         bus.set_token("a", token_for("a", &[Capability::MessageSend]))
             .unwrap();
-        let r = bus.dispatch(&msg("a", Target::Host, "plugin:message:send", 1));
+        let m = signed(&mut bus, msg("a", Target::Host, "plugin:message:send", 1));
+        let r = bus.dispatch(&m);
         assert!(r.is_err());
     }
 
@@ -525,12 +678,16 @@ mod tests {
         let mut bus = PluginBus::new();
         bring_up(&mut bus, "a", &[Capability::MessageSend]);
         bus.register("b"); // b 未 RUNNING。
-        let r = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let r = bus.dispatch(&m);
         assert!(r.is_err());
     }
 
@@ -540,8 +697,11 @@ mod tests {
         let rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
         let rx_c = bring_up(&mut bus, "c", &[Capability::MessageSend]);
         bring_up(&mut bus, "a", &[Capability::MessageSend]);
-        bus.dispatch(&msg("a", Target::Broadcast, "plugin:message:send", 1))
-            .unwrap();
+        let m = signed(
+            &mut bus,
+            msg("a", Target::Broadcast, "plugin:message:send", 1),
+        );
+        bus.dispatch(&m).unwrap();
         assert!(rx_b
             .recv_timeout(std::time::Duration::from_millis(100))
             .is_ok());
@@ -556,12 +716,16 @@ mod tests {
         bring_up(&mut bus, "b", &[Capability::MessageSend]);
         bring_up(&mut bus, "a", &[]); // a 无能力
         for t in 0..3 {
-            let _ = bus.dispatch(&msg(
-                "a",
-                Target::Plugin("b".to_string()),
-                "plugin:message:send",
-                1 + t,
-            ));
+            let m = signed(
+                &mut bus,
+                msg(
+                    "a",
+                    Target::Plugin("b".to_string()),
+                    "plugin:message:send",
+                    1 + t,
+                ),
+            );
+            let _ = bus.dispatch(&m);
         }
         assert!(bus.should_quarantine("a"));
     }
@@ -580,27 +744,117 @@ mod tests {
             .unwrap();
         // 直接改 a 的速率为 2 条/窗口。
         bus.routes.get_mut("a").unwrap().rate = RateLimit::new(1000, 2);
-        let _ = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
-        let _ = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
-        // 同一秒第 3 条应被限流。
-        let r3 = bus.dispatch(&msg(
-            "a",
-            Target::Plugin("b".to_string()),
-            "plugin:message:send",
-            1,
-        ));
+        let m1 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let _ = bus.dispatch(&m1);
+        let m2 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let _ = bus.dispatch(&m2);
+        // 同一窗口第 3 条应被限流（即使签名正确）。
+        let m3 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let r3 = bus.dispatch(&m3);
         assert!(r3.is_err());
         let _ = rx;
         let _ = rx_a;
+    }
+
+    #[test]
+    fn rejects_tampered_payload() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // 签名后篡改 payload → 签名失配。
+        let mut m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        m.payload = serde_json::json!({"evil": true});
+        let r = bus.dispatch(&m);
+        assert!(r.is_err());
+        assert_eq!(bus.violations("a"), 1);
+    }
+
+    #[test]
+    fn rejects_unsigned_message() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // 不签名直接投递（signature 为空）。
+        let m = msg(
+            "a",
+            Target::Plugin("b".to_string()),
+            "plugin:message:send",
+            1,
+        );
+        let r = bus.dispatch(&m);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn rejects_replayed_nonce() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // 第一条合法送达。
+        let m1 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        bus.dispatch(&m1).unwrap();
+        // 完全相同的消息（含 nonce/signature）再次投递 → 重放被拒。
+        let r2 = bus.dispatch(&m1);
+        assert!(r2.is_err());
+    }
+
+    #[test]
+    fn rejects_signature_from_other_plugin() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        bring_up(&mut bus, "x", &[Capability::MessageSend]);
+        // 构造一条声称来自 a 的消息，却用 x 的密钥签名。
+        let mut m = msg(
+            "a",
+            Target::Plugin("b".to_string()),
+            "plugin:message:send",
+            1,
+        );
+        let x_key = bus.session_key("x").unwrap();
+        m.nonce = uuid::Uuid::new_v4().to_string();
+        m.signature = compute_signature(&m, &x_key).unwrap();
+        let r = bus.dispatch(&m);
+        assert!(r.is_err());
     }
 }

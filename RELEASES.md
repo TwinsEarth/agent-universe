@@ -75,7 +75,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                           ├── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2)
                                                                                                                                                                           ├── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡)
                                                                                                                                                                           ├── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交)
-│     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0) ← 当前
+│     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0)
+│           └── v3.1.0 (Business Plugins - 业务插件化/官方插件 entry 模块/信誉overall+市场match 真实算法/boot_official 随内核自动装配 9 个 T1 - gsn-core 0.3.10) ← 当前
 ```
 
 ## 大版本详情
@@ -533,6 +534,27 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.1.0 - 业务插件化：官方插件 entry 模块 + 随内核自动装配（gsn-core 0.3.10）
+
+**中版本（新功能，不改内核）**：让官方插件从“通用 exec 容器”升级为真正承载业务逻辑。
+
+- **问题根因**：v3.0.0 的 process 官方插件只是通用 exec，manifest 的 `entry` 从未被加载，
+  信誉/匹配真实算法仍在单体 `marketplace/`；且官方插件未在 boot 自动装配。
+- **内嵌 entry 业务模块**（`official/mod.rs`）：新增 `EntrySource` 与
+  `official_entry_source()`；economy-reputation 移植 `overall`（`q*0.35+s*0.20+h*0.30+
+  a*0.15`）；market-match 移植 `match_task`（`cost=reputation/price`、
+  `latency_penalty=1/(1+latency/1000)`、取最高分；空 bids→no_bids）。
+- **process 加载/调用 entry**（`runtime/process.rs`）：spawn 写 entry 到 `plugin.py`；
+  新增 `invoke_entry`（隔离进程 import plugin → json.loads → 调用 → json.dumps）；方法名
+  必须是合法标识符（防注入），方法缺失（exit 2）/非法方法名均被拒绝。
+- **boot_official 自动装配**：官方插件随内核构建可信、跳过签名（与 T0 同源），但仍走
+  process 隔离与能力矩阵；node.rs 在 boot_system 后装配 9 个 T1。
+- **测试并行修复**：同插件 id 共享目录改为 `unique_rt()` 独立 base。
+- **验证**：cargo test 全量 **786 passed/0 failed**（lib 251 + 集成 535）；process 11
+  单测；真实 daemon 端到端（4 T0 + 9 T1，overall→0.75、match winner=b/
+  score=0.00818、empty→no_bids）。
+- **边界**：仅信誉/匹配两个业务插件 entry 化，其余 7 个仍为 exec；entry 为 Python。
 
 ### v3.0.0 - 一切插件化架构：插件内核 + 热更新/热插拔/热兼容（gsn-core 0.3.0）
 

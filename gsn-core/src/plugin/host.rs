@@ -23,6 +23,7 @@ use crate::plugin::bus::PluginBus;
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::lifecycle::PluginState;
 use crate::plugin::manifest::PluginManifest;
+use crate::plugin::official;
 use crate::plugin::registry::PluginRegistry;
 use crate::plugin::runtime::native::NativeRuntime;
 use crate::plugin::runtime::process::ProcessRuntime;
@@ -157,6 +158,37 @@ impl PluginHost {
             // 注册到 registry，使版本/tier 在列表与详情中一致可见。
             self.registry.register(manifest.clone())?;
             self.bus.register(&id);
+            self.bus.set_state(&id, PluginState::Running)?;
+            self.instances.insert(id.clone(), instance);
+            started.push(id);
+        }
+        Ok(started)
+    }
+
+    /// 装配 T1 官方插件（随内核，进程隔离）。
+    ///
+    /// 官方插件由 TwinsEarth 随内核构建、构建链路保证可信，因此跳过发布者
+    /// 签名校验（与 T0 系统插件同一信任来源）；但仍走 **process 隔离**与
+    /// **能力矩阵**：能力按 [`Tier::Official`] 解析授予，越权即拒绝，
+    /// 携带的 entry 业务模块由 process runtime 加载。
+    pub fn boot_official(&mut self) -> PluginResult<Vec<String>> {
+        use crate::plugin::capability::CapabilityToken;
+        let mut started = Vec::new();
+        for manifest in official::bundled_manifests(&self.version) {
+            let id = manifest.plugin.name.clone();
+            // 能力按 Official 矩阵解析（基础 + 官方可授予），越权提前失败。
+            let granted = self.arbiter.resolve_granted(&manifest, Tier::Official)?;
+            let token = CapabilityToken {
+                plugin_id: id.clone(),
+                granted,
+                issued_at: self.now_ms,
+                manifest_digest: manifest.compute_digest()?,
+            };
+            // 进程隔离 spawn（写入 entry 业务模块）。
+            let instance = self.process.spawn(&manifest)?;
+            self.registry.register(manifest.clone())?;
+            self.bus.register(&id);
+            self.bus.set_token(&id, token)?;
             self.bus.set_state(&id, PluginState::Running)?;
             self.instances.insert(id.clone(), instance);
             started.push(id);

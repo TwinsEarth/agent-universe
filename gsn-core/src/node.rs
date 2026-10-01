@@ -2042,6 +2042,15 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         ),
         Err(e) => eprintln!("⚠️ Plugin Host 系统插件装配失败: {e}"),
     }
+    // v3.1.0：随内核装配 T1 官方插件（进程隔离 + entry 业务模块）。
+    match plugin_host.boot_official() {
+        Ok(started) => println!(
+            "✅ 官方插件已启动：{} 个 T1（{}）",
+            started.len(),
+            started.join(", ")
+        ),
+        Err(e) => eprintln!("⚠️ 官方插件装配失败: {e}"),
+    }
     let plugin_host = Arc::new(std::sync::Mutex::new(plugin_host));
     println!("✅ gsn-daemon 启动完成");
 

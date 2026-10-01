@@ -100,6 +100,87 @@ pub fn bundled_manifests(version: &str) -> Vec<PluginManifest> {
         .collect()
 }
 
+// ── entry 业务模块（v3.1.0 起官方插件真正承载业务逻辑）──────────────
+//
+// 历史上这些算法写在单体 marketplace/ 里。v3.1.0 把它们作为插件 entry 模块
+// 随插件承载：spawn 时写入隔离工作目录，call 时在隔离进程中加载并调用。
+
+/// 插件 entry 模块（随插件承载的真实业务代码）。
+pub struct EntrySource {
+    /// 沙箱语言标签（python / javascript）。
+    pub language: &'static str,
+    /// 模块在工作目录中的文件名。
+    pub filename: &'static str,
+    /// 模块源码。
+    pub source: &'static str,
+}
+
+/// economy-reputation 插件 entry：移植自 `marketplace/reputation.rs::overall`。
+const REPUTATION_ENTRY: &str = r#"# economy-reputation official plugin (T1)
+# ported from marketplace/reputation.rs MarketReputation::overall
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.economy-reputation",
+            "tier": "official", "methods": ["status", "overall"]}
+
+def overall(payload):
+    q = float(payload["quality"])
+    s = float(payload["speed"])
+    h = float(payload["honesty"])
+    a = float(payload["availability"])
+    score = q*0.35 + s*0.20 + h*0.30 + a*0.15
+    return {"overall": score}
+"#;
+
+/// market-match 插件 entry：移植自 `marketplace/mod.rs::match_task`。
+const MATCH_ENTRY: &str = r#"# market-match official plugin (T1)
+# ported from marketplace/mod.rs Market::match_task
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.market-match",
+            "tier": "official", "methods": ["status", "match"]}
+
+def match(payload):
+    bids = payload.get("bids", [])
+    if not bids:
+        return {"winner": None, "reason": "no_bids"}
+    best = None
+    best_score = None
+    for b in bids:
+        price = float(b.get("price", 0))
+        if price <= 0:
+            continue
+        rep = float(b.get("reputation", 0.5))
+        latency = float(b.get("latency_ms", 0))
+        # cost-performance = reputation / price; latency penalty
+        cost = rep / price
+        latency_penalty = 1.0 / (1.0 + latency / 1000.0)
+        score = cost * latency_penalty
+        if best_score is None or score > best_score:
+            best_score = score
+            best = b
+    if best is None:
+        return {"winner": None, "reason": "no_valid_bid"}
+    return {"winner": best.get("agent_id"), "score": best_score}
+"#;
+
+/// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
+pub fn official_entry_source(name: &str) -> Option<EntrySource> {
+    match name {
+        OFF_ECONOMY_REPUTATION => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: REPUTATION_ENTRY,
+        }),
+        OFF_MARKET_MATCH => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: MATCH_ENTRY,
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +207,14 @@ mod tests {
         assert!(m.waivers.contains_key("fs_deny_host"));
         assert!(m.waivers.contains_key("network_egress"));
         assert!(m.waivers.contains_key("disk_quota"));
+    }
+
+    #[test]
+    fn entry_source_for_business_plugins() {
+        assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
+        assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
+        // 其余插件暂为通用 exec 承载。
+        assert!(official_entry_source(OFF_AGENT_CARD).is_none());
+        assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
     }
 }

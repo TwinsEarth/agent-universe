@@ -18,6 +18,7 @@
 
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::manifest::PluginManifest;
+use crate::plugin::official::official_entry_source;
 use crate::plugin::runtime::{PluginInstance, PluginRuntime, RuntimeCapabilities};
 use crate::sandbox::capability::{Capability as SbCap, Waiver};
 use crate::sandbox::config::{ResourceLimits, SandboxConfig};
@@ -63,6 +64,63 @@ pub struct ProcessInstance {
     id: String,
     sb: ProcessSandbox,
     alive: bool,
+    /// 是否携带 entry 业务模块（v3.1.0 起）。
+    has_entry: bool,
+}
+
+impl ProcessInstance {
+    /// 在隔离进程中加载 entry 模块并调用其业务方法。
+    fn invoke_entry(&mut self, method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+        // 方法名必须是合法 Python 标识符，杜绝引导代码注入。
+        if method.is_empty()
+            || !method
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(PluginError::Runtime(format!("非法方法名 {method}")));
+        }
+        // payload 必须是合法 JSON。
+        let value: serde_json::Value = serde_json::from_slice(payload)
+            .map_err(|e| PluginError::Runtime(format!("payload 非法: {e}")))?;
+        let literal = serde_json::to_string(&value)
+            .map_err(|e| PluginError::Runtime(format!("payload 序列化失败: {e}")))?;
+        // 包成 Python 字符串字面量（JSON 字符串，Python 可解析）。
+        let py_data = serde_json::to_string(&literal)
+            .map_err(|e| PluginError::Runtime(format!("payload 转义失败: {e}")))?;
+        let method_lit = serde_json::to_string(method)
+            .map_err(|e| PluginError::Runtime(format!("方法名转义失败: {e}")))?;
+
+        let bootstrap = format!(
+            r#"import json, sys
+import plugin
+data = json.loads({py_data})
+try:
+    fn = getattr(plugin, {method_lit})
+except AttributeError:
+    sys.stderr.write("no method {method}")
+    sys.exit(2)
+out = fn(data)
+sys.stdout.write(json.dumps(out))
+"#,
+            py_data = py_data,
+            method_lit = method_lit,
+            method = method
+        );
+
+        let result = self
+            .sb
+            .run_code(CodeLanguage::Python, &bootstrap)
+            .map_err(|e| PluginError::Runtime(format!("entry 调用失败: {e}")))?;
+        if result.exit_code == 0 {
+            Ok(result.stdout.into_bytes())
+        } else {
+            let tail = result.stderr.trim().lines().last().unwrap_or("");
+            Err(PluginError::Runtime(format!(
+                "插件 {method} 失败 (exit {}): {tail}",
+                result.exit_code
+            )))
+        }
+    }
 }
 
 impl PluginInstance for ProcessInstance {
@@ -94,6 +152,8 @@ impl PluginInstance for ProcessInstance {
                 serde_json::to_vec(&out)
                     .map_err(|e| PluginError::Runtime(format!("结果序列化失败: {e}")))
             }
+            // entry 业务方法：加载 entry 模块并在隔离进程中调用。
+            other if self.has_entry => self.invoke_entry(other, payload),
             other => Err(PluginError::NotFound(format!(
                 "进程插件 {} 无方法 {other}",
                 self.id
@@ -171,11 +231,22 @@ impl PluginRuntime for ProcessRuntime {
         sb.start()
             .map_err(|e| PluginError::Runtime(format!("沙箱启动失败: {e}")))?;
 
+        // 写入 entry 业务模块（若该插件携带）。
+        let entry = official_entry_source(&manifest.plugin.name);
+        let has_entry = if let Some(es) = entry.as_ref() {
+            sb.write_file(es.filename, es.source)
+                .map_err(|e| PluginError::Runtime(format!("entry 写入失败: {e}")))?;
+            true
+        } else {
+            false
+        };
+
         self.instances.push(id.clone());
         Ok(Box::new(ProcessInstance {
             id,
             sb,
             alive: true,
+            has_entry,
         }))
     }
 }
@@ -209,7 +280,7 @@ mod tests {
 
     #[test]
     fn official_with_waivers_supported() {
-        let rt = ProcessRuntime::new(None);
+        let rt = unique_rt();
         // T1 基础边界 process 后端满足；fs_deny_host/network/disk 需要 waiver。
         let m = manifest_with(
             "com.twinsearth.official.x",
@@ -220,7 +291,7 @@ mod tests {
 
     #[test]
     fn official_without_waiver_rejected() {
-        let rt = ProcessRuntime::new(None);
+        let rt = unique_rt();
         // 注意：T1 的 required_bounds 只含 fs_isolation/cpu_limit/output_cap，
         // 这些 process 后端都满足，所以无 waiver 也能通过 supports。
         let m = manifest_with("com.twinsearth.official.x", &[]);
@@ -229,7 +300,7 @@ mod tests {
 
     #[test]
     fn third_party_always_rejected() {
-        let rt = ProcessRuntime::new(None);
+        let rt = unique_rt();
         // T3 需要 fs_deny_host/network_egress/disk_quota 等，process 后端全不满足，
         // 且 T3 无 waiver 例外 → 即使列了 waiver 也拒绝。
         let m = manifest_with(
@@ -241,7 +312,7 @@ mod tests {
 
     #[test]
     fn spawn_and_exec_python() {
-        let mut rt = ProcessRuntime::new(None);
+        let mut rt = unique_rt();
         let m = manifest_with(
             "com.twinsearth.official.demo",
             &["fs_deny_host", "network_egress", "disk_quota"],
@@ -258,12 +329,101 @@ mod tests {
 
     #[test]
     fn unknown_method_rejected() {
-        let mut rt = ProcessRuntime::new(None);
+        let mut rt = unique_rt();
         let m = manifest_with(
             "com.twinsearth.official.demo",
             &["fs_deny_host", "network_egress", "disk_quota"],
         );
         let mut inst = rt.spawn(&m).unwrap();
         assert!(inst.call("nope", b"{}").is_err());
+    }
+
+    // ── v3.1.0 entry 业务模块 ─────────────────────────────────────
+    fn entry_manifest(name: &str) -> PluginManifest {
+        crate::plugin::official::official_manifest(name, "3.0.0")
+    }
+
+    /// 每个测试用独立 base 目录：并行测试即使插件 id 相同也不共享工作目录。
+    fn unique_rt() -> ProcessRuntime {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let base = std::env::temp_dir().join(format!("au-entry-test-{}-{}", std::process::id(), n));
+        ProcessRuntime::new(Some(base))
+    }
+
+    #[test]
+    fn reputation_overall_via_entry() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_ECONOMY_REPUTATION);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{"quality":1.0,"speed":0.8,"honesty":0.6,"availability":0.4}"#;
+        let out = inst.call("overall", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        // 1*.35 + .8*.20 + .6*.30 + .4*.15 = .35+.16+.18+.06 = .75
+        let got = v["overall"].as_f64().unwrap();
+        assert!((got - 0.75).abs() < 1e-9, "got {got}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn market_match_picks_best_via_entry() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{"bids":[
+            {"agent_id":"a","price":100,"latency_ms":100,"reputation":0.5},
+            {"agent_id":"b","price":100,"latency_ms":100,"reputation":0.9}
+        ]}"#;
+        let out = inst.call("match", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        // 同价同延迟，高信誉 b 的 score 更高。
+        assert_eq!(v["winner"].as_str().unwrap(), "b");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn market_match_empty_bids() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn(&m).unwrap();
+        let out = inst.call("match", br#"{"bids":[]}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(v["winner"].is_null());
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn entry_status_method() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_ECONOMY_REPUTATION);
+        let mut inst = rt.spawn(&m).unwrap();
+        let out = inst.call("status", b"{}").unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(
+            v["plugin"].as_str().unwrap(),
+            crate::plugin::official::OFF_ECONOMY_REPUTATION
+        );
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn entry_missing_method_fails() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_ECONOMY_REPUTATION);
+        let mut inst = rt.spawn(&m).unwrap();
+        // getattr 失败 → exit 2 → Err。
+        assert!(inst.call("nope", b"{}").is_err());
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn invalid_method_name_rejected() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_ECONOMY_REPUTATION);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 非合法标识符 → 引导注入在生成前被拒绝。
+        assert!(inst.call("a;import os", b"{}").is_err());
+        inst.stop().unwrap();
     }
 }

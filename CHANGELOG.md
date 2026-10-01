@@ -2,6 +2,40 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.1.0] - 2026-10-01
+
+### 中版本：业务插件化 —— 官方插件真正承载业务逻辑（entry 模块 + 自动装配）
+
+- **背景**：v3.0.0 建立了插件框架，但 process 官方插件只是通用 `exec` 容器，manifest 的
+  `entry` 字段未被加载，真实业务算法（信誉计算、市场匹配）仍留在单体 `marketplace/` 里，
+  插件“有壳无业务”。v3.1.0 让官方插件承载业务。
+- **内嵌 entry 业务模块**（`plugin/official/mod.rs`）：新增 `EntrySource` 与
+  `official_entry_source()`，把单体真实算法移植为插件 Python 模块：
+  - **economy-reputation**：移植自 `marketplace/reputation.rs::overall`，
+    `overall = quality*0.35 + speed*0.20 + honesty*0.30 + availability*0.15`；
+  - **market-match**：移植自 `marketplace/mod.rs::match_task`，遍历 bids，跳过
+    price≤0，`cost=reputation/price`、`latency_penalty=1/(1+latency_ms/1000)`，
+    `score=cost*latency_penalty` 取最高；空 bids 返回 `no_bids`、无有效 bid 返回
+    `no_valid_bid`；
+  - 其余 7 个官方插件暂为通用 exec 承载（entry 来源为 None）。
+- **process runtime 加载/调用 entry**（`runtime/process.rs`）：`ProcessInstance` 增加
+  `has_entry`；spawn 时把 entry 写入隔离工作目录；新增 `invoke_entry()`（隔离进程中
+  `import plugin` → `json.loads(payload)` → 调用方法 → `json.dumps` 输出）。方法名必须是
+  合法 Python 标识符（否则拒绝，防引导注入），payload 必须为合法 JSON，entry 方法不存在
+  （exit 2）与非法方法名均被类型化拒绝。
+- **官方插件随内核自动装配**：新增 `PluginHost::boot_official()`，在 `boot_system()` 后
+  装配 9 个 T1 官方插件。官方插件随内核构建、构建链路可信，故跳过发布者签名校验（与 T0
+  同一信任来源），但仍走 **process 进程隔离**与 **能力矩阵**（能力按 `Tier::Official`
+  解析、越权拒绝）。修复了此前 boot 后 GET 只有 4 个系统插件、调用官方插件“未找到”的缺陷。
+- **测试并行修复**：相同插件 id 的多个测试共享工作目录互相 destroy，改为 `unique_rt()`
+  为每个测试提供独立 base 目录。
+- 验证：cargo test 全量 **786 passed / 0 failed**（lib 251 + 集成 535）；其中 process
+  runtime 11 单测（overall 精确值 0.75、match 选中高信誉者、空 bids、status、方法缺失、
+  非法方法名）；编译零警告；真实 daemon 端到端通过（boot 打印 4 T0 + 9 T1，
+  overall→0.75、match→winner=b/score=0.00818、empty→no_bids/winner=null）。
+- 边界：仅信誉与匹配两个业务插件完成 entry 化，其余 7 个官方插件仍为通用 exec；
+  entry 当前为 Python，跨平台依赖运行环境的 Python3。
+
 ## [v3.0.0] - 2026-10-01
 
 ### 大版本：一切插件化架构重构（热更新/热插拔/热兼容、五级插件体系）

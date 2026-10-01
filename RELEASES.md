@@ -76,7 +76,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                           ├── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡)
                                                                                                                                                                           ├── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交)
 │     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0)
-│           └── v3.1.0 (Business Plugins - 业务插件化/官方插件 entry 模块/信誉overall+市场match 真实算法/boot_official 随内核自动装配 9 个 T1 - gsn-core 0.3.10) ← 当前
+│           └── v3.1.0 (Business Plugins - 业务插件化/官方插件 entry 模块/信誉overall+市场match 真实算法/boot_official 随内核自动装配 9 个 T1 - gsn-core 0.3.10)
+│                 └── v3.2.0 (Business Plugins II - 业务插件化深化/结算audit 独立审计+任务route 路由+卡片validate 校验/5 个官方插件承载真实业务/除零隐患类型化 - gsn-core 0.3.20) ← 当前
 ```
 
 ## 大版本详情
@@ -534,6 +535,25 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.2.0 - 业务插件化深化：结算 audit + 任务 route + 卡片 validate（gsn-core 0.3.20）
+
+**中版本（新功能，不改内核）**：再 3 个核心官方插件承载真实业务，5/9 个官方插件业务化。
+
+- **问题根因**：v3.1.0 仅信誉/匹配 2 个插件承载业务；独立审计、任务路由、卡片校验等
+  算法仍在单体，且 `assign_task` 存在 `budget/candidates`、`load/max` 除零隐患。
+- **新增 3 个 entry 模块**（`official/mod.rs`）：
+  - market-settle `audit`：移植 `independent_audit`，只信任流水独立重放、逐账户比对、
+    校验总额/聚合一致，返回 `passed` 与 `mismatches`；
+  - scheduler-task `route`：移植 `assign_task`，按负载/延迟评分选最佳、估算成本；
+    除零隐患类型化（空候选→no_candidates、零容量→no_capacity、全饱和→all_saturated）；
+  - agent-card `validate`：校验 DID/name/version/skills/分数区间/质押。
+- **测试**：新增 7 个 process 隔离测试（settle 2/router 3/card 2），含边界与篡改反例。
+- **验证**：`cargo test --lib` **258 passed/0 failed**（基线 251+7）；clippy 零警告；
+  regression 14 通过；真实 daemon 端到端（host_version=0.3.20、13 插件 Running，
+  audit 抓到 expected=100/actual=150、route 选 b/estimated_cost=50、validate 合法）。
+- **边界**：5/9 官方插件承载业务，其余 4 个（agent-skill/swarm-emergence/chain-anchor/
+  chain-bridge）仍为 exec；entry 为 Python。
 
 ### v3.1.0 - 业务插件化：官方插件 entry 模块 + 随内核自动装配（gsn-core 0.3.10）
 

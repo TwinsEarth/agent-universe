@@ -186,6 +186,150 @@ def match(payload):
     return {"winner": best.get("agent_id"), "score": best_score}
 "#;
 
+/// market-settle 插件 entry：移植自 `marketplace/settlement.rs::independent_audit`。
+const SETTLE_ENTRY: &str = r#"# market-settle official plugin (T1)
+# ported from marketplace/settlement.rs SettlementEngine::independent_audit
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.market-settle",
+            "tier": "official", "methods": ["status", "audit"]}
+
+def audit(payload):
+    records = payload.get("records", [])
+    balances = payload.get("balances", {})
+    # 独立重放流水：只信任流水，不信任当前余额/聚合。
+    expected = {}
+    deposits = 0
+    slashed = 0
+    for r in records:
+        reason = r.get("reason")
+        amount = int(r.get("amount", 0))
+        frm = r.get("from_account", "")
+        to = r.get("to_account", "")
+        if reason == "Deposited":
+            expected[to] = expected.get(to, 0) + amount
+            deposits += amount
+        elif reason == "Slashed":
+            expected[frm] = expected.get(frm, 0) - amount
+            slashed += amount
+        else:
+            # Completed/Refunded/Staked/Escrowed/Rejected/DuplicateWork: from -> to 搬运
+            if amount > 0:
+                expected[frm] = expected.get(frm, 0) - amount
+                expected[to] = expected.get(to, 0) + amount
+    # 逐账户比对（重放账户 ∪ 当前账户），覆盖 ghost/缺失/篡改。
+    accounts = set()
+    accounts.update(expected.keys())
+    accounts.update(balances.keys())
+    mismatches = []
+    for a in accounts:
+        exp = expected.get(a, 0)
+        act = int(balances.get(a, 0))
+        if exp != act:
+            mismatches.append({"account": a, "expected": exp, "actual": act})
+    mismatches.sort(key=lambda m: m["account"])
+    expected_total = deposits - slashed
+    actual_total = 0
+    for v in balances.values():
+        actual_total += int(v)
+    # 若调用方提供引擎聚合（total_deposits/total_slashed），一并校验聚合一致。
+    aggregate_matches = True
+    if "total_deposits" in payload or "total_slashed" in payload:
+        aggregate_matches = (deposits == int(payload.get("total_deposits", deposits))
+                             and slashed == int(payload.get("total_slashed", slashed)))
+    passed = (not mismatches) and expected_total == actual_total and aggregate_matches
+    return {"passed": passed,
+            "replayed_records": len(records),
+            "replayed_deposits": deposits,
+            "replayed_slashed": slashed,
+            "expected_total": expected_total,
+            "actual_total": actual_total,
+            "aggregate_matches": aggregate_matches,
+            "mismatches": mismatches}
+"#;
+
+/// scheduler-task 插件 entry：移植自 `scheduler/router.rs::assign_task`（边界安全）。
+const ROUTER_ENTRY: &str = r#"# scheduler-task official plugin (T1)
+# ported from scheduler/router.rs TaskRouter::assign_task
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.scheduler-task",
+            "tier": "official", "methods": ["status", "route"]}
+
+def route(payload):
+    nodes = payload.get("nodes", [])
+    max_concurrent = int(payload.get("max_concurrent", 1))
+    budget = int(payload.get("budget", 0))
+    if not nodes:
+        return {"selected": None, "reason": "no_candidates"}
+    if max_concurrent <= 0:
+        # 无容量定义（原 Rust load/max_concurrent 会除零）：显式判为无容量。
+        return {"selected": None, "reason": "no_capacity"}
+    best = None
+    best_score = None
+    for n in nodes:
+        did = n.get("did")
+        load = float(n.get("load", 0))
+        if load >= max_concurrent:
+            continue
+        latency = float(n.get("latency_ms", 100))
+        load_penalty = (load / max_concurrent) * 0.3
+        latency_penalty = min(latency / 1000.0, 1.0) * 0.2
+        score = 1.0 - load_penalty - latency_penalty
+        if best_score is None or score > best_score:
+            best_score = score
+            best = {"did": did, "latency_ms": latency}
+    if best is None:
+        return {"selected": None, "reason": "all_saturated"}
+    # 估算成本：预算在全部候选间平分（len(nodes) 非空，整数除法安全）。
+    estimated_cost = budget // len(nodes)
+    return {"selected": best["did"], "score": best_score,
+            "latency_ms": best["latency_ms"], "estimated_cost": estimated_cost}
+"#;
+
+/// agent-card 插件 entry：校验 `MarketAgentCard` 字段（`marketplace/agent_card.rs`）。
+const CARD_ENTRY: &str = r#"# agent-card official plugin (T1)
+# validates MarketAgentCard fields (marketplace/agent_card.rs)
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.agent-card",
+            "tier": "official", "methods": ["status", "validate"]}
+
+def validate(payload):
+    card = payload.get("card", payload)
+    errors = []
+    agent_id = str(card.get("agent_id", ""))
+    if not agent_id:
+        errors.append("agent_id is required")
+    elif not agent_id.startswith("did:"):
+        errors.append("agent_id must be a DID (start with 'did:')")
+    if not str(card.get("name", "")):
+        errors.append("name is required")
+    if not str(card.get("version", "")):
+        errors.append("version is required")
+    if not isinstance(card.get("skills", []), list):
+        errors.append("skills must be a list")
+    try:
+        rep = float(card.get("reputation_score", 0))
+        if rep < 0.0 or rep > 1.0:
+            errors.append("reputation_score must be in [0,1]")
+    except (TypeError, ValueError):
+        errors.append("reputation_score must be a number")
+    try:
+        sr = float(card.get("success_rate", 0))
+        if sr < 0.0 or sr > 1.0:
+            errors.append("success_rate must be in [0,1]")
+    except (TypeError, ValueError):
+        errors.append("success_rate must be a number")
+    try:
+        stake = int(card.get("stake", 0))
+        if stake < 0:
+            errors.append("stake must be non-negative")
+    except (TypeError, ValueError):
+        errors.append("stake must be an integer")
+    return {"valid": len(errors) == 0, "errors": errors}
+"#;
+
 /// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
 pub fn official_entry_source(name: &str) -> Option<EntrySource> {
     match name {
@@ -198,6 +342,21 @@ pub fn official_entry_source(name: &str) -> Option<EntrySource> {
             language: "python",
             filename: "plugin.py",
             source: MATCH_ENTRY,
+        }),
+        OFF_MARKET_SETTLE => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: SETTLE_ENTRY,
+        }),
+        OFF_SCHEDULER_TASK => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: ROUTER_ENTRY,
+        }),
+        OFF_AGENT_CARD => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: CARD_ENTRY,
         }),
         _ => None,
     }
@@ -233,10 +392,14 @@ mod tests {
 
     #[test]
     fn entry_source_for_business_plugins() {
+        // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card。
         assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
         assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
-        // 其余插件暂为通用 exec 承载。
-        assert!(official_entry_source(OFF_AGENT_CARD).is_none());
+        assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
+        assert!(official_entry_source(OFF_SCHEDULER_TASK).is_some());
+        assert!(official_entry_source(OFF_AGENT_CARD).is_some());
+        // 其余 4 个暂为通用 exec 承载。
+        assert!(official_entry_source(OFF_AGENT_SKILL).is_none());
         assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
     }
 }

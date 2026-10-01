@@ -2,6 +2,35 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.2.0] - 2026-10-01
+
+### 中版本：业务插件化深化 —— 再 3 个核心官方插件承载真实业务 entry
+
+- **背景**：v3.1.0 只让 economy-reputation、market-match 两个插件承载真实业务，其余 7 个
+  官方插件仍是通用 `exec` 容器。v3.2.0 继续把单体真实算法移植到插件，使 9 个官方插件中
+  **5 个承载真实业务**（中版本只发新功能插件，不动内核）。
+- **新增 3 个内嵌 entry 业务模块**（`plugin/official/mod.rs`）：
+  - **market-settle `audit`**：移植自 `marketplace/settlement.rs::independent_audit`。
+    **只信任流水 records**，逐笔独立重放（Deposited→to 加、Slashed→from 减、其余搬运），
+    与当前 balances 逐账户比对（重放账户 ∪ 当前账户，覆盖 ghost/缺失/篡改），校验
+    `expected_total == actual_total`，并在提供引擎聚合时校验聚合一致。返回 `passed`、
+    首个不匹配账户的 `expected/actual`、`mismatches`；
+  - **scheduler-task `route`**：移植自 `scheduler/router.rs::assign_task`，按负载与延迟
+    评分选最佳执行者（`score = 1-(load/max)*0.3-min(lat/1000,1)*0.2`），估算成本
+    `budget // 候选数`。把单体潜在的除零隐患改为类型化结果：空候选→`no_candidates`、
+    `max_concurrent<=0`→`no_capacity`、全饱和→`all_saturated`；
+  - **agent-card `validate`**：校验 `MarketAgentCard` 字段——agent_id 须为 DID、
+    name/version 非空、skills 为列表、reputation_score/success_rate ∈ [0,1]、stake 非负，
+    返回 `valid` 与逐项 `errors`。
+- **测试**：新增 7 个 process runtime 隔离测试（settle 2：一致通过 / 篡改余额必败；
+  router 3：选低延迟 / 空候选 / 零容量；card 2：合法通过 / 非法≥4 项错误）。
+- 验证：cargo test `--lib` **258 passed / 0 failed**（v3.1.0 基线 251 + 新增 7）；
+  clippy 零警告；`node test/regression.js` 14 通过；真实 daemon 端到端通过
+  （host_version=0.3.20，13 插件全 Running；audit 抓到 A expected=100/actual=150 →
+  passed=false；route 选 b、estimated_cost=50、零容量→no_capacity；validate 合法→valid）。
+- 边界：9 个官方插件中 5 个已承载真实业务，其余 4 个（agent-skill/swarm-emergence/
+  chain-anchor/chain-bridge）仍为通用 exec；entry 为 Python，依赖运行环境的 Python3。
+
 ## [v3.1.0] - 2026-10-01
 
 ### 中版本：业务插件化 —— 官方插件真正承载业务逻辑（entry 模块 + 自动装配）

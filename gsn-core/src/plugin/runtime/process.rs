@@ -447,4 +447,132 @@ mod tests {
         assert!(inst.call("a;import os", b"{}").is_err());
         inst.stop().unwrap();
     }
+
+    // ── v3.2.0 entry 业务模块（settle / scheduler / card）────────────
+    #[test]
+    fn settle_audit_passes_on_consistent_ledger() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_SETTLE);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{
+          "records": [
+            {"task_id":"","from_account":"","to_account":"A","amount":100,"reason":"Deposited","timestamp":0},
+            {"task_id":"t1","from_account":"A","to_account":"__escrow__t1","amount":50,"reason":"Escrowed","timestamp":0},
+            {"task_id":"t1","from_account":"__escrow__t1","to_account":"B","amount":50,"reason":"Completed","timestamp":0}
+          ],
+          "balances": {"A":50,"B":50,"__escrow__t1":0},
+          "total_deposits":100,"total_slashed":0
+        }"#;
+        let out = inst.call("audit", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["passed"], true, "got {v}");
+        assert_eq!(v["expected_total"], 100);
+        assert_eq!(v["actual_total"], 100);
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn settle_audit_catches_tampered_balance() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_SETTLE);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 流水重放 B=50，但当前余额 B=60（凭空多 10）。
+        let payload = br#"{
+          "records": [
+            {"task_id":"","from_account":"","to_account":"A","amount":100,"reason":"Deposited","timestamp":0},
+            {"task_id":"t1","from_account":"A","to_account":"__escrow__t1","amount":50,"reason":"Escrowed","timestamp":0},
+            {"task_id":"t1","from_account":"__escrow__t1","to_account":"B","amount":50,"reason":"Completed","timestamp":0}
+          ],
+          "balances": {"A":50,"B":60,"__escrow__t1":0}
+        }"#;
+        let out = inst.call("audit", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["passed"], false);
+        assert_eq!(v["actual_total"], 110);
+        // 抓到 B 的账实不符（expected 50, actual 60）。
+        let mm = &v["mismatches"];
+        assert_eq!(mm[0]["account"], "B");
+        assert_eq!(mm[0]["expected"], 50);
+        assert_eq!(mm[0]["actual"], 60);
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn scheduler_route_picks_low_latency_node() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SCHEDULER_TASK);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{
+          "nodes": [
+            {"did":"a","load":0,"latency_ms":100},
+            {"did":"b","load":0,"latency_ms":50}
+          ],
+          "max_concurrent":4,"budget":100
+        }"#;
+        let out = inst.call("route", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["selected"], "b");
+        assert_eq!(v["estimated_cost"], 50); // 100 // 2
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn scheduler_route_empty_candidates() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SCHEDULER_TASK);
+        let mut inst = rt.spawn(&m).unwrap();
+        let out = inst
+            .call("route", br#"{"nodes":[],"max_concurrent":4}"#)
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(v["selected"].is_null());
+        assert_eq!(v["reason"], "no_candidates");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn scheduler_route_zero_capacity() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_SCHEDULER_TASK);
+        let mut inst = rt.spawn(&m).unwrap();
+        // max_concurrent=0（原 Rust load/max 会除零）→ 显式 no_capacity。
+        let payload = br#"{"nodes":[{"did":"a","load":0,"latency_ms":50}],"max_concurrent":0}"#;
+        let out = inst.call("route", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(v["selected"].is_null());
+        assert_eq!(v["reason"], "no_capacity");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn agent_card_validate_accepts_valid_card() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_AGENT_CARD);
+        let mut inst = rt.spawn(&m).unwrap();
+        let payload = br#"{"card":{
+          "agent_id":"did:nau:a","name":"X","version":"1.0","skills":["s1"],
+          "reputation_score":0.5,"success_rate":0.9,"stake":100
+        }}"#;
+        let out = inst.call("validate", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["valid"], true, "got {v}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn agent_card_validate_rejects_invalid_card() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_AGENT_CARD);
+        let mut inst = rt.spawn(&m).unwrap();
+        // 非 DID id、空 name、信誉越界、负质押。
+        let payload = br#"{"card":{
+          "agent_id":"abc","name":"","version":"","skills":[],"reputation_score":1.5,
+          "success_rate":0.9,"stake":-5
+        }}"#;
+        let out = inst.call("validate", payload).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["valid"], false);
+        assert!(v["errors"].as_array().unwrap().len() >= 4, "got {v}");
+        inst.stop().unwrap();
+    }
 }

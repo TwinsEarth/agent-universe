@@ -47,10 +47,10 @@ function throws(fn, mustInclude, label) {
   }
 }
 
-// 版本号：npm 线 X.Y.Z 与 Rust 线 0.2.(Y*10+Z)
+// 版本号：npm 线 X.Y.Z 与 Rust 线 0.X.(Y*10+Z)（v3.0.0 起 major 跟随 npm major）
 const V = require('../js').version;
 const parts = V.split('.').map(Number);
-const RUST = `0.2.${parts[1] * 10 + parts[2]}`;
+const RUST = `0.${parts[0]}.${parts[1] * 10 + parts[2]}`;
 
 console.log(`\nAgent Universe v${V} 历史 Bug 回归（Rust 线 ${RUST}）\n`);
 

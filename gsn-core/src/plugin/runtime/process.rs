@@ -51,6 +51,9 @@ fn map_waiver(key: &str, why: &str) -> Option<Waiver> {
         "network_egress" => SbCap::NetworkDenyAll,
         "fs_deny_host" => SbCap::FilesystemConfinement,
         "disk_quota" => SbCap::DiskQuota,
+        // 平台特异的资源边界（macOS 内存、Windows CPU 时间）。
+        "memory_limit" => SbCap::MemoryLimit,
+        "cpu_limit" => SbCap::CpuLimit,
         _ => return None,
     };
     Some(Waiver {
@@ -261,6 +264,19 @@ mod tests {
         let mut w = BTreeMap::new();
         for key in waivers {
             w.insert(key.to_string(), "trusted official code, tested".to_string());
+        }
+        // 平台特异的资源边界 waiver（与 official::process_waivers 对齐）。
+        if cfg!(not(any(target_os = "linux", windows))) {
+            w.insert(
+                "memory_limit".to_string(),
+                "test: platform has no RLIMIT_AS, memory not OS-enforced".to_string(),
+            );
+        }
+        if cfg!(windows) {
+            w.insert(
+                "cpu_limit".to_string(),
+                "test: Job Object enforces wall-clock, not CPU time".to_string(),
+            );
         }
         PluginManifest {
             plugin: PluginInfo {

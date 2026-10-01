@@ -71,6 +71,24 @@ fn process_waivers() -> BTreeMap<String, String> {
         "disk_quota".to_string(),
         "official trusted code; process backend has no FS quota primitive".to_string(),
     );
+    // 平台特异的资源边界：与 sandbox::capability::process_declaration 对齐——
+    // 该平台 process 后端无法强制的那一条，由 T1 可信构建链路显式接受并记审计。
+    // macOS 及其他非 Linux/Windows 的 Unix：内核无 RLIMIT_AS，内存不可强制。
+    if cfg!(not(any(target_os = "linux", windows))) {
+        w.insert(
+            "memory_limit".to_string(),
+            "official trusted code; no RLIMIT_AS on this platform, memory is not OS-enforced"
+                .to_string(),
+        );
+    }
+    // Windows：Job Object 强制墙钟超时，不强制 CPU 时间。
+    if cfg!(windows) {
+        w.insert(
+            "cpu_limit".to_string(),
+            "official trusted code; Windows Job Object enforces wall-clock, not CPU time"
+                .to_string(),
+        );
+    }
     w
 }
 

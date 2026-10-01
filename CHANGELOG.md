@@ -11,8 +11,11 @@
 - **静态关卡接入 CI**：新增 `static-gates` job，跑 `check-no-panics.mjs`（剥离注释/字符串/
   char 后扫描，生产代码 panic 站点必须为 0）与 `check-unsafe-containment.mjs`（每个 unsafe
   必须有对应 `// SAFETY:` 理由）。两个脚本随本版正式提交（v2.9.1 仅本地就绪）。
-- 验证：Linux 全量测试全绿（172 lib + 各集成测试）、clippy 零警告、cargo fmt 干净；
-  Windows 行为由 CI 矩阵验证。
+- **Windows 矩阵实际抓到并修复 node abort 134**：根因是 `env_clear()` 后丢失 `SystemRoot`，
+  Node 启动时 CSPRNG 初始化断言失败（`ncrypto::CSPRNG(nullptr, 0)`）；修复保留 SystemRoot、
+  TEMP/TMP 指向沙箱内 tmp，并给仅 Unix 使用的 `shell_quote` 加 `#[cfg(not(windows))]`。
+- 验证：CI 全矩阵（10 job，含 Windows）全绿；Windows 上 fmt/build/test/clippy/daemon help
+  全部通过；Linux 本地 clippy 零警告、cargo fmt 干净。
 
 ## [v2.9.1] - 2026-10-01
 

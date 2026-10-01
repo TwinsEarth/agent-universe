@@ -2,6 +2,28 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.4.0] - 2026-10-01
+
+### 中版本：业务化第 9 个官方插件 chain-bridge（跨链信誉桥接，9/9 全业务化）
+
+- **背景（根因）**：v3.3.0 后仅剩 1 个通用 exec 承载。chain-bridge 真实算法是
+  `contracts/src/ReputationRegistry.sol`（207 行，原 ReputationBridge；`PoCVSettlement.sol`
+  是独立任务结算、非 bridge 核心）。按「没有调用点的修复不算修复」，本版离线移植并业务化。
+- **bridge entry**（`plugin/official/mod.rs` 新增 `BRIDGE_ENTRY`，并接入
+  `official_entry_source`），内嵌纯 Python keccak256：
+  - `add_verifier`/`remove_verifier`：仅 owner（`onlyOwner`），非空/不重复/上限 32，
+    修复 GAP §9.4（此前 onlyVerifier 可无限铸验证者）；
+  - `record`：验证者才可提交，四维 0–10000 bps，重复提交相同=幂等、不同=冲突；
+  - `finalize`：法定人数 `verifier_count/2+1`，四维各取**中位数**（插入排序）定稿；
+  - `get_latest`：未知 DID 返回全零快照（不报错）；另有 `submission_count`。
+- **原型验证**：`bridge_proto.py` 经 `test_bridge.py` 全量 PASS（约 28 断言）；首跑 2 个
+  失败的根因是测试脚本自身状态传递 bug（v1 后未 carry），修复后通过，插件代码无问题。
+- **诚实边界**：离线不做 RPC、不读 `block.timestamp`，不声称真实跨链；`finalizedAt`
+  由调用方传入；epoch key 用字符串组合，验证者用 DID 而非 address。
+- 验证：cargo test 全量 **563 passed / 0 failed**（基线 560 + 3 个隔离测试）；clippy
+  零警告；fmt 已应用；no-panics **0 sites**；unsafe-containment 通过（未新增 unsafe）。
+- **里程碑：9 个官方插件全部业务化。**
+
 ## [v3.3.0] - 2026-10-01
 
 ### 中版本：业务化第 8 个官方插件 chain-anchor（离线锚定构造与双校验）

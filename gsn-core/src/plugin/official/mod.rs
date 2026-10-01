@@ -573,6 +573,241 @@ def remove_anchorer(payload):
     return {"ok": True, "authorized_anchorers": authorized}
 "#;
 
+const BRIDGE_ENTRY: &str = r#"# chain-bridge official plugin (T1)
+# offline port of contracts/src/ReputationRegistry.sol (off-chain reputation on-chain anchor)
+
+# ---- pure-python keccak256 (Ethereum; domain byte 0x01) ----
+_MASK = (1 << 64) - 1
+_RC = [
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
+    0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
+    0x000000000000008a, 0x0000000000000088, 0x0000000080008009, 0x000000008000000a,
+    0x000000008000808b, 0x800000000000008b, 0x8000000000008089, 0x8000000000008003,
+    0x8000000000008002, 0x8000000000000080, 0x000000000000800a, 0x800000008000000a,
+    0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008]
+_ROT = [
+    [0, 36, 3, 41, 18],
+    [1, 44, 10, 45, 2],
+    [62, 6, 43, 15, 61],
+    [28, 55, 25, 21, 56],
+    [27, 20, 39, 8, 14]]
+
+
+def _rol(x, n):
+    if n == 0:
+        return x
+    return ((x << n) | (x >> (64 - n))) & _MASK
+
+
+def keccak256(data):
+    rate = 136
+    msg = bytearray(data)
+    msg.append(0x01)
+    while len(msg) % rate != 0:
+        msg.append(0)
+    msg[-1] |= 0x80
+    S = [[0] * 5 for _ in range(5)]
+    for off in range(0, len(msg), rate):
+        for i in range(rate // 8):
+            x, y = i % 5, i // 5
+            S[x][y] ^= int.from_bytes(msg[off + 8 * i:off + 8 * i + 8], "little")
+        for rnd in range(24):
+            C = [S[x][0] ^ S[x][1] ^ S[x][2] ^ S[x][3] ^ S[x][4] for x in range(5)]
+            D = [C[(x - 1) % 5] ^ _rol(C[(x + 1) % 5], 1) for x in range(5)]
+            for x in range(5):
+                for y in range(5):
+                    S[x][y] ^= D[x]
+            B = [[0] * 5 for _ in range(5)]
+            for x in range(5):
+                for y in range(5):
+                    B[y][(2 * x + 3 * y) % 5] = _rol(S[x][y], _ROT[x][y])
+            for x in range(5):
+                for y in range(5):
+                    S[x][y] = B[x][y] ^ ((~B[(x + 1) % 5][y]) & B[(x + 2) % 5][y])
+            S[0][0] ^= _RC[rnd]
+    out = b""
+    for i in range(rate // 8):
+        x, y = i % 5, i // 5
+        out += S[x][y].to_bytes(8, "little")
+    return out[:32]
+
+
+def _hash_hex(value):
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    return keccak256(value).hex()
+
+
+def _state(payload):
+    return {
+        "owner": payload.get("owner", ""),
+        "verifiers": dict(payload.get("verifiers", {}) or {}),
+        "epochs": dict(payload.get("epochs", {}) or {}),
+        "agent_epochs": dict(payload.get("agent_epochs", {}) or {}),
+        "final_snapshots": dict(payload.get("final_snapshots", {}) or {}),
+    }
+
+
+def _verifier_count(st):
+    return len(st["verifiers"])
+
+
+def _epoch_key(agent_did_hash, epoch):
+    return agent_did_hash + ":" + str(epoch)
+
+
+def _median(vals):
+    a = list(vals)
+    for i in range(1, len(a)):
+        key = a[i]
+        j = i - 1
+        while j >= 0 and a[j] > key:
+            a[j + 1] = a[j]
+            j -= 1
+        a[j + 1] = key
+    return a[len(a) // 2]
+
+
+def status(_payload):
+    return {"plugin": "com.twinsearth.official.chain-bridge",
+            "tier": "official",
+            "methods": ["status", "add_verifier", "remove_verifier",
+                        "record", "finalize", "get_latest", "submission_count"]}
+
+
+def add_verifier(payload):
+    st = _state(payload)
+    actor = payload.get("actor", "")
+    target = payload.get("verifier", "")
+    if actor != st["owner"]:
+        return {"ok": False, "error": "not owner"}
+    if target is None or str(target) == "":
+        return {"ok": False, "error": "zero verifier"}
+    if target in st["verifiers"]:
+        return {"ok": False, "error": "already verifier"}
+    if _verifier_count(st) >= 32:
+        return {"ok": False, "error": "verifier cap reached"}
+    st["verifiers"][target] = True
+    out = {"ok": True, "verifier": target}
+    out.update(st)
+    return out
+
+
+def remove_verifier(payload):
+    st = _state(payload)
+    actor = payload.get("actor", "")
+    target = payload.get("verifier", "")
+    if actor != st["owner"]:
+        return {"ok": False, "error": "not owner"}
+    if target not in st["verifiers"]:
+        return {"ok": False, "error": "not verifier"}
+    del st["verifiers"][target]
+    out = {"ok": True, "verifier": target}
+    out.update(st)
+    return out
+
+
+def record(payload):
+    st = _state(payload)
+    verifier = payload.get("verifier", "")
+    agent_did = payload.get("agent_did", "")
+    epoch = int(payload.get("epoch", 0))
+    scores = {
+        "quality": int(payload.get("quality", 0)),
+        "speed": int(payload.get("speed", 0)),
+        "honesty": int(payload.get("honesty", 0)),
+        "availability": int(payload.get("availability", 0)),
+    }
+    if verifier not in st["verifiers"]:
+        return {"ok": False, "error": "not verifier"}
+    if not all(0 <= v <= 10000 for v in scores.values()):
+        return {"ok": False, "error": "score out of bps range"}
+    agent_hash = _hash_hex(agent_did)
+    ek = _epoch_key(agent_hash, epoch)
+    ep = st["epochs"].get(ek)
+    if ep is not None and verifier in ep["scores"]:
+        prev = ep["scores"][verifier]
+        if prev != scores:
+            return {"ok": False, "error": "conflicting resubmission"}
+        out = {"ok": True, "idempotent": True}
+        out.update(st)
+        return out
+    if ep is None:
+        ep = {"submitters": [], "scores": {}, "finalized": False}
+        st["epochs"][ek] = ep
+    ep["submitters"].append(verifier)
+    ep["scores"][verifier] = scores
+    out = {"ok": True, "agentDidHash": agent_hash, "epochKey": ek}
+    out.update(st)
+    return out
+
+
+def required_quorum(st):
+    n = _verifier_count(st)
+    if n == 0:
+        return None
+    return n // 2 + 1
+
+
+def finalize(payload):
+    st = _state(payload)
+    agent_did = payload.get("agent_did", "")
+    epoch = int(payload.get("epoch", 0))
+    timestamp = int(payload.get("timestamp", 0))
+    agent_hash = _hash_hex(agent_did)
+    ek = _epoch_key(agent_hash, epoch)
+    ep = st["epochs"].get(ek)
+    if ep is None:
+        return {"ok": False, "error": "no submissions"}
+    if ep["finalized"]:
+        return {"ok": False, "error": "already finalized"}
+    q = required_quorum(st)
+    if q is None:
+        return {"ok": False, "error": "no verifiers"}
+    if len(ep["submitters"]) < q:
+        return {"ok": False, "error": "quorum not reached"}
+    subs = ep["submitters"]
+    snap = {
+        "agentDidHash": agent_hash,
+        "quality": _median([ep["scores"][v]["quality"] for v in subs]),
+        "speed": _median([ep["scores"][v]["speed"] for v in subs]),
+        "honesty": _median([ep["scores"][v]["honesty"] for v in subs]),
+        "availability": _median([ep["scores"][v]["availability"] for v in subs]),
+        "epoch": epoch,
+        "finalizedAt": timestamp,
+    }
+    ep["finalized"] = True
+    snaps = st["final_snapshots"].setdefault(agent_hash, {})
+    snaps[str(epoch)] = snap
+    ae = st["agent_epochs"].setdefault(agent_hash, [])
+    ae.append(epoch)
+    out = {"ok": True, "snapshot": snap}
+    out.update(st)
+    return out
+
+
+def get_latest(payload):
+    st = _state(payload)
+    agent_did = payload.get("agent_did", "")
+    agent_hash = _hash_hex(agent_did)
+    epochs = st["agent_epochs"].get(agent_hash, [])
+    if not epochs:
+        return {"snapshot": {"agentDidHash": agent_hash, "quality": 0, "speed": 0,
+                             "honesty": 0, "availability": 0, "epoch": 0,
+                             "finalizedAt": 0}}
+    last = epochs[-1]
+    return {"snapshot": st["final_snapshots"][agent_hash][str(last)]}
+
+
+def submission_count(payload):
+    st = _state(payload)
+    agent_did = payload.get("agent_did", "")
+    epoch = int(payload.get("epoch", 0))
+    agent_hash = _hash_hex(agent_did)
+    ep = st["epochs"].get(_epoch_key(agent_hash, epoch))
+    return {"count": 0 if ep is None else len(ep["submitters"])}
+"#;
+
 /// 返回某官方插件的 entry 业务模块（无则该插件仍是通用 exec 承载）。
 pub fn official_entry_source(name: &str) -> Option<EntrySource> {
     match name {
@@ -616,6 +851,11 @@ pub fn official_entry_source(name: &str) -> Option<EntrySource> {
             filename: "plugin.py",
             source: ANCHOR_ENTRY,
         }),
+        OFF_CHAIN_BRIDGE => Some(EntrySource {
+            language: "python",
+            filename: "plugin.py",
+            source: BRIDGE_ENTRY,
+        }),
         _ => None,
     }
 }
@@ -651,7 +891,8 @@ mod tests {
     #[test]
     fn entry_source_for_business_plugins() {
         // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card；
-        // v3.2.2 swarm-emergence；v3.2.3 agent-skill；v3.3.0 chain-anchor。
+        // v3.2.2 swarm-emergence；v3.2.3 agent-skill；v3.3.0 chain-anchor；
+        // v3.4.0 chain-bridge（9/9 全部业务化）。
         assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
         assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
         assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
@@ -660,7 +901,6 @@ mod tests {
         assert!(official_entry_source(OFF_SWARM_EMERGENCE).is_some());
         assert!(official_entry_source(OFF_AGENT_SKILL).is_some());
         assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_some());
-        // chain-bridge 暂为通用 exec 承载（单体无独立 bridge 算法，不编造）。
-        assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_none());
+        assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_some());
     }
 }

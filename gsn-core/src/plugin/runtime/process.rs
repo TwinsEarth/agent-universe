@@ -852,4 +852,234 @@ mod tests {
         assert_eq!(v["ok"], false, "got {v}");
         inst.stop().unwrap();
     }
+
+    // ── v3.4.0 chain-bridge entry（离线移植 ReputationRegistry.sol）────
+    fn merge(mut base: serde_json::Value, over: serde_json::Value) -> serde_json::Value {
+        if let (Some(b), Some(o)) = (base.as_object_mut(), over.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        base
+    }
+
+    fn bridge_initial_state(owner: &str) -> serde_json::Value {
+        serde_json::json!({
+            "owner": owner,
+            "verifiers": {},
+            "epochs": {},
+            "agent_epochs": {},
+            "final_snapshots": {}
+        })
+    }
+
+    fn bridge_add_verifiers(
+        rt: &mut Box<dyn crate::plugin::runtime::PluginInstance>,
+        state: &mut serde_json::Value,
+        owner: &str,
+        verifiers: &[&str],
+    ) {
+        for v in verifiers {
+            let p = merge(
+                state.clone(),
+                serde_json::json!({"actor": owner, "verifier": v}),
+            );
+            let out = rt
+                .call("add_verifier", &serde_json::to_vec(&p).unwrap())
+                .unwrap();
+            let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(r["ok"], true, "add {v} got {r}");
+            *state = r;
+        }
+    }
+
+    #[test]
+    fn bridge_record_then_finalize_median() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_BRIDGE);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        let mut state = bridge_initial_state(owner);
+        bridge_add_verifiers(
+            &mut inst,
+            &mut state,
+            owner,
+            &["did:nau:v1", "did:nau:v2", "did:nau:v3"],
+        );
+        // 3 verifiers submit (quorum = 3/2+1 = 2)
+        let data = serde_json::json!({
+            "did:nau:v1": {"quality": 8000, "speed": 5000, "honesty": 9000, "availability": 1000},
+            "did:nau:v2": {"quality": 6000, "speed": 9000, "honesty": 9000, "availability": 3000},
+            "did:nau:v3": {"quality": 7000, "speed": 7000, "honesty": 9000, "availability": 2000}
+        });
+        for v in ["did:nau:v1", "did:nau:v2", "did:nau:v3"] {
+            let mut action = data[v].clone();
+            action["verifier"] = serde_json::json!(v);
+            action["agent_did"] = serde_json::json!("did:nau:agent-1");
+            action["epoch"] = serde_json::json!(1);
+            let p = merge(state.clone(), action);
+            let out = inst
+                .call("record", &serde_json::to_vec(&p).unwrap())
+                .unwrap();
+            let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+            assert_eq!(r["ok"], true, "record {v} got {r}");
+            state = r;
+        }
+        // finalize -> per-dimension median
+        let p = merge(
+            state.clone(),
+            serde_json::json!({"agent_did": "did:nau:agent-1", "epoch": 1, "timestamp": 1234}),
+        );
+        let out = inst
+            .call("finalize", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], true, "got {r}");
+        assert_eq!(r["snapshot"]["quality"], 7000, "got {r}");
+        assert_eq!(r["snapshot"]["speed"], 7000, "got {r}");
+        assert_eq!(r["snapshot"]["honesty"], 9000, "got {r}");
+        assert_eq!(r["snapshot"]["availability"], 2000, "got {r}");
+        assert_eq!(r["snapshot"]["finalizedAt"], 1234, "got {r}");
+        state = r;
+        // get_latest returns the median snapshot
+        let p = merge(
+            state.clone(),
+            serde_json::json!({"agent_did": "did:nau:agent-1"}),
+        );
+        let out = inst
+            .call("get_latest", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["snapshot"]["quality"], 7000, "got {r}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn bridge_idempotent_and_conflict() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_BRIDGE);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        let mut state = bridge_initial_state(owner);
+        bridge_add_verifiers(&mut inst, &mut state, owner, &["did:nau:v1"]);
+        let action = serde_json::json!({
+            "verifier": "did:nau:v1",
+            "agent_did": "did:nau:agent-1",
+            "epoch": 1,
+            "quality": 8000, "speed": 7000, "honesty": 9000, "availability": 6000
+        });
+        let p = merge(state.clone(), action.clone());
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], true, "got {r}");
+        assert!(r.get("idempotent").is_none(), "first submit not idempotent");
+        state = r;
+        // identical resubmit -> idempotent no-op
+        let p = merge(state.clone(), action.clone());
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], true, "got {r}");
+        assert_eq!(r["idempotent"], true, "identical should be idempotent");
+        state = r;
+        // conflicting resubmit -> rejected
+        let mut conflict = action.clone();
+        conflict["quality"] = serde_json::json!(1);
+        let p = merge(state.clone(), conflict);
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], false, "conflict should be rejected");
+        assert_eq!(r["error"], "conflicting resubmission", "got {r}");
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn bridge_quorum_nonverifier_latest_zero() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_CHAIN_BRIDGE);
+        let mut inst = rt.spawn(&m).unwrap();
+        let owner = "did:nau:owner";
+        let mut state = bridge_initial_state(owner);
+        bridge_add_verifiers(
+            &mut inst,
+            &mut state,
+            owner,
+            &["did:nau:v1", "did:nau:v2", "did:nau:v3"],
+        );
+        // non-verifier record -> not verifier
+        let p = merge(
+            state.clone(),
+            serde_json::json!({
+                "verifier": "did:nau:intruder",
+                "agent_did": "did:nau:agent-1",
+                "epoch": 1,
+                "quality": 100, "speed": 100, "honesty": 100, "availability": 100
+            }),
+        );
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], false, "got {r}");
+        assert_eq!(r["error"], "not verifier", "got {r}");
+        // out-of-bps -> rejected
+        let p = merge(
+            state.clone(),
+            serde_json::json!({
+                "verifier": "did:nau:v1",
+                "agent_did": "did:nau:agent-1",
+                "epoch": 1,
+                "quality": 10001, "speed": 0, "honesty": 0, "availability": 0
+            }),
+        );
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], false, "got {r}");
+        assert_eq!(r["error"], "score out of bps range", "got {r}");
+        // only v1 submits -> finalize fails quorum (needs 2)
+        let p = merge(
+            state.clone(),
+            serde_json::json!({
+                "verifier": "did:nau:v1",
+                "agent_did": "did:nau:agent-1",
+                "epoch": 1,
+                "quality": 8000, "speed": 7000, "honesty": 9000, "availability": 6000
+            }),
+        );
+        let out = inst
+            .call("record", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], true, "got {r}");
+        state = r;
+        let p = merge(
+            state.clone(),
+            serde_json::json!({"agent_did": "did:nau:agent-1", "epoch": 1, "timestamp": 1}),
+        );
+        let out = inst
+            .call("finalize", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["ok"], false, "got {r}");
+        assert_eq!(r["error"], "quorum not reached", "got {r}");
+        // unknown agent get_latest -> zero snapshot (no revert)
+        let p = merge(
+            state.clone(),
+            serde_json::json!({"agent_did": "did:nau:nobody"}),
+        );
+        let out = inst
+            .call("get_latest", &serde_json::to_vec(&p).unwrap())
+            .unwrap();
+        let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(r["snapshot"]["quality"], 0, "got {r}");
+        assert_eq!(r["snapshot"]["finalizedAt"], 0, "got {r}");
+        inst.stop().unwrap();
+    }
 }

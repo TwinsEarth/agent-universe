@@ -81,7 +81,8 @@ v1.0.0 (Genesis)
 │                       └── v3.2.1 (PMB Secure Messaging - PMB 消息 HMAC-SHA256 签名+nonce 防重放+常量时间比较/validate_sender 七道/host send_to·publish·open_inbox 端到端接线/静态关卡 stripLiterals 三 bug 修复/7 处生产 panic 类型化 - gsn-core 0.3.21)
 │                             └── v3.2.2 (Business Plugins III - 业务化第 6 个官方插件 swarm-emergence/detect 群体智能涌现检测·吞吐量增长 collaboration+延迟下降 load_balancing/移植 swarm emergence.rs/6 个官方插件承载真实业务 - gsn-core 0.3.22)
 │                               └── v3.2.3 (Business Plugins IV - 业务化第 7 个官方插件 agent-skill/discover 按技能标签精确匹配发现智能体·技能反向索引/移植 marketplace discover_by_skill/chain-anchor·chain-bridge 单体无独立算法不编造·7 个官方插件承载真实业务 - gsn-core 0.3.23)
-│                                 └── v3.3.0 (Business Plugins V - 业务化第 8 个官方插件 chain-anchor/anchor+verify 离线锚定构造·纯 Python keccak256 实现/移植 AgentCardAnchor.sol/授权锚定者·不可变首写+双校验/8 个官方插件承载真实业务 - gsn-core 0.3.30) ← 当前
+│                                 └── v3.3.0 (Business Plugins V - 业务化第 8 个官方插件 chain-anchor/anchor+verify 离线锚定构造·纯 Python keccak256 实现/移植 AgentCardAnchor.sol/授权锚定者·不可变首写+双校验/8 个官方插件承载真实业务 - gsn-core 0.3.30)
+│                                   └── v3.4.0 (Business Plugins VI - 业务化第 9 个官方插件 chain-bridge/跨链信誉桥接·验证者管理+record 幂等/冲突+法定人数+四维中位数定稿/移植 ReputationRegistry.sol/修复 GAP §9.4/9 个官方插件全部业务化 - gsn-core 0.3.40) ← 当前
 ```
 
 ## 大版本详情
@@ -539,6 +540,29 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.4.0 - 业务化 chain-bridge：跨链信誉桥接与中位数共识（gsn-core 0.3.40）
+
+**中版本（新插件功能，不改内核）**：把第 9 个、也是最后一个官方插件从通用 exec 承载
+业务化为随插件承载真实算法，离线移植自 `contracts/src/ReputationRegistry.sol`
+（`PoCVSettlement.sol` 是独立任务结算、非 bridge 核心）。
+
+- **问题根因**：chain-bridge 的真实算法是 ReputationRegistry（链下信誉的链上锚定）。
+  插件若没有真实验证者管理/记录/定稿方法，就违反「没有调用点的修复不算修复」。
+- **bridge entry**（`plugin/official/mod.rs` 新增 `BRIDGE_ENTRY`、接入
+  `official_entry_source`），内嵌纯 Python keccak256：
+  - `add_verifier`/`remove_verifier`：仅 owner（`onlyOwner`），非空/不重复/上限 32，
+    修复 GAP §9.4（此前 onlyVerifier 可无限铸验证者）；
+  - `record`：验证者才可提交，四维 0–10000 bps，重复相同=幂等、不同=冲突；
+  - `finalize`：法定人数 `verifier_count/2+1`，四维各取**中位数**（插入排序）定稿；
+  - `get_latest`：未知 DID 返回全零快照（不报错）；另有 `submission_count`。
+- **原型验证**：`bridge_proto.py` 经 `test_bridge.py` 全量 PASS（约 28 断言）；首跑 2 个
+  失败根因是测试脚本自身状态传递 bug（v1 后未 carry），修复后通过，插件无问题。
+- **诚实边界**：离线不做 RPC、不读 `block.timestamp`，不声称真实跨链；`finalizedAt`
+  由调用方传入；epoch key 用字符串组合，验证者用 DID 而非 address。
+- **验证**：全量 **563 passed / 0 failed**（基线 560 + 3 个隔离测试）；clippy 零警告；
+  fmt 已应用；no-panics 0 sites；unsafe-containment 通过（未新增 unsafe）。
+- **里程碑：9 个官方插件全部业务化。**
 
 ### v3.3.0 - 业务化 chain-anchor：离线锚定构造与双校验 anchor/verify（gsn-core 0.3.30）
 

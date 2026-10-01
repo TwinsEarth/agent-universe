@@ -1348,6 +1348,46 @@ fn handle_plugin_api(
                 ),
             }
         }
+        // GET /plugins/blacklist：黑名单查询（取证/生命周期管理）。
+        // 必须在通用 `("GET", [id])` 详情路由之前，否则会被当作 id="blacklist"。
+        ("GET", ["blacklist"]) => {
+            let entries: Vec<serde_json::Value> = host
+                .blacklist()
+                .entries()
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "plugin_name": e.plugin_name,
+                        "module_sha256": e.module_sha256,
+                        "reason": e.reason.as_str(),
+                        "blacklisted_at": e.blacklisted_at,
+                        "evidence": e.evidence,
+                        "appeal": e.appeal.as_ref().map(|a| serde_json::json!({
+                            "note": a.note,
+                            "filed_at": a.filed_at,
+                            "replacement_module_sha256": a.replacement_module_sha256,
+                        })),
+                    })
+                })
+                .collect();
+            (200, serde_json::json!({ "blacklist": entries }))
+        }
+        // POST /plugins/trust：信任第三方发布者（body: {"publisher_key":"hex"}）。
+        // 补齐 T3 安装前置：默认信任库为空（fail-closed），运维需显式信任。
+        ("POST", ["trust"]) => {
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).unwrap_or_else(|_| serde_json::json!({}));
+            match parsed.get("publisher_key").and_then(|x| x.as_str()) {
+                Some(key) => {
+                    host.trust_publisher(key);
+                    (200, serde_json::json!({ "trusted": key }))
+                }
+                None => (
+                    400,
+                    serde_json::json!({ "error": "缺少 publisher_key（Ed25519 公钥 hex）" }),
+                ),
+            }
+        }
         // GET /plugins/{id}：单个插件详情。
         ("GET", [id]) => match host.route_table().get(*id).cloned() {
             Some(state) => {
@@ -1402,6 +1442,38 @@ fn handle_plugin_api(
                 Err(e) => (
                     400,
                     serde_json::json!({ "error": format!("清单解析失败: {e}") }),
+                ),
+            }
+        }
+        // POST /plugins/{id}/stop：暂停（热插拔中间态：保留注册，不卸载）。
+        ("POST", [id, "stop"]) => match host.stop(id) {
+            Ok(()) => (200, serde_json::json!({ "stopped": *id })),
+            Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+        },
+        // POST /plugins/{id}/start：恢复（把暂停的插件重新置为 Running）。
+        ("POST", [id, "start"]) => match host.start(id) {
+            Ok(()) => (200, serde_json::json!({ "started": *id })),
+            Err(e) => (400, serde_json::json!({ "error": e.to_string() })),
+        },
+        // POST /plugins/{id}/unblock：黑名单解封（body: {"new_module_sha256":"hex"}）。
+        // 唯一解封路径：新版本模块摘要必须不同于被拉黑的旧摘要（通过完整审核）。
+        ("POST", [id, "unblock"]) => {
+            let parsed: serde_json::Value =
+                serde_json::from_str(body).unwrap_or_else(|_| serde_json::json!({}));
+            match parsed.get("new_module_sha256").and_then(|x| x.as_str()) {
+                Some(new_digest) => {
+                    if host.blacklist_mut().unblock_with_new_module(id, new_digest) {
+                        (200, serde_json::json!({ "unblocked": *id }))
+                    } else {
+                        (
+                            400,
+                            serde_json::json!({ "error": "解封失败：未找到条目，或新模块摘要与被拉黑旧摘要相同（需发布新版本并通过完整审核）" }),
+                        )
+                    }
+                }
+                None => (
+                    400,
+                    serde_json::json!({ "error": "缺少 new_module_sha256（修复后新版本的模块摘要）" }),
                 ),
             }
         }
@@ -2073,7 +2145,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod http_security_tests {
-    use super::{compute_cors, rest_authorize};
+    use super::{compute_cors, handle_plugin_api, rest_authorize};
 
     // 环境变量是进程全局的；把所有依赖环境变量的断言放进单个测试函数
     // 串行执行，避免与其它测试并行运行时相互污染。
@@ -2133,5 +2205,101 @@ mod http_security_tests {
                 None => std::env::remove_var(k),
             }
         }
+    }
+
+    // ── v3.4.2 全局审核：补齐 handle_plugin_api 生命周期/信任/黑名单接线 ──
+    use crate::plugin::blacklist::{BlacklistEntry, BlacklistReason};
+    use crate::plugin::PluginHost;
+
+    #[test]
+    fn plugin_api_stop_start_routes_reachable() {
+        let mut host = PluginHost::new("3.4.2", None);
+        host.boot_system().expect("boot system plugins");
+        let idp = "/api/v1/plugins/com.twinsearth.sys.identity";
+
+        // 初始 Running
+        let (st, body) = handle_plugin_api("GET", idp, "", &mut host);
+        assert_eq!(st, 200);
+        assert_eq!(body["state"], "Running");
+
+        // POST stop → Stopped（暂停，不卸载）
+        let (st, body) = handle_plugin_api("POST", &format!("{idp}/stop"), "", &mut host);
+        assert_eq!(st, 200, "stop 应可达: {body}");
+        let (_, body) = handle_plugin_api("GET", idp, "", &mut host);
+        assert_eq!(body["state"], "Stopped");
+
+        // POST start → Running（恢复）
+        let (st, body) = handle_plugin_api("POST", &format!("{idp}/start"), "", &mut host);
+        assert_eq!(st, 200, "start 应可达: {body}");
+        let (_, body) = handle_plugin_api("GET", idp, "", &mut host);
+        assert_eq!(body["state"], "Running");
+    }
+
+    #[test]
+    fn plugin_api_trust_route_fail_closed() {
+        let mut host = PluginHost::new("3.4.2", None);
+
+        // 缺 publisher_key → 400
+        let (st, _) = handle_plugin_api("POST", "/api/v1/plugins/trust", "{}", &mut host);
+        assert_eq!(st, 400);
+
+        // 提供 key → 200（信任第三方，补齐 T3 安装前置）
+        let (st, body) = handle_plugin_api(
+            "POST",
+            "/api/v1/plugins/trust",
+            r#"{"publisher_key":"abcd1234"}"#,
+            &mut host,
+        );
+        assert_eq!(st, 200, "trust 应可达: {body}");
+        assert_eq!(body["trusted"], "abcd1234");
+    }
+
+    #[test]
+    fn plugin_api_blacklist_query_and_unblock() {
+        let mut host = PluginHost::new("3.4.2", None);
+        let bad = "com.twinsearth.third-party.bad";
+        host.blacklist_mut().add(BlacklistEntry {
+            plugin_name: bad.to_string(),
+            module_sha256: Some("old-digest".to_string()),
+            reason: BlacklistReason::Malware,
+            blacklisted_at: 0,
+            evidence: "test evidence".to_string(),
+            appeal: None,
+        });
+
+        // GET blacklist → 1 条
+        let (st, body) = handle_plugin_api("GET", "/api/v1/plugins/blacklist", "", &mut host);
+        assert_eq!(st, 200);
+        assert_eq!(body["blacklist"].as_array().unwrap().len(), 1);
+        assert_eq!(body["blacklist"][0]["plugin_name"], bad);
+
+        // 用相同摘要解封 → 400（必须发布新版本，摘要须不同）
+        let (st, _) = handle_plugin_api(
+            "POST",
+            "/api/v1/plugins/com.twinsearth.third-party.bad/unblock",
+            r#"{"new_module_sha256":"old-digest"}"#,
+            &mut host,
+        );
+        assert_eq!(st, 400);
+
+        // 缺 new_module_sha256 → 400
+        let (st, _) = handle_plugin_api(
+            "POST",
+            "/api/v1/plugins/com.twinsearth.third-party.bad/unblock",
+            "{}",
+            &mut host,
+        );
+        assert_eq!(st, 400);
+
+        // 用不同摘要解封 → 200，黑名单清空
+        let (st, body) = handle_plugin_api(
+            "POST",
+            "/api/v1/plugins/com.twinsearth.third-party.bad/unblock",
+            r#"{"new_module_sha256":"new-digest"}"#,
+            &mut host,
+        );
+        assert_eq!(st, 200, "unblock 应可达: {body}");
+        let (_, body) = handle_plugin_api("GET", "/api/v1/plugins/blacklist", "", &mut host);
+        assert_eq!(body["blacklist"].as_array().unwrap().len(), 0);
     }
 }

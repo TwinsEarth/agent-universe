@@ -2,6 +2,25 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.4.2] - 2026-10-01
+
+### 小版本：全局审核版本 —— 补齐插件生命周期/信任/黑名单接线 + 架构合规关卡
+
+- **审计**：重新审视 v3.0.0 大版本及其下全部中/小版本，判定是否彻底贯彻「一切插件化」。
+  完整报告见 `docs/AUDIT-v3.4.2-plugin-architecture.md`。结论：内核与插件层已彻底贯彻（10 项）。
+- **A 类 patch 级 gap 修复（4 项，均在 `handle_plugin_api`）**：
+  - G1：新增 `POST /plugins/{id}/stop`、`/start`（暂停/恢复但不卸载的热插拔中间态）；
+  - G2：新增 `POST /plugins/trust`（信任第三方发布者，补齐 T3 安装前置）；
+  - G3：新增 `GET /plugins/blacklist`（黑名单查询）、`POST /plugins/{id}/unblock`（解封）；
+  - G4：entry_source 合规关卡升级为自动遍历 `official_ids()`（未来漏配 entry 即失败）。
+- **新增 4 个回归测试**（修复前会失败）：stop/start 可达、trust fail-closed、
+  blacklist 查询与解封、9 entry 自动遍历。
+- **认证**：新增 POST 管理路由均在 `rest_authorize` 之后，受 fail-closed 保护；
+  GET blacklist 只读放行。
+- **B 类架构性 gap（v4.0.0 major 路线，不在 patch 实施）**：主数据面接管、插件主动通信、
+  系统插件完整接线。
+- 验证：cargo test 全量 **0 failed**；clippy 零警告；fmt 通过；no-panics/unsafe/version 关卡通过。
+
 ## [v3.4.0] - 2026-10-01
 
 ### 中版本：业务化第 9 个官方插件 chain-bridge（跨链信誉桥接，9/9 全业务化）

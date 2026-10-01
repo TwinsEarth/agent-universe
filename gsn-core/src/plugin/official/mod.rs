@@ -890,17 +890,18 @@ mod tests {
 
     #[test]
     fn entry_source_for_business_plugins() {
-        // 已承载真实业务：v3.1.0 reputation/match；v3.2.0 settle/scheduler/card；
-        // v3.2.2 swarm-emergence；v3.2.3 agent-skill；v3.3.0 chain-anchor；
-        // v3.4.0 chain-bridge（9/9 全部业务化）。
-        assert!(official_entry_source(OFF_ECONOMY_REPUTATION).is_some());
-        assert!(official_entry_source(OFF_MARKET_MATCH).is_some());
-        assert!(official_entry_source(OFF_MARKET_SETTLE).is_some());
-        assert!(official_entry_source(OFF_SCHEDULER_TASK).is_some());
-        assert!(official_entry_source(OFF_AGENT_CARD).is_some());
-        assert!(official_entry_source(OFF_SWARM_EMERGENCE).is_some());
-        assert!(official_entry_source(OFF_AGENT_SKILL).is_some());
-        assert!(official_entry_source(OFF_CHAIN_ANCHOR).is_some());
-        assert!(official_entry_source(OFF_CHAIN_BRIDGE).is_some());
+        // 架构合规关卡（v3.4.2 全局审核）：每个官方插件必须承载真实业务 entry。
+        // 自动遍历 official_ids()，而非逐个硬编码——未来新增官方插件若漏配 entry
+        // （或 official_entry_source 漏写 match 臂），本测试立即失败。
+        let ids = official_ids();
+        assert_eq!(ids.len(), 9, "官方插件数量应为 9（9/9 业务化）");
+        for id in ids {
+            let src = official_entry_source(id);
+            assert!(src.is_some(), "官方插件 {id} 缺少业务 entry source");
+            let s = src.unwrap();
+            assert_eq!(s.language, "python");
+            assert!(!s.filename.is_empty(), "{id} entry 文件名缺失");
+            assert!(!s.source.is_empty(), "{id} entry 源码为空");
+        }
     }
 }

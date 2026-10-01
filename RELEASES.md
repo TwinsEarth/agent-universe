@@ -82,7 +82,8 @@ v1.0.0 (Genesis)
 │                             └── v3.2.2 (Business Plugins III - 业务化第 6 个官方插件 swarm-emergence/detect 群体智能涌现检测·吞吐量增长 collaboration+延迟下降 load_balancing/移植 swarm emergence.rs/6 个官方插件承载真实业务 - gsn-core 0.3.22)
 │                               └── v3.2.3 (Business Plugins IV - 业务化第 7 个官方插件 agent-skill/discover 按技能标签精确匹配发现智能体·技能反向索引/移植 marketplace discover_by_skill/chain-anchor·chain-bridge 单体无独立算法不编造·7 个官方插件承载真实业务 - gsn-core 0.3.23)
 │                                 └── v3.3.0 (Business Plugins V - 业务化第 8 个官方插件 chain-anchor/anchor+verify 离线锚定构造·纯 Python keccak256 实现/移植 AgentCardAnchor.sol/授权锚定者·不可变首写+双校验/8 个官方插件承载真实业务 - gsn-core 0.3.30)
-│                                   └── v3.4.0 (Business Plugins VI - 业务化第 9 个官方插件 chain-bridge/跨链信誉桥接·验证者管理+record 幂等/冲突+法定人数+四维中位数定稿/移植 ReputationRegistry.sol/修复 GAP §9.4/9 个官方插件全部业务化 - gsn-core 0.3.40) ← 当前
+│                                   └── v3.4.0 (Business Plugins VI - 业务化第 9 个官方插件 chain-bridge/跨链信誉桥接·验证者管理+record 幂等/冲突+法定人数+四维中位数定稿/移植 ReputationRegistry.sol/修复 GAP §9.4/9 个官方插件全部业务化 - gsn-core 0.3.40)
+│                                     └── v3.4.2 (Global Audit - 全局审核版本/补齐插件生命周期 stop/start+trust+blacklist 查询/unblock 接线+entry 架构合规关卡/A 类 G1-G4 修复/B 类主数据面接管标注 v4.0.0 - gsn-core 0.3.42) ← 当前
 ```
 
 ## 大版本详情
@@ -540,6 +541,28 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.4.2 - 全局审核版本：补齐插件生命周期/信任/黑名单接线 + 架构合规关卡（gsn-core 0.3.42）
+
+**小版本（patch，只改接线、不改架构、不影响其他插件）**：重新审视 v3.0.0 大版本及其下
+全部中/小版本，判定是否彻底贯彻「一切插件化」。完整报告见
+[docs/AUDIT-v3.4.2-plugin-architecture.md](docs/AUDIT-v3.4.2-plugin-architecture.md)。
+
+- **审计结论**：内核与插件层已彻底贯彻（10 项）：内核五子系统完整、五级分类前缀判定、
+  仲裁四重校验真实、能力矩阵真实、隔离运行时诚实、能力声明按平台、invoke_entry 防注入、
+  黑名单生命周期、热更新/热插拔/热兼容、9 官方插件全业务化。
+- **A 类 patch 级 gap 修复（4 项，均在 `handle_plugin_api`）**：
+  - G1：新增 `POST /plugins/{id}/stop`、`/start`（暂停/恢复但不卸载）；
+  - G2：新增 `POST /plugins/trust`（信任第三方发布者，补齐 T3 安装前置）；
+  - G3：新增 `GET /plugins/blacklist`（查询）、`POST /plugins/{id}/unblock`（解封）；
+  - G4：entry_source 合规关卡升级为自动遍历 `official_ids()`（未来漏配 entry 即失败）。
+- **认证**：新增 POST 管理路由均在 `rest_authorize` 之后，受 fail-closed 保护；
+  GET blacklist 只读放行。`GET /plugins/blacklist` 置于通用 `[id]` 详情路由之前。
+- **新增 4 个回归测试**（修复前会失败）：stop/start 可达、trust fail-closed、
+  blacklist 查询与解封、9 entry 自动遍历。
+- **B 类架构性 gap（v4.0.0 major 路线）**：主数据面接管（B1）、插件主动通信（B2）、
+  系统插件完整接线（B3）。
+- **验证**：全量 cargo test 0 failed；clippy 零警告；fmt 通过；no-panics/unsafe/version 关卡通过。
 
 ### v3.4.0 - 业务化 chain-bridge：跨链信誉桥接与中位数共识（gsn-core 0.3.40）
 

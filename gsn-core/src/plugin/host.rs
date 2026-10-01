@@ -339,12 +339,40 @@ impl PluginHost {
     }
 
     /// 调用插件方法。
+    ///
+    /// B2：调用后若插件主动产生了消息（outbox），由宿主代表插件逐条投递 PMB
+    /// （宿主仍是唯一投递点，保持七道检查；插件本身不持有 PMB 投递能力）。
     pub fn call(&mut self, id: &str, method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
-        let inst = self
-            .instances
-            .get_mut(id)
-            .ok_or_else(|| PluginError::NotFound(id.to_string()))?;
-        inst.call(method, payload)
+        // 先在实例借用内完成方法调用并取走 outbox。
+        let (bytes, outbox) = {
+            let inst = self
+                .instances
+                .get_mut(id)
+                .ok_or_else(|| PluginError::NotFound(id.to_string()))?;
+            let bytes = inst.call(method, payload)?;
+            let outbox = inst.drain_outbox()?;
+            (bytes, outbox)
+        };
+        // 再代表插件逐条投递。
+        for m in outbox {
+            match m.kind.as_str() {
+                "send" => {
+                    if let Some(target) = m.target.as_deref() {
+                        self.send_to(id, target, &m.capability, m.payload)?;
+                    }
+                }
+                "publish" => self.publish(id, &m.capability, m.payload)?,
+                other => return Err(PluginError::Runtime(format!("outbox 未知 kind: {other}"))),
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// 测试专用：替换已注册实例（保留 registry/route/能力令牌），用于注入
+    /// 带预设 outbox 的 stub 实例。
+    #[cfg(test)]
+    fn replace_instance(&mut self, id: &str, inst: Box<dyn PluginInstance>) {
+        self.instances.insert(id.to_string(), inst);
     }
 
     /// 代表插件 `source` 构造、签名并投递一条消息（插件间通信的唯一入口）。
@@ -452,6 +480,27 @@ mod tests {
     use super::*;
     use crate::identity::Keypair;
     use crate::plugin::official;
+    use crate::plugin::runtime::OutboxMessage;
+
+    /// B2 测试：产生预设 outbox 的 stub 实例（不真正跑子进程）。
+    struct StubOutboxInstance {
+        outbox: Vec<OutboxMessage>,
+    }
+
+    impl PluginInstance for StubOutboxInstance {
+        fn call(&mut self, _method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
+            Ok(b"{}".to_vec())
+        }
+        fn stop(&mut self) -> PluginResult<()> {
+            Ok(())
+        }
+        fn is_alive(&mut self) -> bool {
+            true
+        }
+        fn drain_outbox(&mut self) -> PluginResult<Vec<OutboxMessage>> {
+            Ok(std::mem::take(&mut self.outbox))
+        }
+    }
 
     /// 构造一个开发者签名的官方插件清单（不带官方副签）。
     fn signed_official(id: &str, dev: &Keypair) -> PluginManifest {
@@ -677,6 +726,77 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_millis(200))
                 .unwrap();
             assert_eq!(got.payload["event"], "ping");
+        }
+    }
+
+    // ── B2（v3.5.0）：host.call 把插件 outbox 经 PMB 投递 ─────────────
+    #[test]
+    fn call_delivers_plugin_send_outbox_over_pmb() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        // 真实 install 建立 registry/route/能力令牌（RUNNING）。
+        host.install(signed_official(source, &dev)).unwrap();
+        // 目标收件箱。
+        let rx = host.open_inbox("bridge-peer-a").unwrap();
+        // 替换为带预设 outbox 的 stub（模拟插件在 entry 内调 host.send_to）。
+        host.replace_instance(
+            source,
+            Box::new(StubOutboxInstance {
+                outbox: vec![OutboxMessage {
+                    kind: "send".to_string(),
+                    target: Some("bridge-peer-a".to_string()),
+                    capability: "plugin:message:send".to_string(),
+                    payload: serde_json::json!({"n": 9}),
+                }],
+            }),
+        );
+        let out = host.call(source, "notify", br#"{"n":9}"#).unwrap();
+        assert_eq!(out, b"{}");
+        // 目标收到由宿主代表插件投递的已认证消息。
+        let got = rx
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .unwrap();
+        assert_eq!(got.source, source);
+        match &got.target {
+            Target::Plugin(t) => assert_eq!(t, "bridge-peer-a"),
+            other => panic!("unexpected target {other:?}"),
+        }
+        assert_eq!(got.payload["n"], 9);
+        assert!(!got.signature.is_empty());
+        assert!(!got.nonce.is_empty());
+    }
+
+    #[test]
+    fn call_delivers_plugin_publish_outbox_over_pmb() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(source, &dev)).unwrap();
+        let rx1 = host.open_inbox("sub-a").unwrap();
+        let rx2 = host.open_inbox("sub-b").unwrap();
+        host.replace_instance(
+            source,
+            Box::new(StubOutboxInstance {
+                outbox: vec![OutboxMessage {
+                    kind: "publish".to_string(),
+                    target: None,
+                    capability: "plugin:message:send".to_string(),
+                    payload: serde_json::json!({"done": true}),
+                }],
+            }),
+        );
+        host.call(source, "notify", b"{}").unwrap();
+        for rx in [rx1, rx2] {
+            let got = rx
+                .recv_timeout(std::time::Duration::from_millis(300))
+                .unwrap();
+            assert_eq!(got.source, source);
+            assert_eq!(got.payload["done"], true);
         }
     }
 

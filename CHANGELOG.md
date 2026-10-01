@@ -2,6 +2,26 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.0] - 2026-10-01
+
+### 中版本：B2 —— 进程插件 outbox 主动通信（新能力）
+
+- **B2 核心**：一次性、无状态的进程插件（Python）可在一次 entry 调用内主动发起 PMB 通信。
+  spawn 时向隔离工作目录注入 `host.py`，`import host` 后调 `host.send_to(target, payload)` /
+  `host.publish(payload)`；这些函数**不开网络**，只把消息逐行写入 `outbox.jsonl`。
+- **宿主回收 + 代投**：`invoke_entry` 子进程 exit 0 后 `collect_outbox()` 读回解析为
+  `OutboxMessage` 并清空文件；`PluginHost::call` 取出 outbox 后**代表插件**逐条经 PMB
+  `send_to`/`publish` 投递，最后返回方法返回值。
+- **安全边界**：插件只「声明意图」，宿主仍是唯一 PMB 投递点，完整经过七道检查
+  （大小/发送方状态/能力令牌/能力已授予/速率/HMAC 签名/nonce 防重放）+ 目标 RUNNING 校验。
+- **capability 规范**：`host.py` 默认用基础能力 `plugin:message:send`；不支持裸 `"message"`/
+  `"event"`（端到端测试首次跑出 `Bus("未知能力名 message")`，修正后通过）。
+- **spawn_concrete 重构**：trait `spawn` 装箱独立 inherent `spawn_concrete`（返回具体
+  `ProcessInstance`，便于测试访问沙箱字段）。
+- **新增 5 个回归测试**（修复前会失败）；全量 582 passed / 0 failed（v3.4.5 基线 577 + 5）。
+- B2 属 minor、与 v3.5.0 版本语义一致，无偏离；B1/B2/B3 至此全部闭环。
+  详见 `releases/v3.5.0.md`。
+
 ## [v3.4.5] - 2026-10-01
 
 ### 小版本：A 类接地修复 + B1 主数据面编排接管 + B3 系统插件接线

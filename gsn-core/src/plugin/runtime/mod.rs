@@ -223,6 +223,28 @@ pub trait PluginInstance: Send {
 
     /// 是否仍存活。
     fn is_alive(&mut self) -> bool;
+
+    /// 取走插件自上次调用以来**主动产生**的消息（outbox，B2）。
+    ///
+    /// 默认返回空：不支持主动通信的后端（native/wasm）无需实现。宿主在每次
+    /// `call` 后取出并代表插件投递 PMB（宿主仍是唯一投递点，保持七道检查）。
+    fn drain_outbox(&mut self) -> PluginResult<Vec<OutboxMessage>> {
+        let _ = self;
+        Ok(Vec::new())
+    }
+}
+
+/// 插件主动产生、经 outbox 上送的消息（B2 进程插件主动通信）。
+#[derive(Debug, Clone)]
+pub struct OutboxMessage {
+    /// `"send"`（点对点）或 `"publish"`（广播）。
+    pub kind: String,
+    /// `send` 时的目标插件 id。
+    pub target: Option<String>,
+    /// 声明的能力（投递 PMB 时作为 capability）。
+    pub capability: String,
+    /// 业务负载。
+    pub payload: serde_json::Value,
 }
 
 /// 插件实例的元信息（注册到总线时使用）。

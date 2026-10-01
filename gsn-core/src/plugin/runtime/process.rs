@@ -19,13 +19,39 @@
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::manifest::PluginManifest;
 use crate::plugin::official::official_entry_source;
-use crate::plugin::runtime::{PluginInstance, PluginRuntime, RuntimeCapabilities};
+use crate::plugin::runtime::{OutboxMessage, PluginInstance, PluginRuntime, RuntimeCapabilities};
 use crate::sandbox::capability::{Capability as SbCap, Waiver};
 use crate::sandbox::config::{ResourceLimits, SandboxConfig};
 use crate::sandbox::runtime::process::ProcessSandbox;
 use crate::sandbox::runtime::CodeLanguage;
 use crate::sandbox::Sandbox;
 use std::path::PathBuf;
+
+/// B2：注入给进程插件的宿主通信模块（`host.py`）。
+///
+/// 插件 entry 内 `import host` 后调用 `host.send_to(target, payload, capability=...)` 或
+/// `host.publish(payload, capability=...)`；这些函数**不开网络**，只把消息逐行写入
+/// 隔离工作目录的 `outbox.jsonl`。宿主在 invoke_entry 返回后读回并代表插件投递 PMB
+/// （宿主仍是唯一投递点，保持七道检查）。
+pub const HOST_PY: &str = r#"import json, os
+
+_OUTBOX = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outbox.jsonl")
+
+
+def _emit(rec):
+    with open(_OUTBOX, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def send_to(target, payload, capability="plugin:message:send"):
+    """向单个目标插件发送一条消息（由宿主经 PMB 投递）。"""
+    _emit({"kind": "send", "target": target, "capability": capability, "payload": payload})
+
+
+def publish(payload, capability="plugin:message:send"):
+    """向所有运行中插件广播一条事件（由宿主经 PMB 投递）。"""
+    _emit({"kind": "publish", "capability": capability, "payload": payload})
+"#;
 
 /// 独立进程运行时。
 pub struct ProcessRuntime {
@@ -70,6 +96,8 @@ pub struct ProcessInstance {
     alive: bool,
     /// 是否携带 entry 业务模块（v3.1.0 起）。
     has_entry: bool,
+    /// 插件主动产生、待宿主投递的消息（B2 outbox）。
+    outbox: Vec<OutboxMessage>,
 }
 
 impl ProcessInstance {
@@ -116,6 +144,8 @@ sys.stdout.write(json.dumps(out))
             .run_code(CodeLanguage::Python, &bootstrap)
             .map_err(|e| PluginError::Runtime(format!("entry 调用失败: {e}")))?;
         if result.exit_code == 0 {
+            // B2：读回插件主动产生的消息（若有）。
+            self.collect_outbox()?;
             Ok(result.stdout.into_bytes())
         } else {
             let tail = result.stderr.trim().lines().last().unwrap_or("");
@@ -124,6 +154,52 @@ sys.stdout.write(json.dumps(out))
                 result.exit_code
             )))
         }
+    }
+
+    /// 读取工作目录 outbox，解析为 [`OutboxMessage`] 并清空文件（B2）。
+    fn collect_outbox(&mut self) -> PluginResult<()> {
+        let text = match self.sb.read_file("outbox.jsonl") {
+            Ok(t) => t,
+            // 插件未写 outbox（未主动通信）：正常。
+            Err(_) => return Ok(()),
+        };
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let v: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| PluginError::Runtime(format!("outbox 行非法: {e}")))?;
+            let kind = v
+                .get("kind")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            if kind != "send" && kind != "publish" {
+                return Err(PluginError::Runtime(format!("outbox 未知 kind: {kind}")));
+            }
+            let target = v.get("target").and_then(|x| x.as_str()).map(String::from);
+            if kind == "send" && target.is_none() {
+                return Err(PluginError::Runtime("send 消息缺少 target".into()));
+            }
+            let capability = v
+                .get("capability")
+                .and_then(|x| x.as_str())
+                .unwrap_or("plugin:message:send")
+                .to_string();
+            let payload = v.get("payload").cloned().unwrap_or(serde_json::Value::Null);
+            self.outbox.push(OutboxMessage {
+                kind,
+                target,
+                capability,
+                payload,
+            });
+        }
+        // 清空 outbox 文件，避免下次重复读。
+        self.sb
+            .write_file("outbox.jsonl", "")
+            .map_err(|e| PluginError::Runtime(format!("outbox 清空失败: {e}")))?;
+        Ok(())
     }
 }
 
@@ -176,6 +252,10 @@ impl PluginInstance for ProcessInstance {
     fn is_alive(&mut self) -> bool {
         self.alive
     }
+
+    fn drain_outbox(&mut self) -> PluginResult<Vec<OutboxMessage>> {
+        Ok(std::mem::take(&mut self.outbox))
+    }
 }
 
 impl PluginRuntime for ProcessRuntime {
@@ -200,6 +280,14 @@ impl PluginRuntime for ProcessRuntime {
     }
 
     fn spawn(&mut self, manifest: &PluginManifest) -> PluginResult<Box<dyn PluginInstance>> {
+        Ok(Box::new(self.spawn_concrete(manifest)?))
+    }
+}
+
+impl ProcessRuntime {
+    /// 构造并返回具体类型的 [`ProcessInstance`]（暴露给测试，便于在覆盖 entry
+    /// 时访问沙箱字段；trait `spawn` 以本方法为基础装箱）。
+    pub fn spawn_concrete(&mut self, manifest: &PluginManifest) -> PluginResult<ProcessInstance> {
         // supports 已在 trait 默认实现中按级别边界 + waiver 校验；这里显式再调用一次。
         self.supports(manifest)?;
 
@@ -240,18 +328,22 @@ impl PluginRuntime for ProcessRuntime {
         let has_entry = if let Some(es) = entry.as_ref() {
             sb.write_file(es.filename, es.source)
                 .map_err(|e| PluginError::Runtime(format!("entry 写入失败: {e}")))?;
+            // B2：注入宿主通信模块 host.py（供插件主动 send_to/publish）。
+            sb.write_file("host.py", HOST_PY)
+                .map_err(|e| PluginError::Runtime(format!("host.py 写入失败: {e}")))?;
             true
         } else {
             false
         };
 
         self.instances.push(id.clone());
-        Ok(Box::new(ProcessInstance {
+        Ok(ProcessInstance {
             id,
             sb,
             alive: true,
             has_entry,
-        }))
+            outbox: Vec::new(),
+        })
     }
 }
 
@@ -445,6 +537,70 @@ mod tests {
         let mut inst = rt.spawn(&m).unwrap();
         // 非合法标识符 → 引导注入在生成前被拒绝。
         assert!(inst.call("a;import os", b"{}").is_err());
+        inst.stop().unwrap();
+    }
+
+    // ── B2（v3.5.0）：进程插件主动通信 outbox ──────────────────────────
+    #[test]
+    fn outbox_captures_plugin_initiated_messages() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // 覆盖 entry 为一个主动发消息的插件（entry 内 import host）。
+        let custom = r#"
+import host
+def notify(data):
+    host.send_to("bridge-peer-a", {"n": data["n"]}, capability="plugin:message:send")
+    host.publish({"done": True}, capability="plugin:message:send")
+    return {"ok": True}
+"#;
+        inst.sb.write_file("plugin.py", custom).unwrap();
+        let out = inst.call("notify", br#"{"n":7}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["ok"], true);
+        // 宿主侧 collect_outbox 已在 call 内解析出两条消息。
+        let msgs = inst.drain_outbox().unwrap();
+        assert_eq!(msgs.len(), 2, "expected 2 outbox messages");
+        assert_eq!(msgs[0].kind, "send");
+        assert_eq!(msgs[0].target.as_deref(), Some("bridge-peer-a"));
+        assert_eq!(msgs[0].capability, "plugin:message:send");
+        assert_eq!(msgs[0].payload["n"], 7);
+        assert_eq!(msgs[1].kind, "publish");
+        assert_eq!(msgs[1].capability, "plugin:message:send");
+        assert_eq!(msgs[1].payload["done"], true);
+        // drain 后再次取应为空（不重复）。
+        assert!(inst.drain_outbox().unwrap().is_empty());
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn outbox_empty_when_plugin_does_not_communicate() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_ECONOMY_REPUTATION);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // status 不主动发消息 → outbox 为空。
+        let _ = inst.call("status", b"{}").unwrap();
+        assert!(inst.drain_outbox().unwrap().is_empty());
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn outbox_send_without_target_rejected() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // 直接写一条缺 target 的 send 记录到 outbox。
+        inst.sb
+            .write_file(
+                "outbox.jsonl",
+                "{\"kind\":\"send\",\"capability\":\"message\",\"payload\":{}}\n",
+            )
+            .unwrap();
+        // 下一次 entry 调用收集 outbox 时必须报错。
+        inst.sb
+            .write_file("plugin.py", "def ping(data):\n    return {}\n")
+            .unwrap();
+        assert!(inst.call("ping", b"{}").is_err());
         inst.stop().unwrap();
     }
 

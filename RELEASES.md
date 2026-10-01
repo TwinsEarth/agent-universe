@@ -84,7 +84,8 @@ v1.0.0 (Genesis)
 │                                 └── v3.3.0 (Business Plugins V - 业务化第 8 个官方插件 chain-anchor/anchor+verify 离线锚定构造·纯 Python keccak256 实现/移植 AgentCardAnchor.sol/授权锚定者·不可变首写+双校验/8 个官方插件承载真实业务 - gsn-core 0.3.30)
 │                                   └── v3.4.0 (Business Plugins VI - 业务化第 9 个官方插件 chain-bridge/跨链信誉桥接·验证者管理+record 幂等/冲突+法定人数+四维中位数定稿/移植 ReputationRegistry.sol/修复 GAP §9.4/9 个官方插件全部业务化 - gsn-core 0.3.40)
 │                                     └── v3.4.2 (Global Audit - 全局审核版本/补齐插件生命周期 stop/start+trust+blacklist 查询/unblock 接线+entry 架构合规关卡/A 类 G1-G4 修复/B 类主数据面接管标注 v4.0.0 - gsn-core 0.3.42)
-│                                           └── v3.4.5 (A-Class Grounding + B1 Orchestrator - A 类接地核实更正 §7 全部过时+patch 接线/B1 主数据面编排接管 register/match/settle 三 gated 闸门/B3 系统插件接线 net/storage/chain 真实方法+SystemHandles/block_on_net/版本语义偏离说明 - gsn-core 0.3.45) ← 当前
+│                                           └── v3.4.5 (A-Class Grounding + B1 Orchestrator - A 类接地核实更正 §7 全部过时+patch 接线/B1 主数据面编排接管 register/match/settle 三 gated 闸门/B3 系统插件接线 net/storage/chain 真实方法+SystemHandles/block_on_net/版本语义偏离说明 - gsn-core 0.3.45)
+│                                                 └── v3.5.0 (B2 Plugin Outbox - 进程插件主动通信新能力/注入 host.py 写 outbox.jsonl 不开网络/宿主回收经 PMB 代表投递/七道检查保持·宿主唯一投递点/capability 用 plugin:message:send/spawn_concrete 重构/B1/B2/B3 全部闭环 - gsn-core 0.3.50) ← 当前
 ```
 
 ## 大版本详情
@@ -542,6 +543,26 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.5.0 - B2 进程插件 outbox 主动通信（gsn-core 0.3.50）
+
+**中版本（minor，新能力）**：让一次性、无状态的进程插件（Python）在一次 entry 调用内主动发起
+PMB 通信。B2 是 v3.4.2 审计 §4 判定为 minor 的 gap；至此 B1/B2/B3 全部闭环。
+完整说明见 [releases/v3.5.0.md](releases/v3.5.0.md)。
+
+- **outbox 机制**：spawn 带 entry 的进程插件时注入 `host.py`，`import host` 后调
+  `host.send_to(target, payload)` / `host.publish(payload)`；这两个函数不开网络，只把消息逐行
+  写到隔离工作目录 `outbox.jsonl`（kind/target/capability/payload）。
+- **宿主回收 + 代投**：`invoke_entry` exit 0 后 `collect_outbox()` 读回解析为 `OutboxMessage`
+  并清空文件；`PluginHost::call` 取出 outbox 后代表插件逐条经 PMB `send_to`/`publish` 投递。
+- **安全边界**：插件只声明意图，宿主仍是唯一 PMB 投递点，完整经过七道检查
+  （大小/发送方状态/能力令牌/能力已授予/速率/HMAC 签名/nonce 防重放）+ 目标 RUNNING 校验。
+- **capability 规范**：默认用基础能力 `plugin:message:send`；裸 `"message"`/`"event"` 会被
+  总线以「未知能力名」拒绝（端到端测试首次跑出后修正）。
+- **spawn_concrete 重构**：trait `spawn` 装箱独立 inherent `spawn_concrete`（返回具体
+  `ProcessInstance`，便于测试访问沙箱字段）。
+- **新增 5 个回归测试**（修复前会失败）；全量 582 passed / 0 failed（577 + 5），
+  clippy/fmt/三静态关卡全过；B2 属 minor、与 v3.5.0 语义一致，无偏离。
 
 ### v3.4.5 - A 类接地修复 + B1 主数据面编排接管 + B3 系统插件接线（gsn-core 0.3.45）
 

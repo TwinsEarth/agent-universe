@@ -81,12 +81,16 @@ fn process_waivers() -> BTreeMap<String, String> {
                 .to_string(),
         );
     }
-    // Windows：Job Object 强制墙钟超时，不强制 CPU 时间。
+    // Windows：Job Object 强制墙钟超时与内存/进程数，不强制 CPU 时间/句柄数。
     if cfg!(windows) {
         w.insert(
             "cpu_limit".to_string(),
             "official trusted code; Windows Job Object enforces wall-clock, not CPU time"
                 .to_string(),
+        );
+        w.insert(
+            "open_file_limit".to_string(),
+            "official trusted code; Windows Job Object has no handle-count limit".to_string(),
         );
     }
     w

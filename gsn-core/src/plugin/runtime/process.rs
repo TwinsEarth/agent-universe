@@ -51,9 +51,10 @@ fn map_waiver(key: &str, why: &str) -> Option<Waiver> {
         "network_egress" => SbCap::NetworkDenyAll,
         "fs_deny_host" => SbCap::FilesystemConfinement,
         "disk_quota" => SbCap::DiskQuota,
-        // 平台特异的资源边界（macOS 内存、Windows CPU 时间）。
+        // 平台特异的资源边界（macOS 内存、Windows CPU 时间/句柄数）。
         "memory_limit" => SbCap::MemoryLimit,
         "cpu_limit" => SbCap::CpuLimit,
+        "open_file_limit" => SbCap::OpenFileLimit,
         _ => return None,
     };
     Some(Waiver {
@@ -276,6 +277,10 @@ mod tests {
             w.insert(
                 "cpu_limit".to_string(),
                 "test: Job Object enforces wall-clock, not CPU time".to_string(),
+            );
+            w.insert(
+                "open_file_limit".to_string(),
+                "test: Job Object has no handle-count limit".to_string(),
             );
         }
         PluginManifest {

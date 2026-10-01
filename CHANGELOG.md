@@ -24,8 +24,17 @@
     返回 `valid` 与逐项 `errors`。
 - **测试**：新增 7 个 process runtime 隔离测试（settle 2：一致通过 / 篡改余额必败；
   router 3：选低延迟 / 空候选 / 零容量；card 2：合法通过 / 非法≥4 项错误）。
-- 验证：cargo test `--lib` **258 passed / 0 failed**（v3.1.0 基线 251 + 新增 7）；
-  clippy 零警告；`node test/regression.js` 14 通过；真实 daemon 端到端通过
+- **热更新/并行竞态修复（治本）**：macOS CI 上 `load_legacy_abi_2_plugin` 偶发失败
+  （`entry 写入失败: No such file or directory`）。根因是工作目录名只含插件 id，
+  并行测试与 `hot_reload` 双缓冲的同 id 多实例共享目录，一个 `destroy` 会删掉另一个
+  实例正在写 entry 的目录；附带发现 `hot_reload` 后旧 `destroy` 会删除新版本仍在用的
+  目录（生产 bug，原测试只断言版本、从不调用新版本 entry 故未发现）。修复：新增全局
+  `SANDBOX_SEQ`，工作目录改为 `au-sandbox-{id}-{pid}-{seq}` 使每个实例独占；
+  `fork_from` 改为从 `sb.work_dir()` 取实际目录。新增回归测试
+  `hot_reload_new_entry_remains_callable`（旧代码稳定失败 5/5）。
+- 验证：cargo test `--lib` **259 passed / 0 failed**（连跑 8 轮稳定）；cargo test 全量
+  **543 passed / 0 failed**（连跑 3 轮）；clippy 零警告；`node test/regression.js` 14 通过；
+  真实 daemon 端到端通过
   （host_version=0.3.20，13 插件全 Running；audit 抓到 A expected=100/actual=150 →
   passed=false；route 选 b、estimated_cost=50、零容量→no_capacity；validate 合法→valid）。
 - 边界：9 个官方插件中 5 个已承载真实业务，其余 4 个（agent-skill/swarm-emergence/

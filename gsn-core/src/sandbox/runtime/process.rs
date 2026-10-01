@@ -3,7 +3,7 @@
 //! 在云电脑 / 普通 PC 上真实可跑，不依赖 Docker/KVM。
 //!
 //! 隔离手段：
-//! 1. 每个沙箱独立临时目录（`base/au-sandbox-{id}`），作为唯一工作目录；
+//! 1. 每个沙箱独立临时目录（`base/au-sandbox-{id}-{pid}-{seq}`），作为唯一工作目录；
 //! 2. 子进程只在该目录内运行，文件操作经路径校验拒绝逃逸；
 //! 3. 子进程不继承宿主环境，仅注入 cfg.env 白名单；
 //! 4. 超时由 Rust 侧轮询后强杀（不依赖外部 timeout/gtimeout）+ `bash -c ulimit`（进程/句柄上限）；
@@ -22,6 +22,15 @@ use std::time::Instant;
 
 /// 单次执行 stdout/stderr 最大捕获字节数（v2.8.7，防父进程内存 DoS）
 const MAX_OUTPUT_BYTES: usize = 1_048_576; // 1 MiB
+
+/// 沙箱工作目录唯一序号（同进程内严格递增）。
+///
+/// 同一个插件 id 在以下情形会产生多个并存实例：并行测试、`hot_reload` 双缓冲
+/// （新旧版本短暂并存）。若目录名只含 id，它们会共享目录，一个 `destroy`
+/// （`remove_dir_all`）会删掉另一个实例正在写 entry / 调用的目录——这正是
+/// macOS CI `load_legacy` 偶发失败（`entry 写入失败: No such file or directory`）
+/// 与热更新后新版本目录被旧实例误删的根因。用 `{pid}-{seq}` 使每个实例独占目录。
+static SANDBOX_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// 进程级隔离沙箱
 pub struct ProcessSandbox {
@@ -287,7 +296,13 @@ impl super::super::Sandbox for ProcessSandbox {
         self.apply(LifecycleAction::Create)?;
 
         let base = cfg.work_dir_base.clone().unwrap_or_else(std::env::temp_dir);
-        let dir = base.join(format!("au-sandbox-{}", self.id));
+        let seq = SANDBOX_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = base.join(format!(
+            "au-sandbox-{}-{}-{}",
+            self.id,
+            std::process::id(),
+            seq
+        ));
         std::fs::create_dir_all(&dir).map_err(|e| SandboxError::Internal(e.to_string()))?;
         // 写入初始文件
         for (p, content) in &cfg.initial_files {

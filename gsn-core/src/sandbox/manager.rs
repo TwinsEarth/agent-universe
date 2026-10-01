@@ -334,7 +334,6 @@ impl SandboxManager {
         new_id: Option<String>,
     ) -> Result<String, SandboxError> {
         let new_id = new_id.unwrap_or_else(|| self.next_id());
-        let dest = self.base_dir.join(format!("au-sandbox-{}", new_id));
 
         // 解析源目录（活沙箱工作目录或 checkpoint）
         let src_dir: PathBuf = if let Some(m) = self.sandboxes.get(source) {
@@ -351,11 +350,16 @@ impl SandboxManager {
             }
         };
 
-        // 先 create 新沙箱（建立目录，不删内容），再从源复制合并，最后 start
+        // 先 create 新沙箱（建立目录，不删内容），再从 create 实际建立的 work_dir
+        // （目录名含唯一后缀，不再是固定的 au-sandbox-{id}）复制合并，最后 start。
         let mut sb = ProcessSandbox::new(&new_id);
         let mut cfg = self.default_cfg.clone();
         cfg.sandbox_id = new_id.clone();
         sb.create(&cfg)?;
+        let dest = sb
+            .work_dir()
+            .ok_or_else(|| SandboxError::Internal("created child has no work_dir".into()))?
+            .to_path_buf();
         copy_dir_recursive(&src_dir, &dest)?;
         sb.start()?;
         self.sandboxes.insert(

@@ -497,6 +497,36 @@ mod tests {
     }
 
     #[test]
+    fn hot_reload_new_entry_remains_callable() {
+        // 回归（v3.2.0）：hot_reload 双缓冲时，旧实例 destroy（remove_dir_all）
+        // 不得删除新版本仍在使用的工作目录。历史上新旧版本目录名只含插件 id、
+        // 共享同一目录，旧 destroy 会删掉新版本目录，热更新后新版本 entry 无法加载；
+        // 同 id 的并行测试之间也会因一个 destroy 删目录而相互打断。
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dev = Keypair::generate();
+        let id = official::OFF_MARKET_MATCH;
+        let n = SEQ.fetch_add(1, Ordering::SeqCst);
+        let data_dir =
+            std::env::temp_dir().join(format!("au-host-hr-{}-{}", std::process::id(), n));
+        std::fs::create_dir_all(&data_dir).unwrap();
+        let mut host = PluginHost::new("3.0.0", Some(data_dir.clone()));
+        host.boot_system().unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(id, &dev)).unwrap();
+        let mut new_m = official::official_manifest(id, "3.0.1");
+        new_m.sign_with(&dev).unwrap();
+        new_m.counter_sign_with(&dev).unwrap();
+        assert!(host.hot_reload(new_m).is_ok());
+        // 热更新后新版本 entry 必须仍可调用：空 bids → no_bids。
+        // 若目录被旧 destroy 删除，子进程 import plugin 失败 → 这里报错。
+        let out = host.call(id, "match", br#"{"bids":[]}"#).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v["reason"], "no_bids");
+        let _ = std::fs::remove_dir_all(&data_dir);
+    }
+
+    #[test]
     fn abi_compatibility_checks() {
         assert!(PluginHost::check_abi("1.0").is_ok());
         assert!(PluginHost::check_abi("2.5").is_ok());

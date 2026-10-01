@@ -486,7 +486,9 @@ fn safe_join(base: &Path, relative: &str) -> Result<PathBuf, SandboxError> {
     Ok(base.join(rel))
 }
 
-/// 简单 shell 引用（包单引号，内部单引号转义）
+/// 简单 shell 引用（包单引号，内部单引号转义）。
+/// 仅 Unix 的 bash 包装使用；Windows 直接 spawn 不套 shell，故不编译。
+#[cfg(not(target_os = "windows"))]
 fn shell_quote(s: &str) -> String {
     let escaped = s.replace('\'', "'\\''");
     format!("'{escaped}'")

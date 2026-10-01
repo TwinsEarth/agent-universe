@@ -2,6 +2,29 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.0.0] - 2026-10-01
+
+### 大版本：一切插件化架构重构（热更新/热插拔/热兼容、五级插件体系）
+
+- **插件内核**：新建 `gsn-core/src/plugin/`（17 文件）——注册中心 Registry、插件总线
+  Plugin Bus（PMB）、权限仲裁器 Arbiter、生命周期 Lifecycle、能力模型、黑名单 Blacklist、
+  清单 Manifest、宿主 PluginHost。
+- **五级插件体系**：系统（T0/Ring0，进程内）、官方（T1）、认证（T2，开发者+官方副签）、
+  第三方（T3，最小能力、默认禁网）、黑名单（Ring-1，禁止加载）；id 前缀即分类。
+- **热更新/热插拔/热兼容**：新版本预加载 + 总线原子切换 + 失败自动回滚（registry 专用
+  `replace` 路径）；任意时刻加载/卸载；ABI 主版本协商加载低版本插件。
+- **隔离**：T1/T2/T3 独立进程（复用 v2.9.1 已验证 ProcessSandbox + 能力闸门）；Windows
+  Job Object；无法强制且无 waiver 即 `PolicyNotEnforceable`。
+- **T0 系统插件真实运行**：identity（cast/resolve/fingerprint）、net/storage/chain（status
+  真实声明能力）。
+- **REST 外部 API**：`/api/v1/plugins` 列表/详情/安装/call/热更新/卸载；变更类走认证闸门。
+- **版本映射升级**：Rust crate 规则改为 `0.X.(Y*10+Z)`，3.0.0 → 0.3.0；修复 bump/check
+  脚本硬编码 major=2 导致 major 3 误映射。
+- 验证：cargo test 528 passed/0 failed；plugin:: 72 passed；编译零警告；静态关卡
+  （panic=0、unsafe 全有 SAFETY）；真实 daemon 端到端通过（含未认证 401）。
+- 边界：WASM 运行时为可选 feature、当前构建类型化拒绝（无 wasmtime）；9 个官方插件
+  清单/承载就位，业务逻辑迁移在后续中版本。
+
 ## [v2.9.2] - 2026-10-01
 
 ### CI 工程化：Windows 矩阵 + 静态关卡接入

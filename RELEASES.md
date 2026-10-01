@@ -74,7 +74,8 @@ v1.0.0 (Genesis)
                                                                                                                                                                           │     （v2.8.8 按用户指示跳过）
                                                                                                                                                                           ├── v2.9.0 (Workbench - 桌面工作台大版本：默认工作区/过程展示分级/后台任务/Office预览/模型提供商/终端/Subagent团队/插件管理 - 继续 Tauri 2)
                                                                                                                                                                           ├── v2.9.1 (Sandbox Capability - 沙箱能力声明闸门/默认不执行/trusted_local 显式 waiver/生产 panic 归零/快照持久化告警/cargo fmt 关卡)
-                                                                                                                                                                          └── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交) ← 当前
+                                                                                                                                                                          ├── v2.9.2 (CI Engineering - Windows 矩阵接入/静态关卡 static-gates 接入/panic 与 unsafe 机械检查/两脚本正式提交)
+│     └── v3.0.0 (Plugin Kernel - 一切插件化架构/插件内核/热更新·热插拔·热兼容/五级插件体系/进程隔离/T0系统插件/REST 插件 API - gsn-core 0.3.0) ← 当前
 ```
 
 ## 大版本详情
@@ -532,6 +533,31 @@ libp2p(TCP/Noise/Yamux/Kademlia/GossipSub) + rusqlite 持久化
 - **守卫/假测试诚实化**：NAT 守卫改为 `assert_eq!(nat_type, "Unknown")`；纠删码测试重写为丢 2 个数据片仅靠校验片重建；v235/v273 伪造委员 DID 改为公钥派生。
 - **毒化告警**：persist/沙箱/ffi 全部 `into_inner()` 恢复点加 eprintln 告警。
 - **验证**：全量 0 failed / 0 ignored，clippy 零警告；委员绑定落地后旧伪造 DID 立即 400（实证首次失败）。v2.8.8（§3.4 七模块）按用户指示跳过。
+
+### v3.0.0 - 一切插件化架构：插件内核 + 热更新/热插拔/热兼容（gsn-core 0.3.0）
+
+**大版本（架构重构）**：把系统从单体重构为「一切插件化」内核，从此开始支持热更新、
+热插拔、热兼容（兼容低版本、安全通信）。
+
+- **插件内核**：`gsn-core/src/plugin/`（17 文件）——注册中心 Registry、插件总线 Plugin Bus
+  （PMB，pub/sub + request/response、发送方校验、速率限制、3 次违规隔离）、权限仲裁器
+  Arbiter、生命周期 Lifecycle（状态机/合法边/终态）、能力模型、黑名单 Blacklist、
+  清单 Manifest、宿主 PluginHost。
+- **五级插件体系**：系统 T0（进程内，全能力，不可热插拔）/ 官方 T1 / 认证 T2（开发者+
+  官方副签）/ 第三方 T3（最小能力、默认禁网）/ 黑名单 Ring-1（禁止加载）；id 前缀即分类。
+- **热更新/热插拔/热兼容**：新版本预加载 + 总线原子切换 + 失败自动回滚（registry 专用
+  `replace` 路径）；任意时刻加载/卸载；ABI 主版本协商加载低版本。
+- **隔离**：T1/T2/T3 独立进程（复用 v2.9.1 ProcessSandbox + 能力闸门）；Windows Job Object；
+  无法强制且无 waiver 即 `PolicyNotEnforceable`。
+- **T0 系统插件真实运行**：identity（cast/resolve/fingerprint）、net/storage/chain（status
+  真实声明能力）。
+- **REST API**：`/api/v1/plugins` 列表/详情/安装/call/热更新/卸载；变更类走认证闸门。
+- **版本映射升级**：Rust crate 规则改为 `0.X.(Y*10+Z)`，3.0.0 → 0.3.0；修复 bump/check
+  脚本硬编码 major=2。
+- **验证**：cargo test 528 passed/0 failed；plugin:: 72 passed；编译零警告；静态关卡
+  panic=0、unsafe 全有 SAFETY；真实 daemon 端到端通过（含未认证 401）。
+- **边界**：WASM 运行时为可选 feature、当前构建类型化拒绝（无 wasmtime）；9 个官方插件
+  清单/承载就位，业务逻辑迁移在后续中版本。
 
 ### v2.9.2 - CI 工程化：Windows 矩阵 + 静态关卡（gsn-core 0.2.92）
 

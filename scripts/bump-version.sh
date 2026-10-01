@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # bump-version.sh — 一键把全仓版本声明点改到新版本
 # 用法: bash scripts/bump-version.sh 2.5.7
-# 规则: npm X.Y.Z  <->  Rust gsn-core 0.2.(Y*10+Z)
+# 规则: npm X.Y.Z  <->  Rust gsn-core 0.X.(Y*10+Z)
+#   例: 2.9.2 -> 0.2.92；3.0.0 -> 0.3.0；3.1.0 -> 0.3.10；3.2.1 -> 0.3.21
 # 配套清单: docs/version-checklist.md （新增版本点时务必同步更新本脚本与清单）
 set -euo pipefail
 
@@ -10,7 +11,7 @@ if [[ ! "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "用法: $0 X.Y.Z  (例如 $0 2.5.7)"; exit 1
 fi
 IFS='.' read -r X Y Z <<< "$NEW"
-RUST="0.2.$((Y*10+Z))"
+RUST="0.$X.$((Y*10+Z))"
 echo ">>> npm 版本: $NEW   Rust gsn-core 版本: $RUST"
 
 cd "$(dirname "$0")/.."
@@ -20,7 +21,7 @@ printf '%s\n' "$NEW" > VERSION
 
 # sed 默认是 BRE，+ 必须转义为 \+ 才是量词；\. 转义点。
 V="[0-9]\+\\.[0-9]\+\\.[0-9]\+"   # 匹配任意 X.Y.Z
-RV="0\\.2\\.[0-9]\+"              # 匹配任意 gsn-core 0.2.NN
+RV="0\\.[0-9]\\+\\.[0-9]\\+"              # 匹配任意 gsn-core 0.2.NN
 
 # ── A. npm / JS 包 ──
 for f in package.json js/package.json js/package-lock.json client/package.json client/package-lock.json desktop/package.json desktop/package-lock.json; do

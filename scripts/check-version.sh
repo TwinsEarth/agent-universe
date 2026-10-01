@@ -12,7 +12,7 @@ if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   echo "FAIL: VERSION 文件内容非法: '$VERSION'（应为 X.Y.Z）"; exit 2
 fi
 IFS='.' read -r X Y Z <<< "$VERSION"
-RUST="0.2.$((Y*10+Z))"
+RUST="0.$X.$((Y*10+Z))"
 
 fail=0
 
@@ -45,7 +45,7 @@ expect "aip/aip/__init__.py"        "$VERSION" "$(first_version aip-sdk-py/aip/_
 expect "client/src-tauri Cargo.toml"  "$VERSION" "$(first_version client/src-tauri/Cargo.toml '^version')"
 expect "desktop/src-tauri Cargo.toml" "$VERSION" "$(first_version desktop/src-tauri/Cargo.toml '^version')"
 
-# gsn-core Rust 线（0.2.NN）
+# gsn-core Rust 线（0.X.NN）
 expect "gsn-core/Cargo.toml"        "$RUST" "$(first_version gsn-core/Cargo.toml '^version')"
 
 # ci.yml 里 js-test 的 root re-export 版本断言（硬编码版本号，bump 必须改到，否则 js-test 红）

@@ -392,6 +392,7 @@ mod tests {
             stake: 100,
             reputation: 0.7,
             created_at: "2026-01-01".into(),
+            card_json: String::new(),
         }
     }
 

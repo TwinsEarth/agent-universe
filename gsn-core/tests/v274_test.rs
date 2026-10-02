@@ -118,6 +118,7 @@ fn test_restore_agents_from_store_visible() {
         stake: 10000,
         reputation: 0.87,
         created_at: "1700000000000".to_string(),
+        card_json: String::new(),
     }];
     market.restore_agents_from_store(stored);
 
@@ -130,4 +131,86 @@ fn test_restore_agents_from_store_visible() {
     assert!((card.reputation_score - 0.87).abs() < 1e-9);
     assert!(card.skills.contains(&"rust".to_string()));
     assert!(card.skills.contains(&"network".to_string()));
+}
+
+#[test]
+fn w05_agent_card_full_fields_survive_restart() {
+    use gsn_core::marketplace::{Currency, PricingModel};
+    let card_json = serde_json::json!({
+        "agent_id": "did:nau:w05-worker",
+        "version": "9.9.9-w05",
+        "name": "w05-worker",
+        "description": "full card",
+        "skills": ["rust", "wasm"],
+        "modalities": ["text", "image"],
+        "models": ["model-x"],
+        "endpoint": "https://example.invalid/w05",
+        "pricing": { "model": "PerCall", "price": 150, "currency": "Credit" },
+        "sla": { "latency_p95_ms": 1234, "availability": 0.99, "max_concurrency": 7 },
+        "owner": "did:nau:owner",
+        "stake": 0,
+        "reputation_score": 0.0,
+        "total_calls": 42,
+        "success_rate": 0.9,
+        "evidence_grade": "Verified",
+        "verified": true,
+        "created_at": 1700000000000u64,
+        "updated_at": 1700000001000u64
+    })
+    .to_string();
+    let stored = vec![StoredAgent {
+        agent_id: "did:nau:w05-worker".to_string(),
+        name: "w05-worker".to_string(),
+        skills: "rust,wasm".to_string(),
+        stake: 10000,
+        reputation: 0.87,
+        created_at: "1700000000000".to_string(),
+        card_json,
+    }];
+    let mut market = AgentMarket::new();
+    market.restore_agents_from_store(stored);
+    let card = market.get_agent("did:nau:w05-worker").expect("in memory");
+    assert_eq!(card.version, "9.9.9-w05");
+    assert_ne!(card.version, "0.0.0-restored");
+    assert_eq!(card.description, "full card");
+    assert_eq!(
+        card.modalities,
+        vec!["text".to_string(), "image".to_string()]
+    );
+    assert_eq!(card.models, vec!["model-x".to_string()]);
+    assert_eq!(card.endpoint, "https://example.invalid/w05");
+    assert_eq!(card.total_calls, 42);
+    assert!((card.success_rate - 0.9).abs() < 1e-9);
+    assert_eq!(card.pricing.model, PricingModel::PerCall);
+    assert_eq!(card.pricing.price.as_i64(), 150);
+    assert_eq!(card.pricing.currency, Currency::Credit);
+    assert_eq!(card.sla.latency_p95_ms, 1234);
+    assert_eq!(card.sla.max_concurrency, 7);
+    assert!(card.verified);
+    assert_eq!(card.stake.as_i64(), 10000);
+    assert!((card.reputation_score - 0.87).abs() < 1e-9);
+    assert!(card.skills.contains(&"rust".to_string()));
+    assert!(card.skills.contains(&"wasm".to_string()));
+}
+
+#[test]
+fn w05_agent_card_corrupt_json_falls_back() {
+    let stored = vec![StoredAgent {
+        agent_id: "did:nau:w05-bad".to_string(),
+        name: "w05-bad".to_string(),
+        skills: "go".to_string(),
+        stake: 5,
+        reputation: 0.5,
+        created_at: "1700000000000".to_string(),
+        card_json: "{ not valid json".to_string(),
+    }];
+    let mut market = AgentMarket::new();
+    market.restore_agents_from_store(stored);
+    let card = market
+        .get_agent("did:nau:w05-bad")
+        .expect("fallback in memory");
+    assert_eq!(card.version, "0.0.0-restored");
+    assert_eq!(card.stake.as_i64(), 5);
+    assert!((card.reputation_score - 0.5).abs() < 1e-9);
+    assert!(card.skills.contains(&"go".to_string()));
 }

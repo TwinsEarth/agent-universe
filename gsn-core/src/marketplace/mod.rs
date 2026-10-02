@@ -1045,6 +1045,8 @@ impl AgentMarket {
                 stake: c.stake.as_i64(),
                 reputation: c.reputation_score,
                 created_at: c.created_at.to_string(),
+                // v3.5.0 W-05: full card persisted
+                card_json: serde_json::to_string(c).unwrap_or_default(),
             })
             .collect()
     }
@@ -1107,10 +1109,27 @@ impl AgentMarket {
                 .map(|x| x.trim().to_string())
                 .filter(|x| !x.is_empty())
                 .collect();
-            let card = MarketAgentCard {
+            // v3.5.0 W-05: prefer full card_json; economic identity (stake/reputation)
+            // still comes from flat columns / dedicated tables. Empty/corrupt -> fallback.
+            let from_card = if !a.card_json.trim().is_empty() {
+                match serde_json::from_str::<MarketAgentCard>(&a.card_json) {
+                    Ok(mut c) => {
+                        c.stake = Money::new(a.stake);
+                        c.reputation_score = a.reputation;
+                        Some(c)
+                    }
+                    Err(e) => {
+                        eprintln!("Agent {} card JSON corrupt, flat rebuild: {e}", a.agent_id);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let card = from_card.unwrap_or_else(|| MarketAgentCard {
                 agent_id: a.agent_id.clone(),
                 version: "0.0.0-restored".to_string(),
-                name: a.name,
+                name: a.name.clone(),
                 description: String::new(),
                 skills: skills.clone(),
                 modalities: vec![],
@@ -1131,14 +1150,15 @@ impl AgentMarket {
                 verified: false,
                 created_at: a.created_at.parse().unwrap_or(0),
                 updated_at: a.created_at.parse().unwrap_or(0),
-            };
-            for sk in &skills {
+            });
+            for sk in &card.skills {
                 self.skill_index
                     .entry(sk.clone())
                     .or_default()
                     .push(card.agent_id.clone());
             }
-            self.agents.insert(a.agent_id, card);
+            let id = card.agent_id.clone();
+            self.agents.insert(id, card);
         }
     }
 

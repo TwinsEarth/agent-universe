@@ -1885,6 +1885,9 @@ async fn run_api_server(
                         stake,
                         reputation: 0.0,
                         created_at: chrono::Utc::now().to_rfc3339(),
+                        // v3.5.0 W-05: keep full registration card (version/pricing/...).
+                        // Authoritative economic snapshot still overwritten by market actor.
+                        card_json: body.clone(),
                     };
                     let _ = store.upsert_agent(&stored);
                     let _ = peer_cmd_tx

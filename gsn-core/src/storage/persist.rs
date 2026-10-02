@@ -29,6 +29,8 @@ pub struct StoredAgent {
     pub stake: i64,
     pub reputation: f64,
     pub created_at: String,
+    /// v3.5.0 W-05: full card JSON (version/pricing/modalities/...)
+    pub card_json: String,
 }
 
 /// 持久化的 Task 记录
@@ -95,7 +97,8 @@ impl PersistentStore {
                 skills     TEXT NOT NULL DEFAULT '',
                 stake      INTEGER NOT NULL DEFAULT 0,
                 reputation REAL NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                card_json  TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS tasks (
@@ -169,6 +172,9 @@ impl PersistentStore {
         // v3.5.0（W-04）：tasks 补 spec_json 列（完整任务规格），幂等
         migrate_tasks_spec_json(&conn)?;
 
+        // v3.5.0 W-05: agents add card_json column (full card), idempotent
+        migrate_agents_card_json(&conn)?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -181,13 +187,14 @@ impl PersistentStore {
             e.into_inner()
         });
         conn.execute(
-            "INSERT INTO agents (agent_id, name, skills, stake, reputation, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO agents (agent_id, name, skills, stake, reputation, created_at, card_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(agent_id) DO UPDATE SET
                 name = excluded.name,
                 skills = excluded.skills,
                 stake = excluded.stake,
-                reputation = excluded.reputation",
+                reputation = excluded.reputation,
+                card_json = excluded.card_json",
             params![
                 agent.agent_id,
                 agent.name,
@@ -195,6 +202,7 @@ impl PersistentStore {
                 agent.stake,
                 agent.reputation,
                 agent.created_at,
+                agent.card_json,
             ],
         )?;
         Ok(())
@@ -206,8 +214,9 @@ impl PersistentStore {
             eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
             e.into_inner()
         });
-        let mut stmt = conn
-            .prepare("SELECT agent_id, name, skills, stake, reputation, created_at FROM agents")?;
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, name, skills, stake, reputation, created_at, card_json FROM agents",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredAgent {
                 agent_id: row.get(0)?,
@@ -216,6 +225,7 @@ impl PersistentStore {
                 stake: row.get(3)?,
                 reputation: row.get(4)?,
                 created_at: row.get(5)?,
+                card_json: row.get(6)?,
             })
         })?;
         let mut agents = Vec::new();
@@ -807,6 +817,26 @@ fn migrate_tasks_spec_json(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v3.5.0 W-05: old DBs add agents.card_json column, idempotent.
+fn migrate_agents_card_json(conn: &Connection) -> anyhow::Result<()> {
+    let has_col = {
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for c in cols {
+            if c? == "card_json" {
+                found = true;
+            }
+        }
+        found
+    };
+    if has_col {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE agents ADD COLUMN card_json TEXT NOT NULL DEFAULT '';")?;
+    Ok(())
+}
+
 /// 行映射：relay
 fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
     Ok(StoredRelay {
@@ -844,6 +874,7 @@ mod tests {
             stake: 100,
             reputation: 0.5,
             created_at: "10".into(),
+            card_json: String::new(),
         }
     }
 
@@ -879,6 +910,8 @@ mod tests {
         assert_eq!(agents[0].name, "A");
         assert_eq!(agents[0].skills, "a,b");
         assert_eq!(agents[0].stake, 100);
+        // v3.5.0 W-05: card_json present, default empty on migrated DB
+        assert_eq!(agents[0].card_json, "");
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].task_id, "t1");
         assert_eq!(tasks[0].state, "Open");

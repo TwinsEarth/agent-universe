@@ -2,6 +2,28 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.8] - 2026-10-02
+
+### 补丁：守护进程真实端到端吞吐/延迟基准 + 历史无测量性能小节诚实化（#76 / DOC-07）
+
+回应审计项 DOC-07（此前全文无守护进程吞吐/延迟基准，v2.1.8「性能指标」未经测量）。
+不含产品功能变更。
+
+- **新增可复现真实基准 `scripts/bench-e2e.mjs`**：拉起临时 data-dir 的 release
+  `gsn-daemon`，经真实 HTTP/1.1 回环跑「充值→发布托管→投标→匹配→验收→结算」闭环 N 轮，
+  记各阶段 avg/p50/p95/p99/max 与整轮吞吐；结束拉 `/api/v1/audit`、`/api/v1/conservation`，
+  审计不过或资金不守恒即退出码 2。方法学/口径/快照见 `docs/benchmarks/`。
+- **实测（gsn-core 0.3.58，Linux 云沙箱，n=200）**：**4.27 轮/秒**；publish 1.7 /
+  bid 4.8 / **match 109.2** / result 1.9 / **settle 116.3** ms；audit passed
+  （663 流水独立重放 expected=actual=12100）、conservation true。
+- **瓶颈诚实归因**：match/settle 约 110ms 来自 SQLite 默认 rollback journal +
+  `synchronous=FULL` 的逐提交 fsync（overlayfs 上约 100ms），与版本无关。本版刻意不改
+  WAL/NORMAL（涉及崩溃一致性权衡），登记后续候选。
+- **历史文档诚实化**：`releases/v2.1.8.md`「性能指标」改名「性能指标（设计目标，非实测）」
+  并加勘误指针；那三项数字发布时未测量，原文保留备查。
+- 口径：单机回环/单连接/顺序，含真实落盘与 HTTP，不含跨网 libp2p/LLM/并发/TLS，
+  不可外推为公网多节点 TPS。详见 `releases/v3.5.8.md`。
+
 ## [v3.5.7] - 2026-10-02
 
 ### 补丁：MSRV 诚实化——显式声明并实测最低工具链 1.88.0（#75 / W-01）

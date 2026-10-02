@@ -1,6 +1,46 @@
 # Changelog
 
-"本文件记录 Agent Universe 各版本的重要变更。
+本文件记录 Agent Universe 各版本的重要变更。
+
+## [v3.5.5] - 2026-10-02
+
+### 补丁：gsn CLI 鉴权/金额/仲裁契约加固（W-03）与 daemon 版本开关（W-02）（仅缺陷修复）
+
+本补丁修复 `gsn` 命令行客户端在 daemon 开启鉴权后不可用、以及会把非法金额静默存成 0 的问题，
+并补齐 `gsn-daemon --version`。均为 CLI 侧缺陷，不改变服务端资金/共识语义。
+
+- **W-03-a（写操作无法带鉴权）**：`gsn market` 使用手写 HTTP/1.1 客户端，从不发送
+  `Authorization` 头。daemon 配置 `REST_BEARER_TOKEN` 后，所有写操作（deposit/publish/bid/
+  settle/arbitrate 等）一律 401。本版新增 `--token <t>` 选项与 `GSN_API_TOKEN` 环境变量，
+  非空时注入 `Authorization: Bearer <t>`；未配置则不发该头（与无鉴权 daemon 向后兼容）。
+- **W-03-b（非法金额静默存 0）**：`deposit` 旧实现 `p[1].parse::<i64>().unwrap_or(0)`，
+  `gsn market deposit acct lots` 会向服务端发送 `{"amount":0}` 并返回成功（GAP §8.1 在 CLI 侧
+  的复现）。本版新增 `parse_amount`：只接受十进制整数（可选 `+`/`-`），拒绝浮点、指数、
+  千分位、空串、非数字与 i64 溢出，非法即以退出码 2 终止，**绝不发出会被理解成 0 的请求**。
+- **W-03-c（arbitrate 契约漂移）**：旧 CLI 发送 `slash_amount`（f64）且仲裁者身份缺失。
+  v2.8.5 起服务端**已忽略请求体 `slash_amount`、罚没由服务端规则 `slash_amount_by_rule` 决定**，
+  并强制必填非空 `arbitrator`。本版把命令签名改为
+  `arbitrate <dispute_id> <guilty> <arbitrator>`，请求体只含 `{"guilty","arbitrator"}`，
+  不再发送会被忽略的 f64 罚没值；缺仲裁者直接报错。
+- **W-02（daemon 无版本开关）**：`gsn-daemon` / `gsn daemon` 新增 `--version`/`-V`，
+  输出 gsn-core 权威 crate 版本后退出，与 `gsn --version` 一致（参数在共享的
+  `node::parse_daemon_args` 处理，两个入口同时生效）。
+
+**回归测试（在旧实现上必失败）**：`gsn` 二进制内新增 4 个纯解析单测：
+`amount_accepts_plain_integers_and_signs`（接受整数/符号）、
+`amount_rejects_non_integer_instead_of_defaulting_to_zero`（拒绝 lots/10.5/1e3/1,000/空串/
+i64 溢出——旧实现会把它们静默变 0）、`deposit_body_carries_parsed_integer_and_rejects_bad_amount`、
+`arbitrate_requires_arbitrator_and_omits_client_slash_amount`（缺仲裁者报错、请求体不含
+slash_amount——旧实现无法表达该契约）。
+
+**验证**：`cargo +1.98.1 test --workspace -j2` **625 passed / 0 failed / 0 ignored**
+（基线 621，净增 4）；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；
+`cargo fmt --all --check` 干净；`cargo metadata --locked` 通过；no-panics/unsafe 静态关卡全绿；
+版本 npm 3.5.5 ↔ gsn-core 0.3.55 一致。
+
+**诚实边界**：本版只改 CLI 与参数解析；Bearer 校验仍在服务端既有 fail-closed 逻辑
+（配了 token 必校验、未配默认拒绝写操作，除非显式 `REST_ALLOW_UNAUTHENTICATED=1`），
+CLI 无法也不应对服务端鉴权策略做任何旁路。
 
 ## [v3.5.4] - 2026-10-02
 

@@ -8,7 +8,8 @@
 //!   gsn identity                        生成本地身份（Ed25519）
 //!
 //! market 子命令通过 --api <url> 或 GSN_API 环境变量连接 daemon，
-//! 默认 http://127.0.0.1:4002。
+//! 默认 http://127.0.0.1:4002。写操作在 daemon 配置了 REST_BEARER_TOKEN 时
+//! 需要鉴权：用 --token <t> 或 GSN_API_TOKEN 提供 Bearer 令牌（不配置则不发该头）。
 
 use gsn_core::identity::Keypair;
 use gsn_core::node;
@@ -26,7 +27,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.5.4");
+            println!("agent-universe v3.5.5");
             0
         }
         "help" | "--help" | "-h" => {
@@ -145,17 +146,25 @@ async fn run_market(args: &[String]) -> i32 {
         return if args.is_empty() { 1 } else { 0 };
     }
 
-    // 解析 --api
+    // 解析 --api / --token（token 默认取 GSN_API_TOKEN；不设置则不发 Authorization）
     let mut api = std::env::var("GSN_API").unwrap_or_else(|_| "http://127.0.0.1:4002".to_string());
+    let mut token = std::env::var("GSN_API_TOKEN").ok();
     let mut positional: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--api" && i + 1 < args.len() {
-            api = args[i + 1].clone();
-            i += 2;
-        } else {
-            positional.push(args[i].clone());
-            i += 1;
+        match args[i].as_str() {
+            "--api" if i + 1 < args.len() => {
+                api = args[i + 1].clone();
+                i += 2;
+            }
+            "--token" if i + 1 < args.len() => {
+                token = Some(args[i + 1].clone());
+                i += 2;
+            }
+            _ => {
+                positional.push(args[i].clone());
+                i += 1;
+            }
         }
     }
 
@@ -165,15 +174,16 @@ async fn run_market(args: &[String]) -> i32 {
     // 构造 (method, path, body) 请求
     let request = build_market_request(op, params);
     let (method, path, body) = match request {
-        Some(r) => r,
-        None => {
-            eprintln!("错误: 无法构造 market {op} 请求（参数不足）");
+        Ok(r) => r,
+        Err(msg) => {
+            eprintln!("错误: {msg}");
             print_market_help();
-            return 1;
+            return 2;
         }
     };
 
-    match http_call(&api, &method, &path, &body).await {
+    let token = token.filter(|t| !t.trim().is_empty());
+    match http_call(&api, &method, &path, &body, token.as_deref()).await {
         Ok((status, text)) => {
             // 美化输出 JSON
             match serde_json::from_str::<serde_json::Value>(&text) {
@@ -197,7 +207,7 @@ async fn run_market(args: &[String]) -> i32 {
 fn print_market_help() {
     println!("用法: gsn market <操作> [参数] [--api url]\n");
     println!("操作:");
-    println!("  deposit <account> <amount>          充值");
+    println!("  deposit <account> <amount>          充值（amount 必须为整数，非法即报错）");
     println!("  balance <account>                   查询余额");
     println!("  register <card.json|inline-json>    注册智能体");
     println!("  get <agent_id>                      查询智能体");
@@ -211,11 +221,12 @@ fn print_market_help() {
     println!("  verify <task_id> @verify.json      认证式 QA 验证（v2.5.9）");
     println!("  settle <task_id>                    结算任务");
     println!("  dispute <dispute.json>              发起争议");
-    println!("  arbitrate <dispute_id> <guilty> [slash]  仲裁");
+    println!("  arbitrate <dispute_id> <guilty> <arbitrator>  仲裁（罚没由服务端规则决定）");
     println!("  conservation                        守恒检查");
     println!("  audit                               独立审计（v2.5.9）");
     println!("  leaderboard [limit]                 信誉排行榜");
     println!("  stats                               市场统计");
+    println!("\n鉴权：daemon 配置 REST_BEARER_TOKEN 时，写操作需 --token <t> 或 GSN_API_TOKEN。");
 }
 
 /// 读取参数：若是 @file 则读文件内容，否则原样（JSON 字符串）
@@ -230,44 +241,68 @@ fn read_json_arg(arg: &str) -> String {
     }
 }
 
-/// 构造市场请求三元组
+/// 严格解析金额：只接受十进制整数（可选前导 +/-），拒绝浮点、空串、"lots" 等。
+/// 与服务端 deposit 契约一致（body amount 必须是 JSON 整数 i64），非法即报错，
+/// 绝不静默退化为 0（v3.5.5 / GAP §8.1：旧实现 `parse::<i64>().unwrap_or(0)`
+/// 会把 `market_deposit {"amount":"lots"}` 存成 0 却返回成功）。
+fn parse_amount(raw: &str) -> Result<i64, String> {
+    let s = raw.trim();
+    if s.is_empty() {
+        return Err("amount 为空".into());
+    }
+    // 拒绝任何含小数点/指数/非数字的写法，避免 f64 截断。
+    let digits = s
+        .strip_prefix('+')
+        .or_else(|| s.strip_prefix('-'))
+        .unwrap_or(s);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(format!("amount 必须是十进制整数，收到非法值 {raw:?}"));
+    }
+    s.parse::<i64>()
+        .map_err(|_| format!("amount 超出 i64 范围: {raw:?}"))
+}
+
+/// 构造市场请求三元组。返回 Err(可读原因) 表示参数不合法（调用方以退出码 2 终止，
+/// 绝不发出会被服务端误解为 0 的请求）。
 #[allow(clippy::type_complexity)]
-fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, String)> {
+fn build_market_request(op: &str, p: &[String]) -> Result<(String, String, String), String> {
     use serde_json::json;
     match op {
-        "deposit" if p.len() >= 2 => Some((
-            "POST".into(),
-            format!("/api/v1/accounts/{}/deposit", p[0]),
-            // v2.8.6（GAP §4.1）：金额只接受整数，parse 为 i64。
-            json!({"amount": p[1].parse::<i64>().unwrap_or(0)}).to_string(),
-        )),
-        "balance" if !p.is_empty() => Some((
+        "deposit" if p.len() >= 2 => {
+            let amount = parse_amount(&p[1])?;
+            Ok((
+                "POST".into(),
+                format!("/api/v1/accounts/{}/deposit", p[0]),
+                json!({"amount": amount}).to_string(),
+            ))
+        }
+        "balance" if !p.is_empty() => Ok((
             "GET".into(),
             format!("/api/v1/accounts/{}/balance", p[0]),
             String::new(),
         )),
         "register" if !p.is_empty() => {
-            Some(("POST".into(), "/api/v1/agents".into(), read_json_arg(&p[0])))
+            Ok(("POST".into(), "/api/v1/agents".into(), read_json_arg(&p[0])))
         }
-        "get" if !p.is_empty() => Some((
+        "get" if !p.is_empty() => Ok((
             "GET".into(),
             format!("/api/v1/agents/{}", p[0]),
             String::new(),
         )),
-        "discover" if !p.is_empty() => Some((
+        "discover" if !p.is_empty() => Ok((
             "GET".into(),
             format!("/api/v1/agents?skill={}", p[0]),
             String::new(),
         )),
-        "search" if !p.is_empty() => Some((
+        "search" if !p.is_empty() => Ok((
             "GET".into(),
             format!("/api/v1/agents?q={}", p[0]),
             String::new(),
         )),
         "publish" if !p.is_empty() => {
-            Some(("POST".into(), "/api/v1/tasks".into(), read_json_arg(&p[0])))
+            Ok(("POST".into(), "/api/v1/tasks".into(), read_json_arg(&p[0])))
         }
-        "task" if !p.is_empty() => Some((
+        "task" if !p.is_empty() => Ok((
             "GET".into(),
             format!("/api/v1/tasks/{}", p[0]),
             String::new(),
@@ -278,9 +313,11 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             let task_id = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("task_id").and_then(|x| x.as_str()).map(String::from));
-            task_id.map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/bids", tid), body))
+            task_id
+                .map(|tid| ("POST".into(), format!("/api/v1/tasks/{}/bids", tid), body))
+                .ok_or_else(|| "bid JSON 缺少字符串字段 task_id".to_string())
         }
-        "match" if !p.is_empty() => Some((
+        "match" if !p.is_empty() => Ok((
             "POST".into(),
             format!("/api/v1/tasks/{}/match", p[0]),
             String::new(),
@@ -290,58 +327,64 @@ fn build_market_request(op: &str, p: &[String]) -> Option<(String, String, Strin
             let task_id = serde_json::from_str::<serde_json::Value>(&body)
                 .ok()
                 .and_then(|v| v.get("task_id").and_then(|x| x.as_str()).map(String::from));
-            task_id.map(|tid| {
-                (
-                    "POST".into(),
-                    format!("/api/v1/tasks/{}/results", tid),
-                    body,
-                )
-            })
+            task_id
+                .map(|tid| {
+                    (
+                        "POST".into(),
+                        format!("/api/v1/tasks/{}/results", tid),
+                        body,
+                    )
+                })
+                .ok_or_else(|| "result JSON 缺少字符串字段 task_id".to_string())
         }
         "verify" if !p.is_empty() => {
             // v2.5.9 认证式：载荷文件含 members（固定委员集）与 signed_votes（签名票）
             if p.len() < 2 {
-                eprintln!("verify 需要认证载荷：verify <task_id> @verify.json");
-                std::process::exit(1);
+                return Err("verify 需要认证载荷：verify <task_id> @verify.json".into());
             }
             let body = read_json_arg(&p[1]);
-            Some((
+            Ok((
                 "POST".into(),
                 format!("/api/v1/tasks/{}/verify", p[0]),
                 body,
             ))
         }
-        "settle" if !p.is_empty() => Some((
+        "settle" if !p.is_empty() => Ok((
             "POST".into(),
             format!("/api/v1/tasks/{}/settle", p[0]),
             String::new(),
         )),
-        "dispute" if !p.is_empty() => Some((
+        "dispute" if !p.is_empty() => Ok((
             "POST".into(),
             "/api/v1/disputes".into(),
             read_json_arg(&p[0]),
         )),
-        "arbitrate" if p.len() >= 2 => {
-            let guilty = p[1] == "guilty" || p[1] == "true";
-            let slash = p.get(2).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
-            Some((
+        "arbitrate" if p.len() >= 3 => {
+            // v3.5.5：罚没金额由服务端规则决定（服务端已不读 slash_amount），
+            // CLI 不再发送会被忽略的 f64 slash；改为必填非空仲裁者身份（服务端强制）。
+            let guilty = matches!(p[1].as_str(), "guilty" | "true");
+            let arbitrator = p[2].trim();
+            if arbitrator.is_empty() {
+                return Err("arbitrate 需要非空仲裁者身份 <arbitrator>".into());
+            }
+            Ok((
                 "POST".into(),
                 format!("/api/v1/disputes/{}/arbitrate", p[0]),
-                json!({"guilty": guilty, "slash_amount": slash}).to_string(),
+                json!({"guilty": guilty, "arbitrator": arbitrator}).to_string(),
             ))
         }
-        "conservation" => Some(("GET".into(), "/api/v1/conservation".into(), String::new())),
-        "audit" => Some(("GET".into(), "/api/v1/audit".into(), String::new())),
+        "conservation" => Ok(("GET".into(), "/api/v1/conservation".into(), String::new())),
+        "audit" => Ok(("GET".into(), "/api/v1/audit".into(), String::new())),
         "leaderboard" => {
             let limit = p.first().map(|s| s.as_str()).unwrap_or("10");
-            Some((
+            Ok((
                 "GET".into(),
                 format!("/api/v1/leaderboard?limit={}", limit),
                 String::new(),
             ))
         }
-        "stats" => Some(("GET".into(), "/api/v1/stats".into(), String::new())),
-        _ => None,
+        "stats" => Ok(("GET".into(), "/api/v1/stats".into(), String::new())),
+        _ => Err(format!("无法构造 market {op} 请求（操作未知或参数不足）")),
     }
 }
 
@@ -352,6 +395,7 @@ async fn http_call(
     method: &str,
     path: &str,
     body: &str,
+    token: Option<&str>,
 ) -> anyhow::Result<(u16, String)> {
     let base = base.trim_end_matches('/');
     // 解析 host:port
@@ -365,8 +409,14 @@ async fn http_call(
     let mut stream = tokio::net::TcpStream::connect((host, port)).await?;
     stream.set_nodelay(true)?;
 
+    // v3.5.5（W-03）：daemon 配置 REST_BEARER_TOKEN 时，写操作需要 Bearer。
+    // 旧手写 HTTP 客户端从不发 Authorization，导致配了 token 后所有写操作 401。
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
     let req = format!(
-        "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "{} {} HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\n{auth}Content-Length: {}\r\nConnection: close\r\n\r\n{}",
         method, path, host_port, body.len(), body
     );
     tokio::io::AsyncWriteExt::write_all(&mut stream, req.as_bytes()).await?;
@@ -385,4 +435,62 @@ async fn http_call(
         .unwrap_or(0);
     let body_start = text.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
     Ok((status, text[body_start..].to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_market_request, parse_amount};
+
+    #[test]
+    fn amount_accepts_plain_integers_and_signs() {
+        assert_eq!(parse_amount("100").unwrap(), 100);
+        assert_eq!(parse_amount("  42 ").unwrap(), 42);
+        assert_eq!(parse_amount("+7").unwrap(), 7);
+        assert_eq!(parse_amount("-5").unwrap(), -5);
+        assert_eq!(parse_amount("0").unwrap(), 0);
+    }
+
+    #[test]
+    fn amount_rejects_non_integer_instead_of_defaulting_to_zero() {
+        // 旧实现 parse::<i64>().unwrap_or(0) 会把这些静默存成 0。
+        for bad in [
+            "lots", "", "  ", "10.5", "10.0", "1e3", "0x10", "1,000", "nan",
+        ] {
+            assert!(parse_amount(bad).is_err(), "应拒绝 {bad:?}");
+        }
+        let overflow = format!("{}", i64::MAX as u128 + 1);
+        assert!(parse_amount(&overflow).is_err(), "应拒绝 i64 溢出值");
+    }
+
+    #[test]
+    fn deposit_body_carries_parsed_integer_and_rejects_bad_amount() {
+        let (method, path, body) =
+            build_market_request("deposit", &["acct".into(), "250".into()]).unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/api/v1/accounts/acct/deposit");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["amount"], serde_json::json!(250));
+
+        assert!(build_market_request("deposit", &["acct".into(), "lots".into()]).is_err());
+        assert!(build_market_request("deposit", &["acct".into(), "10.5".into()]).is_err());
+    }
+
+    #[test]
+    fn arbitrate_requires_arbitrator_and_omits_client_slash_amount() {
+        // 旧签名 arbitrate <id> <guilty> [slash]（f64，服务端已忽略 slash）必须不再成立。
+        assert!(build_market_request("arbitrate", &["d1".into(), "guilty".into()]).is_err());
+
+        let (method, path, body) = build_market_request(
+            "arbitrate",
+            &["d1".into(), "guilty".into(), "did:nau:judge".into()],
+        )
+        .unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/api/v1/disputes/d1/arbitrate");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["guilty"], serde_json::json!(true));
+        assert_eq!(v["arbitrator"], "did:nau:judge");
+        // 罚没由服务端规则决定：CLI 不再发送会被忽略的 slash_amount（f64）。
+        assert!(v.get("slash_amount").is_none());
+    }
 }

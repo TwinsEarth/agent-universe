@@ -213,6 +213,12 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                 }
                 i += 1;
             }
+            "--version" | "-V" => {
+                // v3.5.5（W-02）：gsn-daemon / `gsn daemon` 支持 --version/-V，
+                // 与 `gsn --version` 输出同一权威版本（gsn-core crate 版本）。
+                println!("gsn-daemon {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 print_daemon_help();
                 std::process::exit(0);

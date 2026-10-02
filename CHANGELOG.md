@@ -2,6 +2,26 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.6.0] - 2026-10-02
+
+### 次版本：新增只读运维 CLI `gsn ledger verify` 与 `gsn doctor`（#78，minor）
+
+不改动任何资金/共识/持久化写入语义，新增两条只读运维命令，均复用守护进程生产校验路径。
+
+- **`gsn ledger verify [--data-dir D]`**：离线核验本地 gsn.db——缺库报 `MissingDb`（退出码 2，
+  **不创建空库**）；坏行显式 `CorruptRows(n)` 不静默跳过；调用生产 `verify_ledger_chain()`
+  报首个断链 seq、锚定 head 不符报 `u64::MAX`；`SettlementEngine::restore` +
+  `independent_audit()` 重放守恒并输出 expected/actual/账实不符。退出码 0/1/2。
+  边界：哈希链 tamper-evident 非 tamper-proof；离线只验流水自洽，在线账实交叉由 daemon 承担。
+- **`gsn doctor [--data-dir D] [--api U]`**：版本（仅 CARGO_PKG_VERSION，不新增声明点）、
+  本地账本（硬检查，缺库为 WARN）、daemon `/health` 连通性（900ms 软检查，离线不致命）；
+  有硬错误退出 1，否则 0。
+- 全程类型化错误、生产无裸 unwrap；新增 5 个在旧实现会失败的 CLI 回归测试；
+  真实 daemon E2E（充值 1000+250→停服→离线 verify，守恒 1250）PASS。
+- 632 tests / clippy（all-targets）/ fmt / no-panics / unsafe / metadata 全绿；
+  npm 3.6.0 ↔ gsn-core 0.3.60。
+
+
 ## [v3.5.9] - 2026-10-02
 
 ### 补丁：能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）

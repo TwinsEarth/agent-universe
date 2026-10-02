@@ -1,12 +1,12 @@
 [package]
 name = "gsn-core"
-version = "0.3.59"
+version = "0.3.60"
 edition = "2021"
 # MSRV（W-01，v3.5.7）：锁定依赖中最高的 rust-version 是 time 0.3.x 家族要求的 1.88；
 # 已用 rustc 1.88.0 实测 `cargo check --bins --locked` 通过。CI 有对应 MSRV 关卡。
 # 仅约束库与二进制；测试/clippy 仍以 stable 运行。
 rust-version = "1.88"
-description = "Agent Universe 核心库 v3.5.9: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+description = "Agent Universe 核心库 v3.6.0: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
 repository = "https://github.com/TwinsEarth/agent-universe"
 homepage = "https://github.com/TwinsEarth/agent-universe"

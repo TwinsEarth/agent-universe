@@ -5,6 +5,8 @@
 //!   gsn daemon [选项]                   启动全节点（同 gsn-daemon）
 //!   gsn mcp [--transport stdio]         启动 MCP 服务器（默认 stdio）
 //!   gsn market <操作> [参数]            通过 HTTP API 操作智能体市场
+//!   gsn ledger verify [--data-dir D]   离线校验账本哈希链 + 重放守恒独立审计
+//!   gsn doctor [--data-dir D] [--api U] 环境/账本/连通性只读诊断
 //!   gsn identity                        生成本地身份（Ed25519）
 //!
 //! market 子命令通过 --api <url> 或 GSN_API 环境变量连接 daemon，
@@ -27,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.5.9");
+            println!("agent-universe v3.6.0");
             0
         }
         "help" | "--help" | "-h" => {
@@ -46,6 +48,8 @@ async fn main() {
         }
         "mcp" => run_mcp(&argv[1..]).await,
         "market" => run_market(&argv[1..]).await,
+        "ledger" => run_ledger(&argv[1..]).await,
+        "doctor" => run_doctor(&argv[1..]).await,
         "identity" => run_identity(),
         other => {
             eprintln!("错误: 未知子命令 '{other}'");
@@ -64,6 +68,8 @@ fn print_top_help() {
     println!("  daemon [选项]        启动 GSN 全节点（P2P + API + 市场）");
     println!("  mcp [--transport t]  启动 MCP 服务器（stdio，AI 客户端接入）");
     println!("  market <操作>        操作智能体市场（通过运行中的节点 API）");
+    println!("  ledger verify        离线校验账本哈希链与重放守恒（只读）");
+    println!("  doctor               环境/账本/daemon 连通性诊断（只读）");
     println!("  identity            生成 Ed25519 本地身份");
     println!("  version             显示版本");
     println!("  help                显示本帮助\n");
@@ -390,6 +396,316 @@ fn build_market_request(op: &str, p: &[String]) -> Result<(String, String, Strin
 
 // ───────────────────────── 极简 HTTP 客户端 ─────────────────────────
 
+// ───────────────────────── ledger verify ─────────────────────────
+
+/// 解析 `--data-dir`，得到账本数据库路径（`<data-dir>/gsn.db`）。
+/// 缺省用 daemon 的默认数据目录；`~` 与 daemon 保持同一展开规则。
+fn resolve_db_path(args: &[String]) -> Result<std::path::PathBuf, String> {
+    let mut data_dir = node::default_data_dir();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--data-dir" {
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| "--data-dir 需要一个路径参数".to_string())?;
+            data_dir = std::path::PathBuf::from(v);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(node::expand_tilde(data_dir).join("gsn.db"))
+}
+
+/// 离线账本核验结果。注意边界（如实陈述，不夸大）：哈希链是**篡改检测**手段；
+/// 离线重放 `independent_audit` 验证的是**流水自身重放后的守恒**（累计充值 vs 账户余额
+/// 之和），离线 CLI 没有另一份在线余额可交叉比对——在线交叉比对由运行中的 daemon
+/// （REST `/audit`、结算前审计）承担。
+#[derive(Debug, PartialEq, Eq)]
+struct LedgerReport {
+    records: usize,
+    corrupt: usize,
+    head: String,
+    passed: bool,
+    expected_total: i64,
+    actual_total: i64,
+    aggregate_matches: bool,
+    mismatches: usize,
+}
+
+/// 离线核验可能的失败类型（供 CLI 决定退出码与措辞，也便于测试）。
+#[derive(Debug, PartialEq, Eq)]
+enum LedgerIssue {
+    /// 数据库文件不存在（核验不得顺手创建空库）。
+    MissingDb,
+    /// 哈希链在某 seq 断链/哈希不符；`u64::MAX` 表示锚定 head 不一致。
+    ChainBroken(u64),
+    /// 存在无法解析的损坏流水行。
+    CorruptRows(usize),
+    /// 打开/读取数据库失败。
+    OpenFailed(String),
+    /// 流水重放或审计本身失败（如守恒不成立）。
+    AuditFailed(String),
+}
+
+/// 对给定 db 文件做离线核验，纯计算、不打印、不产生副作用。
+fn evaluate_ledger(db: &std::path::Path) -> Result<LedgerReport, LedgerIssue> {
+    use gsn_core::marketplace::SettlementEngine;
+    use gsn_core::storage::PersistentStore;
+
+    if !db.exists() {
+        return Err(LedgerIssue::MissingDb);
+    }
+    let store = PersistentStore::open(db).map_err(|e| LedgerIssue::OpenFailed(e.to_string()))?;
+
+    let load = store
+        .load_ledger_records_checked()
+        .map_err(|e| LedgerIssue::OpenFailed(e.to_string()))?;
+    if !load.corrupt.is_empty() {
+        return Err(LedgerIssue::CorruptRows(load.corrupt.len()));
+    }
+
+    // 1) 哈希链 + 锚定 head：这是离线可做的篡改检测。
+    let head = store
+        .verify_ledger_chain()
+        .map_err(LedgerIssue::ChainBroken)?;
+
+    // 2) 真实生产路径重放 + independent_audit（不另造校验逻辑）。
+    let engine = SettlementEngine::restore(load.records).map_err(LedgerIssue::AuditFailed)?;
+    let audit = engine.independent_audit();
+
+    Ok(LedgerReport {
+        records: audit.replayed_records,
+        corrupt: 0,
+        head,
+        passed: audit.passed,
+        expected_total: audit.expected_total.0,
+        actual_total: audit.actual_total.0,
+        aggregate_matches: audit.aggregate_matches,
+        mismatches: audit.mismatches.len(),
+    })
+}
+
+fn print_ledger_report(db: &std::path::Path, r: &LedgerReport) {
+    let short_head: String = r.head.chars().take(16).collect();
+    println!("账本文件: {}", db.display());
+    println!("流水条数: {}", r.records);
+    println!(
+        "链 head : {}",
+        if short_head.is_empty() {
+            "(genesis / 空链)".to_string()
+        } else {
+            short_head
+        }
+    );
+    println!(
+        "重放守恒: expected={} actual={} aggregate_matches={}",
+        r.expected_total, r.actual_total, r.aggregate_matches
+    );
+    println!("账实不符账户: {}", r.mismatches);
+    if r.passed && r.mismatches == 0 {
+        println!("结果: PASS — 哈希链完整，流水重放守恒，审计通过");
+    } else {
+        println!("结果: FAIL — 审计未通过（见上方账实不符明细）");
+    }
+}
+
+async fn run_ledger(args: &[String]) -> i32 {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        println!("用法: gsn ledger verify [--data-dir <目录>]");
+        println!(
+            "  离线校验本地账本：哈希链完整性（报首个断链 seq）+ 锚定 head + 重放守恒独立审计。"
+        );
+        println!("  默认数据目录同 daemon；不修改任何数据，也不会创建数据库。");
+        return if args.is_empty() { 1 } else { 0 };
+    }
+    if args[0] != "verify" {
+        eprintln!("错误: 未知 ledger 操作 '{}'（支持: verify）", args[0]);
+        return 1;
+    }
+    let db = match resolve_db_path(&args[1..]) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("参数错误: {e}");
+            return 2;
+        }
+    };
+    match evaluate_ledger(&db) {
+        Ok(r) => {
+            print_ledger_report(&db, &r);
+            if r.passed && r.mismatches == 0 {
+                0
+            } else {
+                1
+            }
+        }
+        Err(LedgerIssue::MissingDb) => {
+            eprintln!("账本数据库不存在: {}", db.display());
+            eprintln!("提示: 用 --data-dir 指定节点数据目录，或先启动一次 gsn daemon。");
+            2
+        }
+        Err(LedgerIssue::ChainBroken(seq)) if seq == u64::MAX => {
+            eprintln!("结果: FAIL — 锚定 head 与链末不一致（元数据可能被篡改）");
+            1
+        }
+        Err(LedgerIssue::ChainBroken(seq)) => {
+            eprintln!("结果: FAIL — 哈希链断链/哈希不符，首个异常 seq = {seq}");
+            1
+        }
+        Err(LedgerIssue::CorruptRows(n)) => {
+            eprintln!("结果: FAIL — 存在 {n} 条无法解析的损坏流水行（见 daemon 恢复告警）");
+            1
+        }
+        Err(LedgerIssue::OpenFailed(e)) => {
+            eprintln!("无法打开/读取账本: {e}");
+            2
+        }
+        Err(LedgerIssue::AuditFailed(e)) => {
+            eprintln!("结果: FAIL — 流水重放/审计失败: {e}");
+            1
+        }
+    }
+}
+
+// ───────────────────────── doctor ─────────────────────────
+
+struct DoctorItem {
+    name: &'static str,
+    ok: bool,
+    hard: bool,
+    detail: String,
+}
+
+async fn run_doctor(args: &[String]) -> i32 {
+    let mut items: Vec<DoctorItem> = Vec::new();
+
+    // 1) 版本
+    items.push(DoctorItem {
+        name: "CLI 版本",
+        ok: true,
+        hard: false,
+        detail: format!("gsn {VERSION}"),
+    });
+
+    // 2) 数据目录与账本（硬检查：链断或损坏即不健康）
+    let db = resolve_db_path(args).unwrap_or_else(|_| node::default_data_dir().join("gsn.db"));
+    if !db.exists() {
+        items.push(DoctorItem {
+            name: "本地账本",
+            ok: false,
+            hard: false,
+            detail: format!("未找到 {}（尚未初始化，不影响启动）", db.display()),
+        });
+    } else {
+        match evaluate_ledger(&db) {
+            Ok(r) => items.push(DoctorItem {
+                name: "本地账本",
+                ok: r.passed && r.mismatches == 0,
+                hard: true,
+                detail: format!(
+                    "{} 条流水，链完整，重放守恒 expected=actual={}",
+                    r.records, r.actual_total
+                ),
+            }),
+            Err(LedgerIssue::ChainBroken(seq)) if seq == u64::MAX => items.push(DoctorItem {
+                name: "本地账本",
+                ok: false,
+                hard: true,
+                detail: "锚定 head 与链末不一致".to_string(),
+            }),
+            Err(LedgerIssue::ChainBroken(seq)) => items.push(DoctorItem {
+                name: "本地账本",
+                ok: false,
+                hard: true,
+                detail: format!("哈希链断链，首个异常 seq = {seq}"),
+            }),
+            Err(LedgerIssue::CorruptRows(n)) => items.push(DoctorItem {
+                name: "本地账本",
+                ok: false,
+                hard: true,
+                detail: format!("{n} 条损坏流水行"),
+            }),
+            Err(other) => items.push(DoctorItem {
+                name: "本地账本",
+                ok: false,
+                hard: true,
+                detail: format!("无法核验: {other:?}"),
+            }),
+        }
+    }
+
+    // 3) daemon 连通性（软检查：daemon 可能本来就没在跑）
+    let mut api = std::env::var("GSN_API").unwrap_or_else(|_| "http://127.0.0.1:4002".to_string());
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == "--api" {
+            if let Some(v) = args.get(i + 1) {
+                api = v.clone();
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let probe = tokio::time::timeout(
+        std::time::Duration::from_millis(900),
+        http_call(&api, "GET", "/health", "", None),
+    )
+    .await;
+    match probe {
+        Ok(Ok((200, _))) => items.push(DoctorItem {
+            name: "daemon 连通性",
+            ok: true,
+            hard: false,
+            detail: format!("{api} /health 200"),
+        }),
+        Ok(Ok((code, _))) => items.push(DoctorItem {
+            name: "daemon 连通性",
+            ok: false,
+            hard: false,
+            detail: format!("{api} 有响应但 HTTP {code}"),
+        }),
+        Ok(Err(e)) => items.push(DoctorItem {
+            name: "daemon 连通性",
+            ok: false,
+            hard: false,
+            detail: format!("{api} 连接失败: {e}（daemon 未运行则可忽略）"),
+        }),
+        Err(_) => items.push(DoctorItem {
+            name: "daemon 连通性",
+            ok: false,
+            hard: false,
+            detail: format!("{api} 探测超时（daemon 未运行或被防火墙拦截）"),
+        }),
+    }
+
+    println!("gsn doctor — 环境与数据诊断\n");
+    let mut hard_fail = false;
+    for it in &items {
+        let mark = if it.ok {
+            "OK  "
+        } else if it.hard {
+            "FAIL"
+        } else {
+            "WARN"
+        };
+        if !it.ok && it.hard {
+            hard_fail = true;
+        }
+        println!("[{mark}] {:<14} {}", it.name, it.detail);
+    }
+    println!();
+    if hard_fail {
+        println!("结论: 存在硬错误（账本完整性），建议先备份数据目录再排查。");
+        1
+    } else {
+        println!("结论: 无硬错误（WARN 项按需要处理）。");
+        0
+    }
+}
+
+// doctor 只用 CARGO_PKG_VERSION，避免新增会与 VERSION 漂移的声明点。
+
 async fn http_call(
     base: &str,
     method: &str,
@@ -439,7 +755,129 @@ async fn http_call(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_market_request, parse_amount};
+    use super::{build_market_request, evaluate_ledger, parse_amount, LedgerIssue};
+    use gsn_core::marketplace::{Money, SettlementReason, SettlementRecord};
+    use gsn_core::storage::PersistentStore;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+        let dir = std::env::temp_dir().join(format!("gsn-cli-{tag}-{pid}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn deposit(acct: &str, amount: i64, ts: u64) -> SettlementRecord {
+        SettlementRecord {
+            task_id: format!("deposit:{acct}"),
+            from_account: String::new(),
+            to_account: acct.to_string(),
+            amount: Money::new(amount),
+            reason: SettlementReason::Deposited,
+            timestamp: ts,
+        }
+    }
+
+    #[test]
+    fn ledger_verify_passes_on_intact_chain() {
+        let dir = unique_dir("ok");
+        let db = dir.join("gsn.db");
+        {
+            let store = PersistentStore::open(&db).expect("open");
+            store
+                .append_ledger_record(&deposit("a1", 100, 1))
+                .expect("a1");
+            store
+                .append_ledger_record(&deposit("a2", 250, 2))
+                .expect("a2");
+        }
+        let r = evaluate_ledger(&db).expect("intact ledger must verify");
+        assert_eq!(r.records, 2);
+        assert!(r.passed, "replay conservation must hold");
+        assert_eq!(r.expected_total, 350);
+        assert_eq!(r.mismatches, 0);
+    }
+
+    #[test]
+    fn ledger_verify_missing_db_is_named_not_created() {
+        let dir = unique_dir("missing");
+        let db = dir.join("gsn.db");
+        // 核验不得为了“通过”而创建空库。
+        assert_eq!(evaluate_ledger(&db), Err(LedgerIssue::MissingDb));
+        assert!(!db.exists(), "verify 不得创建数据库文件");
+    }
+
+    #[test]
+    fn ledger_verify_reports_first_broken_seq_on_payload_tamper() {
+        let dir = unique_dir("broken");
+        let db = dir.join("gsn.db");
+        {
+            let store = PersistentStore::open(&db).expect("open");
+            store
+                .append_ledger_record(&deposit("a1", 100, 1))
+                .expect("a1");
+            store
+                .append_ledger_record(&deposit("a2", 250, 2))
+                .expect("a2");
+        }
+        // 凭空造币的等价手法：把 seq=1 的 payload 改成更大金额（合法 JSON，但哈希对不上）。
+        let forged = serde_json::to_string(&deposit("a1", 99_999, 1)).expect("serialize");
+        {
+            let conn = rusqlite::Connection::open(&db).expect("raw conn");
+            conn.execute(
+                "UPDATE ledger_entries SET payload = ?1 WHERE seq = 1",
+                [forged],
+            )
+            .expect("tamper");
+        }
+        assert_eq!(evaluate_ledger(&db), Err(LedgerIssue::ChainBroken(1)));
+    }
+
+    #[test]
+    fn ledger_verify_reports_corrupt_rows_explicitly() {
+        let dir = unique_dir("corrupt");
+        let db = dir.join("gsn.db");
+        {
+            let store = PersistentStore::open(&db).expect("open");
+            store
+                .append_ledger_record(&deposit("a1", 100, 1))
+                .expect("a1");
+            let conn = rusqlite::Connection::open(&db).expect("raw conn");
+            conn.execute(
+                "INSERT INTO ledger_entries (payload) VALUES ('{not json')",
+                [],
+            )
+            .expect("insert corrupt");
+        }
+        // 损坏行必须被显式报告，不能静默跳过然后 PASS（GAP §3.6）。
+        assert_eq!(evaluate_ledger(&db), Err(LedgerIssue::CorruptRows(1)));
+    }
+
+    #[test]
+    fn ledger_verify_reports_anchor_mismatch_as_max() {
+        let dir = unique_dir("anchor");
+        let db = dir.join("gsn.db");
+        {
+            let store = PersistentStore::open(&db).expect("open");
+            store
+                .append_ledger_record(&deposit("a1", 100, 1))
+                .expect("a1");
+            let conn = rusqlite::Connection::open(&db).expect("raw conn");
+            conn.execute(
+                "UPDATE kv_meta SET value = 'deadbeef' WHERE key = 'ledger_head_hash'",
+                [],
+            )
+            .expect("tamper anchor");
+        }
+        assert_eq!(
+            evaluate_ledger(&db),
+            Err(LedgerIssue::ChainBroken(u64::MAX))
+        );
+    }
 
     #[test]
     fn amount_accepts_plain_integers_and_signs() {

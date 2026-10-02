@@ -292,3 +292,54 @@ fn v277_node_heap_limit_blocks_large_allocation() {
     let r = s.run_code(CodeLanguage::JavaScript, code).unwrap();
     assert_ne!(r.exit_code, 0, "node heap overflow should fail, got {r:?}");
 }
+
+// Windows 原生 shell：配置 allow_shell 后 cmd.exe 真实可用（bash/sh -c → cmd.exe /C）。
+#[cfg(target_os = "windows")]
+#[test]
+fn v277_native_shell_cmd_allowed_when_configured() {
+    let id = "v277-cmdok";
+    let mut s = ProcessSandbox::new(id);
+    let mut cfg = mk_cfg(id);
+    cfg.allow_shell = true;
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    let r = s
+        .exec("cmd", &["/C".to_string(), "echo cmd-ok".to_string()])
+        .unwrap();
+    assert!(
+        r.stdout.contains("cmd-ok"),
+        "expected cmd-ok in stdout, got {:?}",
+        r.stdout
+    );
+    s.destroy().unwrap();
+}
+
+// Windows 原生 shell：未配置 allow_shell 时必须被具名拒绝（fail-closed）。
+#[cfg(target_os = "windows")]
+#[test]
+fn v277_native_shell_blocked_by_default() {
+    let mut s = spawned("v277-cmdblock");
+    let r = s.exec("cmd", &["/C".to_string(), "echo x".to_string()]);
+    assert!(matches!(r, Err(SandboxError::IsolationViolation(_))));
+}
+
+// Windows：POSIX 逻辑名 `bash -c script` 在 allow_shell 下映射为 cmd.exe /C script。
+#[cfg(target_os = "windows")]
+#[test]
+fn v277_posix_shell_name_maps_to_cmd() {
+    let id = "v277-bashmap";
+    let mut s = ProcessSandbox::new(id);
+    let mut cfg = mk_cfg(id);
+    cfg.allow_shell = true;
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    let r = s
+        .exec("bash", &["-c".to_string(), "echo mapped-ok".to_string()])
+        .unwrap();
+    assert!(
+        r.stdout.contains("mapped-ok"),
+        "bash -c should map to cmd /C, got {:?}",
+        r.stdout
+    );
+    s.destroy().unwrap();
+}

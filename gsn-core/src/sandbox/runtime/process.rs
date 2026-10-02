@@ -143,9 +143,10 @@ impl ProcessSandbox {
             .as_ref()
             .ok_or(SandboxError::NotFound("sandbox not created".into()))?;
 
-        // 仅允许白名单解释器；shell 需显式 allow_shell
-        let resolved = resolve_program(program, cfg)?;
-        build_platform_command(&resolved, args, dir, cfg)
+        // 仅允许白名单解释器；shell 需显式 allow_shell。
+        // resolve_invocation 做平台 shell 映射（Windows 上 bash/sh -c → cmd.exe /C）。
+        let invocation = resolve_invocation(program, args, cfg)?;
+        build_platform_command(&invocation.program, &invocation.args, dir, cfg)
     }
 }
 
@@ -486,20 +487,99 @@ impl super::super::Sandbox for ProcessSandbox {
 
 // ---------- helpers ----------
 
-/// 解析允许执行的程序：仅白名单解释器；bash 需 allow_shell
-fn resolve_program(program: &str, cfg: &SandboxConfig) -> Result<String, SandboxError> {
+/// 白名单解析后的调用：本机程序名 + 平台转换后的参数。
+struct ResolvedInvocation {
+    program: String,
+    args: Vec<String>,
+}
+
+/// 解析允许执行的程序并做平台 shell 映射。
+///
+/// 所有平台：`python`/`python3`/`node` 直传；`bash`/`sh` 必须 `cfg.allow_shell`。
+/// Windows（见下）额外允许原生 `cmd.exe`/PowerShell，并把 POSIX 逻辑名
+/// `bash`/`sh` 的 `-c script` 翻译为 `cmd.exe /C script`，使“配置后允许 shell”
+/// 这一能力在 Windows 上真实可用，而不是放行一个不存在的程序。
+#[cfg(not(target_os = "windows"))]
+fn resolve_invocation(
+    program: &str,
+    args: &[String],
+    cfg: &SandboxConfig,
+) -> Result<ResolvedInvocation, SandboxError> {
     let allowed = matches!(program, "python" | "python3" | "node");
     if allowed {
         // 用 PATH 上已有的（env_clear 后我们注入 PATH，见下），直接给名字
-        return Ok(program.to_string());
+        return Ok(ResolvedInvocation {
+            program: program.to_string(),
+            args: args.to_vec(),
+        });
     }
     if program == "bash" || program == "sh" {
         if cfg.allow_shell {
-            return Ok(program.to_string());
+            return Ok(ResolvedInvocation {
+                program: program.to_string(),
+                args: args.to_vec(),
+            });
         }
         return Err(SandboxError::IsolationViolation(format!(
             "shell 执行未被允许（cfg.allow_shell=false）: {program}"
         )));
+    }
+    Err(SandboxError::IsolationViolation(format!(
+        "程序不在沙箱白名单: {program}"
+    )))
+}
+
+/// Windows 白名单解析 + shell 平台映射。
+#[cfg(target_os = "windows")]
+fn resolve_invocation(
+    program: &str,
+    args: &[String],
+    cfg: &SandboxConfig,
+) -> Result<ResolvedInvocation, SandboxError> {
+    if matches!(program, "python" | "python3" | "node") {
+        return Ok(ResolvedInvocation {
+            program: program.to_string(),
+            args: args.to_vec(),
+        });
+    }
+    // Windows 原生命令名可直接透传；同样受 allow_shell 门控。
+    let native_shell = matches!(
+        program,
+        "cmd" | "cmd.exe" | "powershell" | "powershell.exe" | "pwsh" | "pwsh.exe"
+    );
+    if native_shell {
+        if !cfg.allow_shell {
+            return Err(SandboxError::IsolationViolation(format!(
+                "shell 执行未被允许（cfg.allow_shell=false）: {program}"
+            )));
+        }
+        let normalized = if program == "cmd" { "cmd.exe" } else { program };
+        return Ok(ResolvedInvocation {
+            program: normalized.to_string(),
+            args: args.to_vec(),
+        });
+    }
+    if matches!(program, "bash" | "sh") {
+        if !cfg.allow_shell {
+            return Err(SandboxError::IsolationViolation(format!(
+                "shell 执行未被允许（cfg.allow_shell=false）: {program}"
+            )));
+        }
+        // POSIX 习惯 `bash -c <script>` → Windows `cmd.exe /C <script>`；
+        // 其余参数形式原样交给 cmd.exe（仍受沙箱 work_dir/env/Job Object 约束）。
+        let mut mapped: Vec<String> = Vec::new();
+        if args.first().map(|s| s.as_str()) == Some("-c") {
+            mapped.push("/C".to_string());
+            if let Some(script) = args.get(1) {
+                mapped.push(script.clone());
+            }
+        } else {
+            mapped = args.to_vec();
+        }
+        return Ok(ResolvedInvocation {
+            program: "cmd.exe".to_string(),
+            args: mapped,
+        });
     }
     Err(SandboxError::IsolationViolation(format!(
         "程序不在沙箱白名单: {program}"

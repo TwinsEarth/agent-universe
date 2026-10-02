@@ -53,6 +53,12 @@ pub enum Capability {
     OpenFileLimit,
     /// 子进程可被限制在文件系统的某子树内。
     FilesystemConfinement,
+    /// 后端须能交付**至少调用方请求的隔离强度**（Process < Container < MicroVM）。
+    ///
+    /// v3.5.2（AU-28）：此前 `cfg.isolation` 只是自报标签，进程后端从不与实际可达
+    /// 级别比对——调用方写 MicroVM 也会被静默按 Process 跑。此边界把"请求级别 >
+    /// 后端实际可达级别"变成具名拒绝，除非带理由豁免。
+    IsolationLevel,
 }
 
 impl Capability {
@@ -71,11 +77,12 @@ impl Capability {
             Self::ProcessCountLimit => "process_count_limit",
             Self::OpenFileLimit => "open_file_limit",
             Self::FilesystemConfinement => "filesystem_confinement",
+            Self::IsolationLevel => "isolation_level",
         }
     }
 
     /// 全部能力（穷举测试与报告用）
-    pub const ALL: [Capability; 12] = [
+    pub const ALL: [Capability; 13] = [
         Self::EnvAllowlist,
         Self::OutputCap,
         Self::Timeout,
@@ -88,6 +95,7 @@ impl Capability {
         Self::ProcessCountLimit,
         Self::OpenFileLimit,
         Self::FilesystemConfinement,
+        Self::IsolationLevel,
     ];
 }
 

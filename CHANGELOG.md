@@ -2,6 +2,104 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.2] - 2026-10-02
+
+### 补丁：插件 / PMB / 沙箱健壮性与隔离诚实化（仅缺陷/安全/正确性修复，无破坏式重构）
+
+本补丁基于 v3.5.1，修复审计条目 AU-04/06/07/08/09/10/21/22/23/24/25/26/28。每组均带
+「在旧实现上必败」的回归测试。
+
+- **AU-04（QA nonce 跨请求去重 / 重放）**
+  - 根因：`QaCommittee.seen_nonces` 是实例内 `HashSet`，而 `verify_result_authenticated`
+    每请求新建委员会即清空，同一组签名 Stop 票在第二次验收调用里被当作新票重放并通过。
+  - 修复：把 nonce 去重提升为 **`AgentMarket` 字段级**集合，键
+    `(task_id, round, voter_did, nonce)`，跨请求存活；闸门 3（质押）后做只读预检，命中即
+    返 `QA_NONCE_REPLAY`；整条验收成功后才 insert 键（失败不烧合法票）。QA 时间窗确为
+    服务端强制（`cast_signed_vote` 拒绝 `now<issued_at`/`now>expires_at`）。
+  - 残留（如实声明）：去重在**运行期**跨请求存活；跨进程/重启持久化需 schema 扩张，本补丁
+    不做架构扩张——跨重启窗口内的重放由既有服务端时间窗约束。
+  - 回归测试（tests/v352_test.rs）：同一组合法 Stop 票第二次原样重放被 `QA_NONCE_REPLAY` 拒绝。
+
+- **AU-06（插件生命周期受守卫转换）**
+  - 根因：`lifecycle.rs` 的合法转移图生产无人走；host 经 `bus.set_state` 无条件直改状态，
+    终态插件可被静默回 Running。
+  - 修复：`bus.set_state` 复用与 `PluginLifecycle` 同一终态谓词 `is_terminal()`
+    （Refused/Quarantined/Archived）做**终态锁定后门**——终态插件再改写到任何其它状态
+    返类型化 `InvalidTransition`。最小侵入，不改热更新正常路径语义。
+  - 回归测试（bus.rs）：插件置 Quarantined 后 `set_state` 回 Running/Stopped/Discovered
+    均失败、状态保持终态。
+
+- **AU-08（拒绝外部自证系统命名空间）+ AU-23（spawn 失败不留孤儿注册）**
+  - 根因：`com.twinsearth.sys.*` 在 arbiter 走 `Tier::System` 臂，「签名由宿主构建链保证」
+    实际不验签；外部 install 自证系统名即可提权获进程内全能力。install 又先 `register`
+    后 `spawn`，spawn 失败留下与实例 desync 的孤儿注册项。
+  - 修复：`install()` 在 ABI 校验后立即拒绝 `Tier::System` 名
+    （`PLUGIN_SYS_NAMESPACE_FORBIDDEN`）；系统插件只走 `boot_system()`。并把注册推迟到
+    **spawn 成功之后**（spawn 失败不写 registry / 总线）。
+  - 回归测试（host.rs）：①外部自签 `com.twinsearth.sys.*`→被拒；②构造 spawn 必败的清单
+    （非法资源）后 install 失败，registry 与总线路由均无残留。
+
+- **AU-07（黑名单可播种）+ AU-24（start 复检 / uninstall 清路由）**
+  - 根因：`Blacklist::new()` 恒空、启动不播种；`start()` 不复检；`uninstall` 只置 Stopped
+    而保留总线 `RouteEntry`（孤儿路由）。
+  - 修复：新增 `Blacklist::load_operator_file`（每行一个 plugin-id、`#` 注释、文件不存在=空，
+    不联网、无硬编码封禁）与 `host.seed_blacklist_from_env()`（读 `GSN_BLACKLIST_FILE`）；
+    `start()` 重新过黑名单闸门；`uninstall()` 末尾 `bus.remove_route(id)`。
+    `file_appeal` 确为死代码，不接线（现状保留）。
+  - 回归测试（host.rs/blacklist.rs）：播种某 id→install 被拒；停止期间拉黑→`start` 被拒；
+    uninstall 后 `route_table` 无该 id。
+
+- **AU-09 + AU-22（outbox 有界与健壮解析）**
+  - 根因：`collect_outbox` 先 `read_to_string` 整文件（无上限，内存 DoS）；非 UTF8 静默
+    `Ok(())`；单坏行 `from_str?` 毒丸整次失败；仅全成功才清文件。
+  - 修复：具名常量 `OUTBOX_MAX_BYTES=16MiB`，用 `Read::take` 有界读取（超限具名失败
+    `OUTBOX_TOO_LARGE` + 审计）；逐行隔离坏 JSON / 未知 kind / send 缺 target（记
+    `outbox_issues` 后继续，不毒丸）；非 UTF8 记 `OUTBOX_NON_UTF8` 审计并清理；合法行搬入
+    outbox 后清文件。
+  - 回归测试（plugin/runtime/process.rs）：超大 outbox 被拒；一行损坏不影响其余合法消息
+    投递且有审计信号；非 UTF8 不再静默当空；缺 target 的 send 被隔离（旧实现整次失败）。
+
+- **AU-21 + AU-25（PMB TTL 新鲜度 / 淘汰顺序 / 先验签后计速率）**
+  - 根因：`ttl_ms` 入签名却从不比对时钟；nonce 窗口超 1024 用 `BTreeSet.iter().next()`
+    按**字典序**淘汰（可能误删刚签发的合法 nonce）；速率槽在 HMAC 验签 / nonce 校验**之前**
+    消耗——坏签名/重放攻击者可白嫖合法插件的速率配额。
+  - 修复：①`PluginBus::set_server_clock_ms` 注入服务端时钟后，强制
+    `now ∈ [issued_at, issued_at+ttl_ms]`，过期返 `PMB_MESSAGE_EXPIRED`（未注入时钟时为
+    确定性回放模式，向后兼容）；②nonce 改 `HashSet` membership + `BTreeSet<(issued_at,nonce)>`
+    时间序，超窗淘汰**时间最旧**而非字典序；③把速率桶消耗移到 HMAC 验签 + nonce + 新鲜度
+    全部通过之后。
+  - 回归测试（bus.rs）：注入时钟到未来后过期消息被拒；字典序与时间序相反时按时间淘汰最旧；
+    坏签名消息不消耗速率配额（随后合法消息仍可发送）。
+
+- **AU-10（waiver 理由入审计）**
+  - 根因：`AuditEntry` 无 waiver 字段，`create` 审计点不传 `cfg.waivers`——「在缺边界后端
+    带理由放行」不留痕。
+  - 修复：`AuditEntry` 增加 `waivers: Vec<WaiverAuditEntry>`（边界名+理由，`#[serde(default)]`
+    兼容历史日志）；create 成功/失败都把 `cfg.waivers` 序列化落 `sandbox-audit.log`。不改
+    隔离运行时行为。
+  - 回归测试（tests/v352_test.rs）：带 waiver（trusted_local）create 后，审计条目含
+    `network_deny_all` 边界与非空理由。
+
+- **AU-26（Windows 绝对路径逃逸）**
+  - 根因：`safe_join` 仅挡 `/` 前缀与 `..`，未查 Windows 盘符 `C:\` / UNC `\\server`；
+    `config.validate` 同。因 `Path::is_absolute()` 语义随编译平台变化，Linux 上构造
+    `C:\foo` 会被判相对路径。
+  - 修复：新增跨平台 `path_escapes_sandbox`，按字符串同时拒绝前导 `/`、前导 `\`、`X:` 盘符
+    （X 为 ASCII 字母），并以 `is_absolute()` 兜底 + ParentDir 组件；`safe_join` 与
+    `config.validate` 统一复用。
+  - 回归测试（sandbox/config.rs）：`/etc/passwd`、`../x`、`C:\Windows`、`C:/x`、
+    `\\server\share`、`\unc` 均判逃逸；合法相对路径放行。
+
+- **AU-28（隔离级别不静默降级）**
+  - 根因：`cfg.isolation` 从不与后端实际可达级别比对；进程后端硬编码返 `Process`，调用方
+    请求 MicroVM 也被静默按 Process 跑。
+  - 修复：`ProcessSandbox::create` 在能力校验后，若
+    `cfg.isolation.strength() > self.isolation().strength()`（MicroVM/Container 请求落在
+    Process 后端）且无带非空理由的 `Waiver(Capability::IsolationLevel)` 豁免，返具名
+    `PolicyNotEnforceable`（详情含 `SANDBOX_ISOLATION_UNAVAILABLE`），绝不静默降级。
+  - 回归测试（tests/v352_test.rs）：请求 MicroVM 在进程后端且无豁免→具名拒绝；显式豁免→
+    按现状接受。
+
 ## [v3.5.1] - 2026-10-02
 
 ### 补丁：QA 委员会自我批准等安全缺陷修复（仅缺陷/安全/正确性修复，无破坏式重构）

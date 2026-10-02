@@ -5,7 +5,7 @@
 //! 调用方需要放开某项能力时必须显式声明，不能依赖宽松默认值。
 
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::capability::{Capability, Waiver};
 
@@ -186,9 +186,9 @@ impl SandboxConfig {
         if self.template.trim().is_empty() {
             errs.push("template 不能为空".to_string());
         }
-        // 初始文件路径不得逃逸沙箱（禁止绝对路径 / ..）
+        // 初始文件路径不得逃逸沙箱（v3.5.2 AU-26：跨平台，覆盖 Windows 盘符/UNC）
         for (p, _) in &self.initial_files {
-            if p.starts_with('/') || p.contains("..") {
+            if path_escapes_sandbox(p) {
                 errs.push(format!("initial_files 路径逃逸沙箱: {p}"));
             }
         }
@@ -294,5 +294,82 @@ impl SandboxConfig {
             ));
         }
         cfg
+    }
+}
+
+/// 跨平台判断一个**相对**路径是否试图逃逸沙箱（v3.5.2，AU-26）。
+///
+/// 旧判定只挡 Unix `/` 前缀与 `..`，在 Windows 上漏放：
+/// - 盘符绝对路径 `C:\...` / `C:/...`（不以 `/` 开头、不含 `..`）；
+/// - UNC 路径 `\\server\share\...`（以反斜杠开头）。
+///
+/// 由于 `std::path::Path::is_absolute()` 的语义随编译平台变化（在 Linux 上构造
+/// `C:\foo` 会被判为相对路径），这里**显式按字符串**同时检查：
+/// 前导 `/`、前导 `\`、`X:` 盘符（X 为 ASCII 字母），并以 `is_absolute()` 兜底。
+pub fn path_escapes_sandbox(rel: &str) -> bool {
+    let r = rel.trim();
+    if r.is_empty() {
+        return false;
+    }
+    // Unix 根路径 / Windows UNC（\\server）/ Windows 反斜杠分隔的绝对写法
+    if r.starts_with('/') || r.starts_with('\\') {
+        return true;
+    }
+    // Windows 盘符前缀 "X:"（X 为 ASCII 字母）——无论后跟 \ 还是 / 一律拒绝
+    let b = r.as_bytes();
+    if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+        return true;
+    }
+    // 平台原生绝对路径兜底
+    if Path::new(r).is_absolute() {
+        return true;
+    }
+    Path::new(r)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// AU-26：旧判定（仅 `/` 前缀 + `..`）会漏放 Windows 盘符与 UNC；
+    /// 新判定在任何编译平台都按字符串显式拒绝这些形态。
+    #[test]
+    fn rejects_windows_drive_and_unc_and_parent() {
+        // 相对合法路径 → 不逃逸
+        assert!(!path_escapes_sandbox("main.py"));
+        assert!(!path_escapes_sandbox("tmp/out.jsonl"));
+        assert!(!path_escapes_sandbox("sub/dir/file.txt"));
+
+        // Unix 绝对路径
+        assert!(path_escapes_sandbox("/etc/passwd"));
+        // `..` 逃逸
+        assert!(path_escapes_sandbox("../escape"));
+        assert!(path_escapes_sandbox("a/../../b"));
+
+        // Windows 盘符（反斜杠 / 正斜杠）——旧实现漏放
+        assert!(path_escapes_sandbox("C:\\Windows\\system32"));
+        assert!(path_escapes_sandbox("C:/Users/x"));
+        // UNC
+        assert!(path_escapes_sandbox("\\\\server\\share\\x"));
+        assert!(path_escapes_sandbox("\\unc\\path"));
+    }
+
+    /// AU-26：validate() 对 initial_files 的 Windows 绝对路径报错。
+    #[test]
+    fn validate_rejects_windows_absolute_initial_file() {
+        let cfg = SandboxConfig {
+            initial_files: vec![("C:\\Windows\\evil.exe".to_string(), "x".to_string())],
+            ..SandboxConfig::default()
+        };
+        let errs = cfg.validate().expect_err("应拒绝 Windows 盘符路径");
+        assert!(errs.iter().any(|e| e.contains("逃逸沙箱")));
+
+        let ok = SandboxConfig {
+            initial_files: vec![("main.py".to_string(), "print(1)".to_string())],
+            ..SandboxConfig::default()
+        };
+        assert!(ok.validate().is_ok());
     }
 }

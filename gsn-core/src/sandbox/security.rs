@@ -123,6 +123,22 @@ pub struct AuditEntry {
     pub target: String,
     pub outcome: String,
     pub evidence_grade: EvidenceGrade,
+    /// 本次创建显式豁免的边界及理由（v3.5.2，AU-10）。
+    ///
+    /// 旧版 AuditEntry 不含 waiver 信息，沙箱在缺边界后端上"带理由放行"却不留痕——
+    /// 理由只活在内存 cfg 里，审计日志无法事后复查"是谁、为什么放弃了这条边界"。
+    /// 无豁免时为空 Vec。`#[serde(default)]` 兼容历史日志行（无该字段）。
+    #[serde(default)]
+    pub waivers: Vec<WaiverAuditEntry>,
+}
+
+/// 审计化的一条豁免记录（边界名 + 非空理由），v3.5.2（AU-10）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WaiverAuditEntry {
+    /// 被放弃的边界稳定名（见 [`super::capability::Capability::as_str`]）
+    pub boundary: String,
+    /// 放弃理由（创建时校验非空）
+    pub justification: String,
 }
 
 /// 审计日志（append-only）
@@ -216,6 +232,7 @@ pub fn audit_entry(
         target: target.to_string(),
         outcome: outcome.to_string(),
         evidence_grade: grade,
+        waivers: Vec::new(),
     }
 }
 

@@ -147,6 +147,19 @@ pub struct AgentMarket {
     reputation_mgr: ReputationManager,
     /// 最低质押
     min_stake: Money,
+    /// 已消费的认证 QA 投票 nonce（v3.5.2，AU-04，跨请求重放去重）。
+    ///
+    /// 键为 `(task_id, round, voter_did, nonce)`。通用 [`QaCommittee`] 实例内的
+    /// `seen_nonces` 在每次 `verify_result_authenticated` 新建委员会时被清空，
+    /// 无法跨请求去重；本字段把去重提升到市场层，使其在同一进程的多次验收调用间存活。
+    ///
+    /// # 残留边界（如实声明）
+    ///
+    /// 这是**运行期跨请求**去重；服务重启后本集合随内存重建而清空。跨重启窗口内的重放
+    /// 由投票自身的服务端时间窗约束（`cast_signed_vote` 强制 `now ∈ [issued_at,
+    /// expires_at]`，过期票一律拒绝）。要把已消费 nonce 落盘持久化需要既有 PersistentStore
+    /// 的 schema 扩张，超出本补丁（patch）语义，列入后续 minor。
+    seen_qa_nonces: HashSet<(String, u32, String, String)>,
 }
 
 impl AgentMarket {
@@ -164,6 +177,7 @@ impl AgentMarket {
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
+            seen_qa_nonces: HashSet::new(),
         }
     }
 
@@ -181,6 +195,7 @@ impl AgentMarket {
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
+            seen_qa_nonces: HashSet::new(),
         }
     }
 
@@ -650,6 +665,30 @@ impl AgentMarket {
             }
         }
 
+        // ── 闸门 4：跨请求 nonce 重放去重（v3.5.2，AU-04）──
+        // 通用 QaCommittee 实例内的 seen_nonces 随每次新建委员会而清空，无法跨请求去重；
+        // 此处把 (task_id, round, voter, nonce) 提升到市场层集合做只读预检。任一已被
+        // 本进程历史消费过即拒绝（稳定前缀 QA_NONCE_REPLAY）。
+        let vote_keys: Vec<(String, u32, String, String)> = signed_votes
+            .iter()
+            .map(|sv| {
+                (
+                    sv.task_id.clone(),
+                    sv.round,
+                    sv.voter.clone(),
+                    sv.nonce.clone(),
+                )
+            })
+            .collect();
+        for k in &vote_keys {
+            if self.seen_qa_nonces.contains(k) {
+                return Err(format!(
+                    "QA_NONCE_REPLAY: 委员 {} 在任务 {} 轮 {} 的投票 nonce {} 已被消费过（重放）",
+                    k.2, k.0, k.1, k.3
+                ));
+            }
+        }
+
         let mut committee = QaCommittee::with_fixed_members(task_id, round, members)?;
         for sv in signed_votes {
             committee.cast_signed_vote(sv, now)?;
@@ -682,6 +721,12 @@ impl AgentMarket {
                     env.evidence_grade = EvidenceGrade::Verified;
                 }
             }
+        }
+
+        // 整条验收链成功落库后，才把本轮投票 nonce 记入市场级去重表（跨请求存活）。
+        // 此前任一环节失败（验签失败/状态转换失败）都不消费 nonce，避免误烧合法票。
+        for k in vote_keys {
+            self.seen_qa_nonces.insert(k);
         }
 
         Ok(decision)

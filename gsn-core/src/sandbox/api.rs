@@ -84,6 +84,31 @@ pub fn handle_api(
                 Ok(c) => c,
                 Err(e) => return (400, json!({ "error": e })),
             };
+            // v3.5.2（AU-10）：在 cfg 被 acquire 消费前快照其豁免边界与理由，
+            // 无论 create 成功/失败都把"放弃了哪条边界、为什么"落审计。
+            // config_from_body 返回 Option：None 表示走 default_cfg。
+            let waivers_audit: Vec<(String, String)> = match &cfg {
+                Some(c) => c.waivers.iter(),
+                None => manager.default_config().waivers.iter(),
+            }
+            .map(|w| (w.boundary.as_str().to_string(), w.justification.clone()))
+            .collect();
+            // 构造一条带豁免边界与理由的审计记录（成功/失败各一）。
+            let build_entry = |sandbox_id: &str, outcome: &str, grade| {
+                let mut e = super::security::audit_entry(
+                    sandbox_id, caller, "create", sandbox_id, outcome, grade,
+                );
+                e.waivers = waivers_audit
+                    .iter()
+                    .map(
+                        |(boundary, justification)| super::security::WaiverAuditEntry {
+                            boundary: boundary.clone(),
+                            justification: justification.clone(),
+                        },
+                    )
+                    .collect();
+                e
+            };
             match manager.acquire(cfg) {
                 Ok(id) => {
                     if let Err(e) = manager.bind_owner(&id, caller) {
@@ -94,14 +119,11 @@ pub fn handle_api(
                         .owner_of(&id)
                         .map(str::to_string)
                         .unwrap_or_default();
-                    let _ = manager.record_audit(
-                        &id,
-                        caller,
-                        "create",
+                    let _ = manager.log_audit(build_entry(
                         &id,
                         "created",
                         super::security::EvidenceGrade::Unverified,
-                    );
+                    ));
                     (
                         201,
                         json!({
@@ -112,7 +134,15 @@ pub fn handle_api(
                         }),
                     )
                 }
-                Err(e) => (error_status(&e), json!({ "error": e.to_string() })),
+                Err(e) => {
+                    // v3.5.2（AU-10）：create 失败也留审计（含豁免信息），避免失败路径无痕。
+                    let _ = manager.log_audit(build_entry(
+                        "",
+                        "failed",
+                        super::security::EvidenceGrade::Unverifiable,
+                    ));
+                    (error_status(&e), json!({ "error": e.to_string() }))
+                }
             }
         }
 

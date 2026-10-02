@@ -23,7 +23,7 @@ use crate::plugin::capability::{Capability, CapabilityToken};
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::lifecycle::PluginState;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 /// 消息类别。
@@ -96,8 +96,13 @@ pub struct PmbMessage {
 /// 会话密钥长度（HMAC-SHA256，32 字节）。
 pub const SESSION_KEY_LEN: usize = 32;
 
-/// 每个插件记忆的已用 nonce 上限（防重放窗口，超出按时间丢弃最旧）。
+/// 每个插件记忆的已用 nonce 上限（防重放窗口，超出按**签发时间**丢弃最旧，v3.5.2 AU-25）。
 pub const MAX_SEEN_NONCES: usize = 1024;
+
+/// 默认服务端时钟未注入（0）时，TTL 新鲜度检查暂不启用（确定性回放模式，向后兼容）。
+/// 生产宿主须在启动后调用 [`PluginBus::set_server_clock_ms`] 注入真实时钟，
+/// 一旦注入即对所有消息强制 `issued_at..issued_at+ttl_ms` 新鲜度断言。
+pub const CLOCK_NOT_SET: u64 = 0;
 
 /// 计算消息的签名载荷（除 `signature` 外的全部字段，顺序固定 → 跨语言可复现）。
 fn signing_bytes(msg: &PmbMessage) -> PluginResult<Vec<u8>> {
@@ -196,8 +201,11 @@ struct RouteEntry {
     rate: RateLimit,
     /// 会话密钥（注册时随机生成，HMAC 签名用）。
     key: [u8; SESSION_KEY_LEN],
-    /// 已见 nonce（防重放）。
-    seen_nonces: std::collections::BTreeSet<String>,
+    /// 已见 nonce（防重放，按内容 membership）。v3.5.2（AU-25）：从 BTreeSet<String>
+    /// 改为 HashSet 配合 `nonce_recency`，使超窗淘汰按签发时间而非字典序。
+    seen_nonces: HashSet<String>,
+    /// nonce 按 (签发毫秒, nonce) 时间序排列，超窗时淘汰最旧（而非字典序最小）。
+    nonce_recency: BTreeSet<(u64, String)>,
     violations: u32,
 }
 
@@ -227,6 +235,10 @@ pub struct PluginBus {
     audit: Vec<AuditRecord>,
     /// 单消息上限（字节）。
     max_message_bytes: usize,
+    /// 服务端当前时钟（毫秒，Unix epoch）。v3.5.2（AU-21）：用于 TTL 新鲜度断言。
+    /// 0 = 未注入（确定性回放模式，新鲜度检查暂关，向后兼容）；生产宿主须调用
+    /// [`PluginBus::set_server_clock_ms`] 注入真实时钟。
+    server_now_ms: u64,
 }
 
 impl std::fmt::Debug for PluginBus {
@@ -248,7 +260,17 @@ impl PluginBus {
             host_tx: None,
             audit: Vec::new(),
             max_message_bytes: 1024 * 1024,
+            server_now_ms: 0,
         }
+    }
+
+    /// 注入服务端当前时钟（毫秒，Unix epoch），启用 TTL 新鲜度断言（v3.5.2，AU-21）。
+    ///
+    /// 生产宿主在启动后用真实墙钟调用一次；此后每条消息必须落在
+    /// `[issued_at, issued_at + ttl_ms]` 内，否则以 `PMB_MESSAGE_EXPIRED` 拒绝。
+    /// 测试用此注入可控时钟以验证过期拒绝。
+    pub fn set_server_clock_ms(&mut self, now_ms: u64) {
+        self.server_now_ms = now_ms;
     }
 
     /// 设置消息上限。
@@ -272,7 +294,8 @@ impl PluginBus {
                 // 默认每秒 100 条。
                 rate: RateLimit::new(1000, 100),
                 key: Self::random_key(),
-                seen_nonces: std::collections::BTreeSet::new(),
+                seen_nonces: HashSet::new(),
+                nonce_recency: BTreeSet::new(),
                 violations: 0,
             },
         );
@@ -316,11 +339,25 @@ impl PluginBus {
     }
 
     /// 更新插件状态（生命周期变化时调用）。
+    ///
+    /// v3.5.2（AU-06）：复用 [`PluginState::is_terminal`]（与
+    /// [`crate::plugin::lifecycle::PluginLifecycle`] 同一终态谓词）做**终态锁定后门**——
+    /// 一旦插件处于终态（Refused/Quarantined/Archived），任何再调用本方法把它改写到
+    /// 其它状态（尤其回 Running）都返回 [`PluginError::InvalidTransition`]，不再静默
+    /// 直改。粒度更细的状态图行走（Discovered→Verified→…）仍是宿主
+    /// `PluginLifecycle::transition` 的职责；此处作为总线侧的防御性兜底。
     pub fn set_state(&mut self, plugin_id: &str, state: PluginState) -> PluginResult<()> {
         let entry = self
             .routes
             .get_mut(plugin_id)
             .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        // 终态锁定：终态插件不可被重新激活/改写状态。
+        if entry.state.is_terminal() && state != entry.state {
+            return Err(PluginError::InvalidTransition {
+                from: entry.state.as_str().to_string(),
+                to: state.as_str().to_string(),
+            });
+        }
         entry.state = state;
         Ok(())
     }
@@ -333,6 +370,14 @@ impl PluginBus {
             .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
         entry.token = Some(token);
         Ok(())
+    }
+
+    /// 移除某插件的整条路由（卸载时调用，v3.5.2，AU-24）。
+    ///
+    /// 旧实现卸载后仍保留 RouteEntry（含 Sender/状态/令牌），形成总线上的孤儿路由；
+    /// 移除后该插件不再占用路由表、也不再可被投递。返回是否原本存在。
+    pub fn remove_route(&mut self, plugin_id: &str) -> bool {
+        self.routes.remove(plugin_id).is_some()
     }
 
     /// 插件当前违规次数。
@@ -427,39 +472,61 @@ impl PluginBus {
             ));
         }
 
-        // 5. 速率（issued_at 毫秒）。
-        let now_ms = msg.issued_at.saturating_mul(1000);
-        let ok = self
-            .routes
-            .get_mut(&msg.source)
-            .map(|e| e.rate.check(now_ms))
-            .unwrap_or(false);
-        if !ok {
-            return Err(self.reject(msg, format!("发送方 {} 超出速率配额", msg.source)));
-        }
-
         // 6. 签名：用发送方会话密钥重算 HMAC，必须与消息携带的 signature 一致。
         //    任何字段被篡改、伪造 source 或换密钥都会在此失败。
+        //    v3.5.2（AU-25）：签名/nonce/新鲜度一律**先于**速率桶校验——否则一个
+        //    坏签名或重放攻击者就能白嫖掉合法插件的速率配额。
         let expected = compute_signature(msg, &session_key)?;
         if msg.signature.is_empty() || !constant_time_eq_hex(&expected, &msg.signature) {
             return Err(self.reject(msg, "消息签名无效或缺失（可能被篡改/伪造）".to_string()));
         }
 
         // 7. nonce 防重放：同一 nonce 只接受一次（签名覆盖 nonce，故攻击者无法
-        //    复用签名后只改 nonce）。窗口满时丢弃最旧的 nonce。
+        //    复用签名后只改 nonce）。窗口满时按**签发时间**淘汰最旧（AU-25）。
         if msg.nonce.is_empty() {
             return Err(self.reject(msg, "消息缺少 nonce".to_string()));
         }
+        let issued_ms = msg.issued_at.saturating_mul(1000);
         let entry = self.routes.get_mut(&msg.source).ok_or_else(|| {
             PluginError::Bus(format!("发送方 {} 未注册（nonce 检查）", msg.source))
         })?;
         if !entry.seen_nonces.insert(msg.nonce.clone()) {
             return Err(self.reject(msg, "重放消息：nonce 已被使用".to_string()));
         }
+        entry.nonce_recency.insert((issued_ms, msg.nonce.clone()));
         if entry.seen_nonces.len() > MAX_SEEN_NONCES {
-            if let Some(oldest) = entry.seen_nonces.iter().next().cloned() {
-                entry.seen_nonces.remove(&oldest);
+            // 按时间序淘汰最旧（BTreeSet 按 (issued_ms, nonce) 升序，first=最旧），
+            // 而非旧实现的字典序最小——字典序可能误删刚签发的合法 nonce。
+            if let Some((old_issued, old_nonce)) = entry.nonce_recency.iter().next().cloned() {
+                entry.nonce_recency.remove(&(old_issued, old_nonce.clone()));
+                entry.seen_nonces.remove(&old_nonce);
             }
+        }
+
+        // 8. TTL 新鲜度（v3.5.2，AU-21）：ttl_ms 已在签名内（不可改），旧实现从不
+        //    比对时钟。一旦宿主注入服务端时钟，要求 now ∈ [issued_at, issued_at+ttl_ms]。
+        if self.server_now_ms != CLOCK_NOT_SET {
+            let valid_until = issued_ms.saturating_add(msg.ttl_ms);
+            if self.server_now_ms > valid_until {
+                return Err(self.reject(
+                    msg,
+                    format!(
+                        "PMB_MESSAGE_EXPIRED: 消息签发于 {}ms，TTL {}ms，已于 {}ms 过期",
+                        issued_ms, msg.ttl_ms, self.server_now_ms
+                    ),
+                ));
+            }
+        }
+
+        // 5. 速率（issued_at 毫秒）——v3.5.2（AU-25）移到签名/nonce/新鲜度之后，
+        //    坏签名/重放/过期消息不消耗合法插件的速率配额。
+        let ok = self
+            .routes
+            .get_mut(&msg.source)
+            .map(|e| e.rate.check(issued_ms))
+            .unwrap_or(false);
+        if !ok {
+            return Err(self.reject(msg, format!("发送方 {} 超出速率配额", msg.source)));
         }
         Ok(())
     }
@@ -856,5 +923,156 @@ mod tests {
         m.signature = compute_signature(&m, &x_key).unwrap();
         let r = bus.dispatch(&m);
         assert!(r.is_err());
+    }
+
+    // ── v3.5.2（AU-06）：终态锁定后门 ──────────────────────────────
+    #[test]
+    fn terminal_state_cannot_be_revived_to_running() {
+        let mut bus = PluginBus::new();
+        bus.register("p");
+        // 进入终态 Quarantined（Discovered→Quarantined 非终态源，允许）。
+        bus.set_state("p", PluginState::Quarantined).unwrap();
+        // 终态插件不可被重新激活回 Running。
+        let r = bus.set_state("p", PluginState::Running);
+        assert!(r.is_err(), "终态 Quarantined 不可回 Running");
+        // 也不可改写到任何其它非终态。
+        assert!(bus.set_state("p", PluginState::Stopped).is_err());
+        assert!(bus.set_state("p", PluginState::Discovered).is_err());
+        // 状态保持终态。
+        assert_eq!(bus.route_table().get("p"), Some(&PluginState::Quarantined));
+    }
+
+    // ── v3.5.2（AU-21）：TTL 新鲜度 ───────────────────────────────
+    #[test]
+    fn expired_message_rejected_when_server_clock_set() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // 消息签发于 issued_at=1s（1000ms），ttl=5000ms → 有效至 6000ms。
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        // 未注入时钟（回放模式）→ 旧行为：新鲜度不拦，正常送达。
+        bus.dispatch(&m).unwrap();
+        // 注入服务端时钟到很远的未来（10,000s）→ 该消息早已过期。
+        bus.set_server_clock_ms(10_000_000);
+        let m2 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        let err = bus.dispatch(&m2).unwrap_err();
+        assert!(
+            err.to_string().contains("PMB_MESSAGE_EXPIRED"),
+            "过期消息必须被拒，got {err}"
+        );
+    }
+
+    // ── v3.5.2（AU-25）：nonce 按时间淘汰 + 速率后置 ───────────────
+    #[test]
+    fn nonce_window_evicts_oldest_by_time_not_lexicographic() {
+        let mut bus = PluginBus::new();
+        let _rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // 把 a 的 nonce 窗口填到 MAX 条，刻意让"字典序最小"的 aaa 反而是最新签发，
+        // "时间最旧"的 zzz 反而是字典序最大——旧 BTreeSet 字典序淘汰会误删 aaa。
+        {
+            let e = bus.routes.get_mut("a").unwrap();
+            for i in 0..(MAX_SEEN_NONCES - 2) {
+                let n = format!("n-{i:05}");
+                e.seen_nonces.insert(n.clone());
+                e.nonce_recency.insert((1000 + i as u64, n));
+            }
+            // 字典序最小、但时间最新
+            e.seen_nonces.insert("aaa".to_string());
+            e.nonce_recency.insert((10_000_000u64, "aaa".to_string()));
+            // 字典序最大、但时间最旧
+            e.seen_nonces.insert("zzz".to_string());
+            e.nonce_recency.insert((500u64, "zzz".to_string()));
+            assert_eq!(e.seen_nonces.len(), MAX_SEEN_NONCES);
+        }
+        // 再投递一条合法新消息 → 窗口溢出，淘汰最旧。
+        let m = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                5000,
+            ),
+        );
+        bus.dispatch(&m).unwrap();
+        let e = bus.routes.get("a").unwrap();
+        // 时间序：zzz(500) 最旧 → 应被淘汰（可重放其 nonce）；aaa(10M) 最新 → 必须保留。
+        assert!(
+            !e.seen_nonces.contains("zzz"),
+            "时间最旧的 zzz 应被淘汰，got recency={:?}",
+            e.nonce_recency
+        );
+        assert!(
+            e.seen_nonces.contains("aaa"),
+            "时间最新的 aaa 不应被字典序淘汰"
+        );
+    }
+
+    #[test]
+    fn bad_signature_does_not_consume_rate_quota() {
+        let mut bus = PluginBus::new();
+        let rx_b = bring_up(&mut bus, "b", &[Capability::MessageSend]);
+        bring_up(&mut bus, "a", &[Capability::MessageSend]);
+        // a 的速率：窗口 1000ms 内仅 1 条。
+        bus.routes.get_mut("a").unwrap().rate = RateLimit::new(1000, 1);
+        // 第 1 条合法送达（消耗唯一配额）。
+        let m1 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                1,
+            ),
+        );
+        bus.dispatch(&m1).unwrap();
+        // 第 2 条：篡改 payload → 坏签名。旧实现速率在前会把它当"限流"拒绝并占坑语义；
+        // 新实现签名先于速率，坏签名必须在签名步被拒，且**不消耗速率配额**。
+        let mut m2 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                2,
+            ),
+        );
+        m2.payload = serde_json::json!({"evil": true});
+        let r2 = bus.dispatch(&m2);
+        assert!(r2.is_err());
+        assert!(
+            r2.as_ref().unwrap_err().to_string().contains("签名"),
+            "坏签名应在签名步被拒，而非限流，got {r2:?}"
+        );
+        // 第 3 条：全新合法消息（issued_at=3，落在下一窗口）。速率配额未被坏签名消耗。
+        let m3 = signed(
+            &mut bus,
+            msg(
+                "a",
+                Target::Plugin("b".to_string()),
+                "plugin:message:send",
+                3,
+            ),
+        );
+        let r3 = bus.dispatch(&m3);
+        assert!(r3.is_ok(), "坏签名不应消耗速率配额，got {r3:?}");
+        let _ = rx_b;
     }
 }

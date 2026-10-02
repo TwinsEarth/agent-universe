@@ -115,6 +115,26 @@ impl PluginHost {
         &mut self.blacklist
     }
 
+    /// 启动时从环境变量 `GSN_BLACKLIST_FILE` 播种黑名单（v3.5.2，AU-07/AU-24）。
+    ///
+    /// 文件每行一个 plugin-id；未设置该变量或文件不存在 = 空黑名单（保持现状）。
+    /// 文件存在但读取失败时返回类型化错误，由调用方（节点启动）决定是否拒绝启动。
+    /// 不联网、不引入任何硬编码封禁。
+    pub fn seed_blacklist_from_env(&mut self) -> PluginResult<()> {
+        let Ok(path) = std::env::var("GSN_BLACKLIST_FILE") else {
+            return Ok(());
+        };
+        if path.trim().is_empty() {
+            return Ok(());
+        }
+        let loaded = Blacklist::load_operator_file(std::path::Path::new(&path))
+            .map_err(|e| PluginError::Runtime(format!("GSN_BLACKLIST_FILE: {e}")))?;
+        for e in loaded.entries().iter().cloned() {
+            self.blacklist.add(e);
+        }
+        Ok(())
+    }
+
     /// ABI 主版本兼容性（热兼容）。
     ///
     /// 接受主版本 ≤ [`HOST_ABI_MAJOR`] 的插件；拒绝更新主版本。
@@ -205,6 +225,18 @@ impl PluginHost {
         // 0. ABI 兼容性（热兼容）。
         Self::check_abi(&manifest.plugin.abi)?;
 
+        // 0.5（v3.5.2，AU-08）外部 install() 不得占用系统命名空间
+        //     `com.twinsearth.sys.*`。该命名空间在 arbiter 中走 Tier::System 分支、
+        //     「签名由宿主构建链路保证」而**不验签**；若外部自证系统名，即可绕过一切
+        //     签名/发布者信任，直接获得进程内全能力（提权）。系统插件只允许由
+        //     [`PluginHost::boot_system`]（宿主构建链路）装配。
+        if Tier::from_name(&manifest.plugin.name) == Tier::System {
+            return Err(PluginError::Manifest(format!(
+                "PLUGIN_SYS_NAMESPACE_FORBIDDEN: 外部安装不得使用系统命名空间 {}",
+                manifest.plugin.name
+            )));
+        }
+
         // 1. 黑名单检查（在签名校验之前也拦一道）。
         if self
             .blacklist
@@ -228,13 +260,15 @@ impl PluginHost {
             self.registry.register(manifest.clone())?;
             return Ok(manifest.plugin.name);
         }
-        self.registry.register(manifest.clone())?;
 
-        // 5. 选 runtime 并 spawn（supports 在内校验，无法强制即拒绝）。
+        // 5.（v3.5.2，AU-23）选 runtime 并 spawn：**先 spawn 成功再落注册/总线**，
+        //    spawn 失败时不写 registry、不留孤儿注册项（旧实现先 registry.register
+        //    再 spawn，spawn 失败会留下与实例 desync 的残留注册）。
         let instance = self.spawn_runtime(&manifest, tier)?;
 
-        // 6. 总线注册、令牌、置 RUNNING。
+        // 6. spawn 成功：注册 + 总线注册、令牌、置 RUNNING。
         let id = manifest.plugin.name.clone();
+        self.registry.register(manifest.clone())?;
         self.bus.register(&id);
         self.bus.set_token(&id, token)?;
         self.bus.set_state(&id, PluginState::Running)?;
@@ -262,6 +296,16 @@ impl PluginHost {
             .get(id)
             .map(|rp| rp.manifest.clone())
             .ok_or_else(|| PluginError::NotFound(id.to_string()))?;
+        //（v3.5.2，AU-07）start() 重新过黑名单闸门：插件可能在停止期间被操作员/运行时
+        // 加入黑名单，不得仅因「之前装过」就重新拉起进入数据面。
+        if self
+            .blacklist
+            .is_blacklisted(id, &manifest.plugin.module_sha256)
+        {
+            return Err(PluginError::Blacklisted(format!(
+                "插件 {id} 在黑名单中，拒绝启动"
+            )));
+        }
         let tier = Tier::from_name(id);
         let instance = self.spawn_runtime(&manifest, tier)?;
         self.instances.insert(id.to_string(), instance);
@@ -283,7 +327,9 @@ impl PluginHost {
         }
         self.instances.remove(id);
         self.registry.unregister(id)?;
-        self.bus.set_state(id, PluginState::Stopped)?;
+        //（v3.5.2，AU-24）卸载必须从总线移除整条 RouteEntry（Sender/状态/令牌），
+        // 旧实现只置 Stopped 而保留路由，形成总线上的孤儿路由。
+        self.bus.remove_route(id);
         Ok(())
     }
 
@@ -576,7 +622,12 @@ mod tests {
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(manifest).unwrap();
         host.uninstall(id).unwrap();
-        assert_eq!(host.route_table().get(id), Some(&PluginState::Stopped));
+        // v3.5.2（AU-24）：卸载后总线路由应被整体移除（不再是残留的 Stopped 路由）。
+        assert!(
+            !host.route_table().contains_key(id),
+            "卸载后 RouteEntry 应被移除，实际: {:?}",
+            host.route_table().get(id)
+        );
         assert!(!host.plugin_count_is_registered(id));
     }
 
@@ -821,6 +872,100 @@ mod tests {
             serde_json::json!({}),
         );
         assert!(r.is_err());
+    }
+
+    // ── v3.5.2（AU-08）：外部 install 拒绝系统命名空间 ───────────────
+    #[test]
+    fn install_rejects_external_system_namespace() {
+        let mut host = PluginHost::new("3.0.0", None);
+        // 即使开发者自签 com.twinsearth.sys.* 名称，也必须在签名校验前被拒——
+        // 该命名空间在 arbiter 走 System 分支不验签，外部自证即可提权。
+        let mut m = official::official_manifest("com.twinsearth.sys.evil", "3.0.0");
+        let dev = Keypair::generate();
+        m.sign_with(&dev).unwrap();
+        let err = host.install(m).unwrap_err();
+        assert!(
+            err.to_string().contains("PLUGIN_SYS_NAMESPACE_FORBIDDEN"),
+            "外部自证系统名必须被拒，got {err}"
+        );
+    }
+
+    // ── v3.5.2（AU-07）：黑名单可播种 + start() 复检 ────────────────
+    #[test]
+    fn blacklist_seeded_from_operator_file_blocks_install() {
+        let dir = std::env::temp_dir().join(format!("au-bl-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let blf = dir.join("blacklist.txt");
+        // 注释行 + 一个被拉黑 id。
+        std::fs::write(&blf, "# seed file\ncom.twinsearth.official.evil\n").unwrap();
+        // 环境变量仅在本测试内设入并立即清除，避免污染全局。
+        std::env::set_var("GSN_BLACKLIST_FILE", &blf);
+        let mut host = PluginHost::new("3.0.0", None);
+        let r = host.seed_blacklist_from_env();
+        std::env::remove_var("GSN_BLACKLIST_FILE");
+        r.unwrap();
+        assert!(host
+            .blacklist()
+            .is_blacklisted("com.twinsearth.official.evil", ""));
+        // 播种后该 id 安装被拒。
+        let mut m = official::official_manifest("com.twinsearth.official.evil", "3.0.0");
+        let dev = Keypair::generate();
+        m.sign_with(&dev).unwrap();
+        m.counter_sign_with(&dev).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        assert!(host.install(m).is_err());
+    }
+
+    #[test]
+    fn start_rechecks_blacklist_after_stop() {
+        let dev = Keypair::generate();
+        let id = official::OFF_MARKET_MATCH;
+        let manifest = signed_official(id, &dev);
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(manifest).unwrap();
+        host.stop(id).unwrap();
+        // 停止期间被操作员加入黑名单。
+        host.blacklist_mut()
+            .add(crate::plugin::blacklist::BlacklistEntry {
+                plugin_name: id.to_string(),
+                module_sha256: None,
+                reason: crate::plugin::blacklist::BlacklistReason::RuntimeAbuse,
+                blacklisted_at: 0,
+                evidence: "stopped-then-blacklisted".to_string(),
+                appeal: None,
+            });
+        // start() 必须重新过黑名单闸门，不得仅因「之前装过」就拉起。
+        assert!(host.start(id).is_err());
+    }
+
+    // ── v3.5.2（AU-23）：spawn 失败不留孤儿注册 ────────────────────
+    #[test]
+    fn spawn_failure_leaves_no_orphan_registration() {
+        let dev = Keypair::generate();
+        let id = official::OFF_MARKET_MATCH;
+        // 构造一个签名合法、但资源 cpu_ms=0 的清单 → ProcessSandbox::create 的
+        // validate 拒绝 → spawn 失败。旧实现先 register 再 spawn，spawn 失败会留
+        // 下与实例 desync 的注册项；新实现先 spawn 后 register。
+        let mut m = official::official_manifest(id, "3.0.0");
+        m.limits.cpu_ms = 0;
+        m.sign_with(&dev).unwrap();
+        m.counter_sign_with(&dev).unwrap();
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        let r = host.install(m);
+        assert!(r.is_err(), "spawn 应因非法资源失败，got {r:?}");
+        // 失败不得留下孤儿注册或总线路由。
+        assert!(
+            !host.plugin_count_is_registered(id),
+            "spawn 失败不得留注册项"
+        );
+        assert!(
+            !host.route_table().contains_key(id),
+            "spawn 失败不得留总线路由"
+        );
     }
 
     // 辅助断言。

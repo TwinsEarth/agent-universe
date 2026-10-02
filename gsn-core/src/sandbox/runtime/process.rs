@@ -287,6 +287,28 @@ impl super::super::Sandbox for ProcessSandbox {
         for cap in cfg.required_boundaries() {
             declaration.check(cap, &cfg.waivers)?;
         }
+        // v3.5.2（AU-28）：请求的隔离级别不得高于本后端实际可达级别。
+        // 进程后端如实只交付 Process（strength=1）；调用方请求 Container/MicroVM
+        // 而不豁免 → 具名拒绝，绝不静默降级后按 Process 跑。
+        let actual = self.isolation();
+        if cfg.isolation.strength() > actual.strength() {
+            let waived = cfg.waivers.iter().any(|w| {
+                w.boundary == super::super::capability::Capability::IsolationLevel
+                    && !w.justification.trim().is_empty()
+            });
+            if !waived {
+                return Err(SandboxError::PolicyNotEnforceable {
+                    boundary: super::super::capability::Capability::IsolationLevel,
+                    backend: "process".to_string(),
+                    detail: format!(
+                        "SANDBOX_ISOLATION_UNAVAILABLE: 请求隔离级别 {} 高于进程后端实际可达级别 {}；\
+                         请改用容器/microVM 后端，或用带非空理由的 Waiver(Capability::IsolationLevel) 显式接受降级",
+                        cfg.isolation.label(),
+                        actual.label()
+                    ),
+                });
+            }
+        }
         let id = if cfg.sandbox_id.is_empty() {
             self.id.clone()
         } else {
@@ -482,23 +504,18 @@ fn resolve_program(program: &str, cfg: &SandboxConfig) -> Result<String, Sandbox
     )))
 }
 
-/// 把相对路径安全地 join 到沙箱目录，拒绝绝对路径与 `..` 逃逸
+/// 把相对路径安全地 join 到沙箱目录，拒绝绝对路径、Windows 盘符/UNC 与 `..` 逃逸。
+///
+/// v3.5.2（AU-26）：旧实现只查 `relative.starts_with('/')` 与 ParentDir，在 Windows
+/// 上漏放 `C:\...` 与 `\\server\share`。统一委托
+/// [`super::super::config::path_escapes_sandbox`]（跨平台字符串判定）。
 fn safe_join(base: &Path, relative: &str) -> Result<PathBuf, SandboxError> {
-    if relative.starts_with('/') {
+    if super::super::config::path_escapes_sandbox(relative) {
         return Err(SandboxError::IsolationViolation(format!(
-            "拒绝绝对路径: {relative}"
+            "拒绝绝对路径/盘符/UNC/逃逸: {relative}"
         )));
     }
-    let rel = Path::new(relative);
-    if rel
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(SandboxError::IsolationViolation(format!(
-            "路径逃逸沙箱: {relative}"
-        )));
-    }
-    Ok(base.join(rel))
+    Ok(base.join(relative))
 }
 
 /// 简单 shell 引用（包单引号，内部单引号转义）。

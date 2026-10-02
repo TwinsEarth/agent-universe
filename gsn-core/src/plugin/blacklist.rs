@@ -143,6 +143,46 @@ impl Blacklist {
     pub fn entries(&self) -> &[BlacklistEntry] {
         &self.entries
     }
+
+    /// 从操作员提供的文件播种黑名单（v3.5.2，AU-07/AU-24）。
+    ///
+    /// 每行一个 plugin-id（精确名称匹配）；`#` 开头为注释、空行忽略。按名称拉黑
+    /// （`module_sha256 = None`）。**文件不存在视为空黑名单**（保持现状行为）；
+    /// 不联网、不引入任何硬编码封禁。
+    ///
+    /// # 失败语义
+    ///
+    /// 文件存在但不可读/解码失败时返回类型化错误，由调用方（节点启动）决定是否拒绝
+    /// 启动；文件缺失一律视为空（`Ok`）。
+    pub fn load_operator_file(path: &std::path::Path) -> Result<Self, String> {
+        let mut bl = Blacklist::new();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(bl),
+            Err(e) => {
+                return Err(format!("读取操作员黑名单文件失败 {:?}: {e}", path));
+            }
+        };
+        for (lineno, line) in content.lines().enumerate() {
+            let id = line.trim();
+            if id.is_empty() || id.starts_with('#') {
+                continue;
+            }
+            bl.add(BlacklistEntry {
+                plugin_name: id.to_string(),
+                module_sha256: None,
+                reason: BlacklistReason::RuntimeAbuse,
+                blacklisted_at: 0,
+                evidence: format!(
+                    "seeded from operator blacklist file {}:{}",
+                    path.display(),
+                    lineno + 1
+                ),
+                appeal: None,
+            });
+        }
+        Ok(bl)
+    }
 }
 
 #[cfg(test)]

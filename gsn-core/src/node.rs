@@ -2125,6 +2125,16 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         Some(args.data_dir.join("plugins")),
     );
+    // v3.5.2（AU-07/AU-24 生产接线）：构造 host 后、装配/启动任何插件之前，从
+    // GSN_BLACKLIST_FILE 播种操作员黑名单。未设置/空路径/文件缺失 = 空黑名单（现状 no-op）；
+    // 但一旦操作员显式设置了该文件却读取/解析失败，属"显式配置被无视"，危险——打印 CRITICAL
+    // 并 fail-closed 拒绝启动插件子系统，绝不静默按空表继续。
+    if let Err(e) = plugin_host.seed_blacklist_from_env() {
+        eprintln!(
+            "CRITICAL: GSN_BLACKLIST_FILE 黑名单播种失败，拒绝以不完整黑名单启动插件子系统: {e}"
+        );
+        return Err(anyhow::anyhow!("plugin blacklist seed failed: {e}"));
+    }
     match plugin_host.boot_system(&system_handles) {
         Ok(started) => println!(
             "✅ Plugin Host 已启动：{} 个 T0 系统插件（{}）",

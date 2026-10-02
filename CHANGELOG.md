@@ -45,9 +45,13 @@
   - 修复：新增 `Blacklist::load_operator_file`（每行一个 plugin-id、`#` 注释、文件不存在=空，
     不联网、无硬编码封禁）与 `host.seed_blacklist_from_env()`（读 `GSN_BLACKLIST_FILE`）；
     `start()` 重新过黑名单闸门；`uninstall()` 末尾 `bus.remove_route(id)`。
-    `file_appeal` 确为死代码，不接线（现状保留）。
+    `file_appeal` 确为死代码，不接线（现状保留）。**生产接线（复核补修）**：`run_daemon`
+    （node.rs）在构造 `PluginHost` 后、`boot_system`/`boot_official` 之前真实调用
+    `seed_blacklist_from_env()`——未设变量=空黑名单 no-op（现状）；已设但读取/解析失败则打印
+    CRITICAL 并 fail-closed 拒绝启动插件子系统，绝不静默按空表继续。
   - 回归测试（host.rs/blacklist.rs）：播种某 id→install 被拒；停止期间拉黑→`start` 被拒；
-    uninstall 后 `route_table` 无该 id。
+    uninstall 后 `route_table` 无该 id；另加 `blacklist_seed_read_failure_is_error_not_silent_empty`
+    证明"显式配置却读失败"返回错误（run_daemon 据此 fail-closed）、未设变量才是 no-op。
 
 - **AU-09 + AU-22（outbox 有界与健壮解析）**
   - 根因：`collect_outbox` 先 `read_to_string` 整文件（无上限，内存 DoS）；非 UTF8 静默
@@ -64,12 +68,17 @@
     按**字典序**淘汰（可能误删刚签发的合法 nonce）；速率槽在 HMAC 验签 / nonce 校验**之前**
     消耗——坏签名/重放攻击者可白嫖合法插件的速率配额。
   - 修复：①`PluginBus::set_server_clock_ms` 注入服务端时钟后，强制
-    `now ∈ [issued_at, issued_at+ttl_ms]`，过期返 `PMB_MESSAGE_EXPIRED`（未注入时钟时为
-    确定性回放模式，向后兼容）；②nonce 改 `HashSet` membership + `BTreeSet<(issued_at,nonce)>`
-    时间序，超窗淘汰**时间最旧**而非字典序；③把速率桶消耗移到 HMAC 验签 + nonce + 新鲜度
-    全部通过之后。
-  - 回归测试（bus.rs）：注入时钟到未来后过期消息被拒；字典序与时间序相反时按时间淘汰最旧；
-    坏签名消息不消耗速率配额（随后合法消息仍可发送）。
+    `now ∈ [issued_at, issued_at+ttl_ms]`，过期返 `PMB_MESSAGE_EXPIRED`。**生产接线（复核
+    补修）**：时钟注入点从"仅测试"改为在宿主唯一发送路径 `PluginHost::dispatch_for_plugin`
+    （`send_to`/`publish` 及 outbox 代投全部汇聚于此）签名后、dispatch 前用真实墙钟即时写入；
+    `issued_at` 取宿主时钟（生产 `now_ms==0` 时退到真墙钟，避免自签消息被钉到 1970）。
+    bus.rs 直接驱动 PluginBus 的单测仍在未注入时钟的确定性回放模式下（向后兼容）；
+    ②nonce 改 `HashSet` membership + `BTreeSet<(issued_at,nonce)>` 时间序，超窗淘汰**时间最旧**
+    而非字典序；③把速率桶消耗移到 HMAC 验签 + nonce + 新鲜度全部通过之后。
+  - 回归测试：bus.rs 注入时钟到未来后过期消息被拒、字典序与时间序相反时按时间淘汰最旧、
+    坏签名不消耗速率配额；**另加经真实 PluginHost 的 `au21_production_path_enforces_ttl_freshness`**
+    （不手动 set_server_clock）：窗口内新鲜消息被接受投递，把宿主时钟钉到 epoch+1s（issued_at 陈旧）、
+    总线仍按真墙钟判定时被 `PMB_MESSAGE_EXPIRED` 拒绝——证明生产发送路径真的强制了 TTL。
 
 - **AU-10（waiver 理由入审计）**
   - 根因：`AuditEntry` 无 waiver 字段，`create` 审计点不传 `cfg.waivers`——「在缺边界后端

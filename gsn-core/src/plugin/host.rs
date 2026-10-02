@@ -60,6 +60,15 @@ pub struct PluginHost {
     now_ms: u64,
 }
 
+/// 当前墙钟毫秒（Unix epoch）。SystemTime 早于 epoch 在实践中不可能，若真出现则返回 0——
+/// 此时总线时钟等于 `CLOCK_NOT_SET`，TTL 检查按未注入处理（安全降级，绝不 panic）。
+fn real_wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl PluginHost {
     /// 新建宿主（未装配系统插件）。
     pub fn new(version: impl Into<String>, data_dir: Option<PathBuf>) -> Self {
@@ -83,6 +92,16 @@ impl PluginHost {
     /// 注入当前时间（测试）。
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+    }
+
+    /// 构造消息 issued_at 时使用的宿主时钟：测试经 [`set_now`] 显式注入则沿用（确定性），
+    /// 生产 `now_ms==0` 时退到真实墙钟，避免把自签消息的 issued_at 钉死在 1970 年。
+    fn clock_now_ms(&self) -> u64 {
+        if self.now_ms != 0 {
+            self.now_ms
+        } else {
+            real_wall_ms()
+        }
     }
 
     /// 加官方根密钥（T1/T2 副签验证）。
@@ -434,7 +453,9 @@ impl PluginHost {
         payload: serde_json::Value,
         kind: MessageKind,
     ) -> PluginResult<()> {
-        let issued_at = self.now_ms / 1000;
+        // v3.5.2（AU-21 生产接线）：issued_at 取宿主时钟；生产 now_ms==0 时退到真实墙钟，
+        // 避免自签消息被打成 1970 年。测试可经 set_now() 固定 issued_at。
+        let issued_at = self.clock_now_ms() / 1000;
         let mut msg = PmbMessage {
             id: uuid::Uuid::new_v4().to_string(),
             corr_id: None,
@@ -451,6 +472,12 @@ impl PluginHost {
             signature: String::new(),
         };
         self.bus.sign_message(&mut msg)?;
+        // v3.5.2（AU-21 生产接线）：这是插件消息离开宿主的唯一发送点（send_to/publish
+        // 及 outbox 代投全部汇聚于此）。旧实现 set_server_clock_ms 仅被测试调用，生产总线
+        // server_now_ms 恒为 CLOCK_NOT_SET，TTL 新鲜度检查形同关闭。此处每次发送前把**真实
+        // 墙钟**写入总线，使 now∈[issued_at, issued_at+ttl_ms] 断言在生产真正生效；重放/陈旧
+        // 消息据此被拒。测试用 set_now 固定旧 issued_at、总线仍取真墙钟即可复现过期。
+        self.bus.set_server_clock_ms(real_wall_ms());
         self.bus.dispatch(&msg)
     }
 
@@ -780,6 +807,48 @@ mod tests {
         }
     }
 
+    // ── v3.5.2（AU-21 生产接线）：经真实 PluginHost 证明 TTL 新鲜度在生产发送路径被强制 ──
+    // 不手动 set_server_clock——时钟由宿主在 dispatch_for_plugin 内用真实墙钟注入。
+    #[test]
+    fn au21_production_path_enforces_ttl_freshness() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(source, &dev)).unwrap();
+        let rx = host.open_inbox("bridge-peer-au21").unwrap();
+
+        // 新鲜消息：issued_at 取真墙钟，总线时钟也是真墙钟 → 在 ttl 窗口内，应被接受投递。
+        host.send_to(
+            source,
+            "bridge-peer-au21",
+            "plugin:message:send",
+            serde_json::json!({"seq": 1}),
+        )
+        .expect("窗口内新鲜消息应被接受");
+        let got = rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(got.payload["seq"], 1);
+
+        // 过期消息：把宿主时钟钉到 epoch+1s（issued_at=1s=1000ms，ttl=5000ms→有效至6000ms），
+        // 但总线仍按真实墙钟判定（早已远超 6000ms）→ 必须 PMB_MESSAGE_EXPIRED 拒绝。
+        host.set_now(1_000);
+        let err = host
+            .send_to(
+                source,
+                "bridge-peer-au21",
+                "plugin:message:send",
+                serde_json::json!({"seq": 2}),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("PMB_MESSAGE_EXPIRED"),
+            "陈旧 issued_at 的消息应被生产 TTL 闸门拒绝，实际: {err}"
+        );
+    }
+
     // ── B2（v3.5.0）：host.call 把插件 outbox 经 PMB 投递 ─────────────
     #[test]
     fn call_delivers_plugin_send_outbox_over_pmb() {
@@ -914,6 +983,27 @@ mod tests {
         m.counter_sign_with(&dev).unwrap();
         host.add_official_root(&hex::encode(dev.public_key()));
         assert!(host.install(m).is_err());
+    }
+
+    /// v3.5.2（AU-07 生产接线）：操作员显式设置 GSN_BLACKLIST_FILE 但文件不可读/损坏时，
+    /// seed_blacklist_from_env 必须返回类型化错误——run_daemon 据此 fail-closed 拒绝启动，
+    /// 而不是静默按空黑名单继续。
+    #[test]
+    fn blacklist_seed_read_failure_is_error_not_silent_empty() {
+        // 指向一个目录（load_operator_file 读它会失败），模拟"显式配置却读不出来"。
+        let dir = std::env::temp_dir().join(format!("au-bldir-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("GSN_BLACKLIST_FILE", &dir);
+        let mut host = PluginHost::new("3.0.0", None);
+        let r = host.seed_blacklist_from_env();
+        std::env::remove_var("GSN_BLACKLIST_FILE");
+        assert!(
+            r.is_err(),
+            "显式设置的黑名单文件读失败必须报错（run_daemon 据此 fail-closed），实际: {r:?}"
+        );
+        // 未设置变量时才是 no-op（现状）。
+        let mut host2 = PluginHost::new("3.0.0", None);
+        assert!(host2.seed_blacklist_from_env().is_ok());
     }
 
     #[test]

@@ -308,6 +308,17 @@ pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// v3.5.6（AU-持久化）：中继池遥测/容量写入 SQLite 失败时**显式告警**而非静默丢弃。
+///
+/// 这些写入是尽力而为的运维状态（健康位/失败计数/容量元数据），不能让一次落盘失败
+/// 打断 P2P 主路径（否则一次磁盘错误会拖垮整个 swarm 事件循环），因此控制流不中断；
+/// 但旧实现用 `let _ =` 完全吞掉错误，运维无从察觉中继池状态可能正在与磁盘漂移。
+/// 这里统一记录操作、对象 id 与根因，使「持久化失败」可观测（与 market_actor 的
+/// `warn_persist` 同一原则：降级路径必须留痕）。
+fn log_relay_persist_err(op: &str, id: &str, err: &anyhow::Error) {
+    eprintln!("⚠️ [relay-persist] {op}({id}) 落盘失败（本次运行仍按内存状态继续）: {err}");
+}
+
 /// 从 start_time(RFC3339) 计算已运行天数
 fn elapsed_days_since(start_iso: &str) -> i64 {
     if start_iso.is_empty() {
@@ -372,7 +383,9 @@ fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: 
         .map(|v| v.iter().any(|r| r.relay_id == id))
         .unwrap_or(false);
     if exists {
-        let _ = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso());
+        if let Err(e) = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso()) {
+            log_relay_persist_err("set_relay_status", &id, &e);
+        }
         return;
     }
     let cap = current_capacity(store);
@@ -414,7 +427,9 @@ fn process_swarm_event(
             let id = peer_id.to_string();
             if active.remove(&id).is_some() || connecting.remove(peer_id) {
                 peer.remove_relay(&id);
-                let _ = store.mark_relay_failed(&id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &id, &e);
+                }
                 eprintln!("🔌 中继通道掉线 {}，准备自动切换", id);
                 need_ensure = true;
             }
@@ -426,7 +441,9 @@ fn process_swarm_event(
                 let id = pid.to_string();
                 active.remove(&id);
                 peer.remove_relay(&id);
-                let _ = store.mark_relay_failed(&id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &id, &e);
+                }
                 eprintln!("❌ relay {} 连接失败，准备自动切换", id);
                 need_ensure = true;
             }
@@ -452,7 +469,11 @@ fn process_swarm_event(
                             ),
                             None => (0, 0),
                         };
-                        let _ = store.set_relay_status(&id, true, "active", dur, data, &now_iso());
+                        if let Err(e) =
+                            store.set_relay_status(&id, true, "active", dur, data, &now_iso())
+                        {
+                            log_relay_persist_err("set_relay_status", &id, &e);
+                        }
                         eprintln!(
                             "✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)",
                             id, renewal, dur, data
@@ -520,7 +541,9 @@ fn ensure_channels(
                 }
                 Err(e) => {
                     eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
-                    let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                    if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                        log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                    }
                     in_use.insert(r.relay_id.clone());
                 }
             },
@@ -552,14 +575,22 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
         }
         match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
             Ok(Ok(Ok(true))) => {
-                let _ = store.set_relay_status(&r.relay_id, true, "healthy", 0, 0, &now_iso());
+                if let Err(e) =
+                    store.set_relay_status(&r.relay_id, true, "healthy", 0, 0, &now_iso())
+                {
+                    log_relay_persist_err("set_relay_status", &r.relay_id, &e);
+                }
                 eprintln!("✅ probe 确认 hop relay: {}", r.relay_id);
             }
             Ok(Ok(Ok(false))) => {
-                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                }
             }
             _ => {
-                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                }
             }
         }
     }
@@ -804,7 +835,9 @@ fn handle_peer_command(
                 let id = pid.to_string();
                 active.remove(&id);
                 connecting.remove(&pid);
-                let _ = store.delete_relay(&id);
+                if let Err(e) = store.delete_relay(&id) {
+                    log_relay_persist_err("delete_relay", &id, &e);
+                }
             }
             let _ = reply.send(Ok(()));
         }
@@ -820,7 +853,9 @@ fn handle_peer_command(
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             let new = (cur + amount).max(0);
-            let _ = store.set_meta("relay_pool:manual_bonus", &new.to_string());
+            if let Err(e) = store.set_meta("relay_pool:manual_bonus", &new.to_string()) {
+                log_relay_persist_err("set_meta", "relay_pool:manual_bonus", &e);
+            }
             let cap = current_capacity(store);
             let _ = reply.send(Ok(cap.effective_cap));
         }
@@ -1937,7 +1972,9 @@ fn init_relay_pool(store: &PersistentStore) {
         .flatten()
         .is_none()
     {
-        let _ = store.set_meta("relay_pool:start_time", &now_iso());
+        if let Err(e) = store.set_meta("relay_pool:start_time", &now_iso()) {
+            log_relay_persist_err("set_meta", "relay_pool:start_time", &e);
+        }
     }
     if store
         .get_meta("relay_pool:manual_bonus")
@@ -1945,7 +1982,9 @@ fn init_relay_pool(store: &PersistentStore) {
         .flatten()
         .is_none()
     {
-        let _ = store.set_meta("relay_pool:manual_bonus", "0");
+        if let Err(e) = store.set_meta("relay_pool:manual_bonus", "0") {
+            log_relay_persist_err("set_meta", "relay_pool:manual_bonus", &e);
+        }
     }
     if store.relay_count().unwrap_or(0) == 0 {
         // 已真机验证的社区 relay（kubo，hop+stop+dcutr，reservation 120s/128KB）

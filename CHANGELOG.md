@@ -2,6 +2,46 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.6] - 2026-10-02
+
+### 补丁：中继池遥测落盘失败显式化 + 市场层结算独立审计/防重复结算回归（#74）
+
+本补丁收尾 GAP §3.6「持久化写入失败被静默吞掉」在**网络中继池运维路径**上的残留，
+并为「中标价付款 + 差额退款」补齐市场层独立审计与防二次结算断言。不含功能新增，
+不改变任何资金/共识语义；结算按中标价付执行者、预算余款退回需求方的实现早已在
+v3.5.1–3.5.3 落地并由端到端用例钉住，本版只补观测性与测试覆盖，不重复实现。
+
+- **中继池遥测落盘失败不再静默（AU-持久化·relay）**：`node.rs` 中 11 处对 SQLite
+  的中继池写入（`set_relay_status` / `mark_relay_failed` / `delete_relay` / `set_meta`，
+  覆盖 hop 自动入池、连接掉线/失败、reservation 续约、通道 listen 失败、周期 probe
+  健康/失败/超时、手动删除、容量扩容、池启动元数据）旧实现一律 `let _ = store.…(...)`，
+  磁盘/锁错误被完全丢弃，运维无从察觉内存中的中继池健康位/失败计数/容量正与磁盘漂移。
+  本版新增统一 helper `log_relay_persist_err`，落盘失败时打印
+  `⚠️ [relay-persist] <op>(<id>) 落盘失败…`（含操作、对象 id、根因）。
+  **控制流刻意不中断**：这些是尽力而为的运维遥测，不能让一次磁盘错误打断 P2P/swarm
+  主事件循环（与 `market_actor` 的 `warn_persist` 同一原则：降级路径必须留痕，但不阻断
+  数据面）。资金路径不受影响——资金流水 `append_ledger_record` 早已是「失败返回错误且
+  不推进水位」（v3.5.3 AU-14），本次不涉及。
+- **市场层独立审计回归**：新增 `test_market_independent_audit_passes_after_winner_price_refund`：
+  走完「充值→质押注册→发布托管 50→投标 10→匹配→验收→结算」完整市场状态机后，断言
+  `independent_audit().passed == true`，且从只追加流水独立重放的 `expected_total` 与当前
+  全部账户余额并集 `actual_total` 精确相等（均为总充值 150）。此前市场层只断言了
+  `conservation_check`，未断言比守恒更严、能抓「自洽但未入账」变动的独立审计。
+- **市场层防二次结算回归**：新增 `test_market_settle_task_twice_rejected`：同一任务
+  首次结算成功后再次 `settle_task` 必须返回 `Err`（错误含「不能结算」，Settled 为终态、
+  无入边），且执行者/需求方余额不再变动、`settled_count` 不增加。SettlementEngine 层
+  早有等价测试，本版补齐**市场层经任务状态机拒绝**这条此前无断言的路径，防止状态机放宽
+  后二次结算铸出第二笔款。
+
+**验证**：`cargo +1.98.1 build --bins` 通过；新增 2 个市场层测试通过；
+`cargo test --workspace -j2`、`cargo clippy --all-targets -- -D warnings`、
+`cargo fmt --all --check`、`cargo metadata --locked`、no-panics/unsafe 静态关卡结果见
+`releases/v3.5.6.md`（全量回归在发版前执行并回填）。版本 npm 3.5.6 ↔ gsn-core 0.3.56 一致。
+
+**刻意不改**：8 处 `let _ = stream.flush().await`（HTTP 响应刷新，无持久化语义）、
+`let _ = reply.send(…)`（oneshot 对端已离开，属正常取消）、测试临时目录清理，均非
+持久化静默点，保持原样。
+
 ## [v3.5.5] - 2026-10-02
 
 ### 补丁：gsn CLI 鉴权/金额/仲裁契约加固（W-03）与 daemon 版本开关（W-02）（仅缺陷修复）

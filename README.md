@@ -6,10 +6,18 @@
 
 [![CI](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml/badge.svg)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
+
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88%2B-orange)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![npm](https://img.shields.io/badge/npm-%40twinsearth%2Fagent--universe-red.svg)](https://github.com/TwinsEarth/agent-universe/packages)
+[![Node](https://img.shields.io/badge/node-18%2B-green.svg)](https://nodejs.org/)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Safety Gates](https://img.shields.io/badge/safety-no%20panic%20%E2%80%A2%20unsafe%20contained-success)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
+[![Contributors](https://img.shields.io/github/contributors/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/contributors)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ## 核心理念
 

@@ -1,0 +1,20 @@
+{
+  "_comment": "Reference shape for the Doubao desktop (豆包电脑端) custom MCP connector. The desktop UI fills these fields in a form (连接器·技能·伙伴 → 添加 → 新建自定义连接器); this file is only a copy/paste reference, not auto-loaded.",
+  "name": "Agent Universe",
+  "transport": "http",
+  "url": "http://127.0.0.1:4002/api/v1/mcp",
+  "headers": {
+    "Authorization": "Bearer REPLACE_WITH_MCP_BEARER_TOKEN"
+  },
+  "_unauthenticated_local": {
+    "_comment": "If the daemon was started WITHOUT MCP_BEARER_TOKEN (loopback only), delete the headers object entirely. Read-only tools work without a token; write/money tools are fail-closed and require a token.",
+    "name": "Agent Universe (local, read-only)",
+    "transport": "http",
+    "url": "http://127.0.0.1:4002/api/v1/mcp"
+  },
+  "_notes": {
+    "default_port": "4002 is the gsn-daemon default MCP port. Use the actual --api-port if you changed it (the examples in this repo use 4012/4014).",
+    "token_env": "The Bearer value must match the daemon's MCP_BEARER_TOKEN. Generate one with: openssl rand -hex 32 (macOS/Linux) or the install script.",
+    "protocol": "Streamable HTTP (stateless), MCP protocol 2024-11-05. No SSE/stdio bridge is required on the Doubao side."
+  }
+}

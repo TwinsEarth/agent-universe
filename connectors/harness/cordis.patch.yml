@@ -1,0 +1,22 @@
+# Agent Universe connector bundle for DeepSeek Harness.
+#
+# This layer contributes one Loader row. Per the dsh patch contract, later
+# layers (profile cordis.patch.yml, $DSH_HOME/cordis.patch.yml, --patch) may
+# override this row wholesale by the same `id: agent-universe`. A row replaces
+# the whole config, so restate every key you keep.
+#
+# `!!js` is evaluated by the @cordisjs/plugin-include dialect in the host.
+- insert:
+    - id: agent-universe
+      name: '@twinsearth/agent-universe-harness'
+      config:
+        # Local gsn-daemon stateless MCP endpoint.
+        url: http://127.0.0.1:4002/api/v1/mcp
+        # Tool namespace -> models see mcp__agent-universe__<rawTool>.
+        serverName: agent-universe
+        # Bearer token for a daemon launched with MCP_BEARER_TOKEN.
+        # Empty (unauthenticated local daemon) -> no Authorization header.
+        token: !!js 'process.env.MCP_BEARER_TOKEN || process.env.AGENT_UNIVERSE_MCP_TOKEN || ""'
+        # false (default): a daemon that is down at startup only logs and loads
+        # with zero tools (reconnect via HMR/restart). Set true to fail activation.
+        failOnStartupError: false

@@ -1,0 +1,59 @@
+{
+  "name": "@twinsearth/agent-universe-harness",
+  "version": "3.5.0",
+  "description": "DeepSeek Harness (dsh) profile bundle that connects a local agent-universe gsn-daemon MCP endpoint and publishes its tools (mcp__agent-universe__*). Streamable HTTP, Bearer auth, no stdio bridge required.",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./resolve": "./lib/resolve.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/**/*.js",
+    "lib/**/*.d.ts",
+    "cordis.patch.yml",
+    "README.md",
+    "README.zh.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "mcp",
+    "model-context-protocol",
+    "agent-universe",
+    "gsn",
+    "bundle",
+    "streamable-http"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/TwinsEarth/agent-universe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TwinsEarth/agent-universe.git",
+    "directory": "connectors/harness"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-mcp-client": "0.0.1-rc.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

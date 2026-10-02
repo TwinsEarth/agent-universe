@@ -1,0 +1,6 @@
+# Connector build/dependency artifacts
+node_modules/
+*.tgz
+*.tar.gz
+dist/
+.DS_Store

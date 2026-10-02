@@ -214,11 +214,23 @@ jobs:
           echo "expected=$TAG package=$PKG"
           if [ "$TAG" != "$PKG" ]; then echo "::error::package.json version $PKG != $TAG"; exit 1; fi
 
-      - name: Publish to npm
+      - name: Publish to npm, unless this version is already there
         if: steps.tok.outputs.ready == 'true'
-        run: npm publish --registry https://registry.npmjs.org --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          # A re-run is a normal thing to do: a cancelled matrix job, a moved tag and a manual
+          # dispatch all produce one. npm refuses to overwrite a published version, so without
+          # this guard every re-run fails two jobs for a reason that is not a failure -- and a red
+          # run that means "already released" trains people to stop reading red runs.
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VER" version --registry https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VER is already published to npm; nothing to do"
+            exit 0
+          fi
+          npm publish --registry https://registry.npmjs.org --access public
 
   github-packages:
     name: Publish to GitHub Packages
@@ -255,7 +267,17 @@ jobs:
           echo "expected=$TAG package=$PKG"
           if [ "$TAG" != "$PKG" ]; then echo "::error::package.json version $PKG != $TAG"; exit 1; fi
 
-      - name: Publish to GitHub Packages
-        run: npm publish --registry https://npm.pkg.github.com
+      - name: Publish to GitHub Packages, unless this version is already there
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Same guard as npm-publish, for the same reason: GitHub Packages also refuses to
+          # overwrite a version, and this workflow is re-run far more often than it is first run.
+          NAME=$(node -p "require('./package.json').name")
+          VER=$(node -p "require('./package.json').version")
+          if npm view "$NAME@$VER" version --registry https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "::notice::$NAME@$VER is already published to GitHub Packages; nothing to do"
+            exit 0
+          fi
+          npm publish --registry https://npm.pkg.github.com

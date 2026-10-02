@@ -407,6 +407,7 @@ mod tests {
             verification_policy: "None".into(),
             requester: "did:nau:req".into(),
             deadline: 0,
+            spec_json: String::new(),
         }
     }
 

@@ -48,6 +48,9 @@ pub struct StoredTask {
     pub requester: String,
     /// v2.8.4: 截止时间（Unix 毫秒）
     pub deadline: i64,
+    /// v3.5.0（Win/Mac 实机 W-04）：完整 TaskSpec JSON。
+    /// 重启后 context/done/todo/trace/required_skills 不再丢失；旧库此列为空时回退扁平列重建。
+    pub spec_json: String,
 }
 
 /// v2.5.5: 持久化的 Relay 节点记录
@@ -105,7 +108,8 @@ impl PersistentStore {
                 winner_price      INTEGER,
                 verification_policy TEXT NOT NULL DEFAULT '',
                 requester  TEXT NOT NULL DEFAULT '',
-                deadline   INTEGER NOT NULL DEFAULT 0
+                deadline   INTEGER NOT NULL DEFAULT 0,
+                spec_json  TEXT NOT NULL DEFAULT ''
             );
 
             -- v2.8.4: 结果信封（GAP §3.2，已验收未结算任务重启后可结算）
@@ -161,6 +165,9 @@ impl PersistentStore {
 
         // v2.8.4: 旧库迁移（tasks 补 winner_price/verification_policy/requester/deadline 列），幂等
         migrate_tasks_v284(&conn)?;
+
+        // v3.5.0（W-04）：tasks 补 spec_json 列（完整任务规格），幂等
+        migrate_tasks_spec_json(&conn)?;
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -226,8 +233,8 @@ impl PersistentStore {
         });
         conn.execute(
             "INSERT INTO tasks (task_id, goal, state, owner, budget, created_at,
-                                winner_price, verification_policy, requester, deadline)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                winner_price, verification_policy, requester, deadline, spec_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(task_id) DO UPDATE SET
                 goal = excluded.goal,
                 state = excluded.state,
@@ -236,7 +243,8 @@ impl PersistentStore {
                 winner_price = excluded.winner_price,
                 verification_policy = excluded.verification_policy,
                 requester = excluded.requester,
-                deadline = excluded.deadline",
+                deadline = excluded.deadline,
+                spec_json = excluded.spec_json",
             params![
                 task.task_id,
                 task.goal,
@@ -248,6 +256,7 @@ impl PersistentStore {
                 task.verification_policy,
                 task.requester,
                 task.deadline,
+                task.spec_json,
             ],
         )?;
         Ok(())
@@ -261,7 +270,7 @@ impl PersistentStore {
         });
         let mut stmt = conn.prepare(
             "SELECT task_id, goal, state, owner, budget, created_at,
-                    winner_price, verification_policy, requester, deadline FROM tasks",
+                    winner_price, verification_policy, requester, deadline, spec_json FROM tasks",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredTask {
@@ -275,6 +284,7 @@ impl PersistentStore {
                 verification_policy: row.get(7)?,
                 requester: row.get(8)?,
                 deadline: row.get(9)?,
+                spec_json: row.get(10)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -777,6 +787,26 @@ fn migrate_tasks_v284(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v3.5.0（W-04）：旧库 tasks 补 `spec_json` 列，幂等。
+fn migrate_tasks_spec_json(conn: &Connection) -> anyhow::Result<()> {
+    let has_col = {
+        let mut stmt = conn.prepare("PRAGMA table_info(tasks)")?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for c in cols {
+            if c? == "spec_json" {
+                found = true;
+            }
+        }
+        found
+    };
+    if has_col {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE tasks ADD COLUMN spec_json TEXT NOT NULL DEFAULT '';")?;
+    Ok(())
+}
+
 /// 行映射：relay
 fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
     Ok(StoredRelay {
@@ -829,6 +859,7 @@ mod tests {
             verification_policy: r#"{"BftLite":{"n":3,"f":1}}"#.into(),
             requester: "req".into(),
             deadline: 1000,
+            spec_json: String::new(),
         }
     }
 

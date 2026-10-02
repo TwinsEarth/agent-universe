@@ -63,6 +63,7 @@ fn test_restore_tasks_from_store_visible() {
             verification_policy: r#"{"BftLite":{"n":3,"f":1}}"#.to_string(),
             requester: "requester-1".to_string(),
             deadline: 1800000000000,
+            spec_json: String::new(),
         },
         StoredTask {
             task_id: "task-restore-2".to_string(),
@@ -75,6 +76,7 @@ fn test_restore_tasks_from_store_visible() {
             verification_policy: r#""None""#.to_string(),
             requester: String::new(),
             deadline: 0,
+            spec_json: String::new(),
         },
     ];
     market.restore_tasks_from_store(stored);

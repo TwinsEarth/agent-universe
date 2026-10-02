@@ -179,6 +179,19 @@ fn evidence_gate_survives_restart() {
         task.winner_price
     );
     assert_eq!(task.requester, "requester-1");
+    // v3.5.0（Win/Mac 实机 W-04）：完整任务规格字段重启后必须存活。
+    // 旧实现把 context 丢成 ""、required_skills 丢成 []、todo 换成 "(restored from disk)" 占位符。
+    assert_eq!(task.context, "task context", "context 重启后不应丢失");
+    assert_eq!(
+        task.todo,
+        vec!["work".to_string()],
+        "todo 重启后不应被占位符替换"
+    );
+    assert_eq!(
+        task.required_skills,
+        vec!["rust".to_string()],
+        "required_skills 重启后不应丢失"
+    );
     // 3. 结果信封存活
     let env = market.get_result(task_id).expect("结果信封应在重启后存活");
     assert_eq!(env.report, "done-report");

@@ -1066,6 +1066,8 @@ impl AgentMarket {
                     .unwrap_or_default(),
                 requester: t.requester.clone(),
                 deadline: t.deadline as i64,
+                // v3.5.0（W-04）：完整 TaskSpec 落盘，重启不丢 context/todo/skills 等
+                spec_json: serde_json::to_string(t).unwrap_or_default(),
             })
             .collect()
     }
@@ -1165,7 +1167,28 @@ impl AgentMarket {
                     VerificationPolicy::None
                 }
             };
-            let spec = TaskSpec {
+            // v3.5.0（Win/Mac 实机 W-04）：优先用完整 spec_json 恢复，
+            // context/done/todo/trace/required_skills 不再丢成占位符；
+            // state 以扁平列 label 为准（每次状态流转都更新它，语义最新）。
+            // 旧库 spec_json 为空或损坏时回退扁平列重建，保持向后兼容。
+            let from_spec = if !t.spec_json.trim().is_empty() {
+                match serde_json::from_str::<TaskSpec>(&t.spec_json) {
+                    Ok(mut spec) => {
+                        spec.state = TaskState::from_label(&t.state);
+                        Some(spec)
+                    }
+                    Err(e) => {
+                        eprintln!(
+                            "⚠️ 任务 {} 完整规格 JSON 损坏，回退扁平列重建：{e}",
+                            t.task_id
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let spec = from_spec.unwrap_or_else(|| TaskSpec {
                 task_id: t.task_id,
                 goal: t.goal,
                 context: String::new(),
@@ -1181,7 +1204,7 @@ impl AgentMarket {
                 requester: t.requester,
                 state: TaskState::from_label(&t.state),
                 created_at: t.created_at.parse().unwrap_or(0),
-            };
+            });
             self.tasks.insert(spec.task_id.clone(), spec);
         }
     }

@@ -908,7 +908,8 @@ fn rest_authorize(
             })
             .map(|s| s.trim())
             .unwrap_or("");
-        if provided == expected {
+        // v3.5.1（AU-32）：常量时间比较，避免逐字节短路泄露 token 前缀（时序侧信道）
+        if crate::security::constant_time_eq_str(provided, &expected) {
             return Ok(());
         }
         return Err((

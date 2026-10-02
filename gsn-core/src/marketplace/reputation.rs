@@ -163,6 +163,21 @@ impl ReputationManager {
         self.stakes.get(agent_id)
     }
 
+    /// v3.5.1（AU-01/AU-05）：该 DID 是否持有**有效**质押。
+    ///
+    /// 「有效」= 质押记录存在、状态为 [`StakeStatus::Locked`]、且金额 ≥ 本管理器
+    /// 内部的 `min_stake` 阈值。阈值由质押管理器自身持有（与 `register_stake` /
+    /// `is_eligible` 同一口径），市场层不另造阈值，避免两处漂移。
+    ///
+    /// 用途：认证式 QA 验收的服务端资格闸门——出任委员的每个 DID 都必须已足额锁定
+    /// 质押，杜绝「调用方自带未质押的自造密钥即可当评委」。
+    pub fn has_locked_stake(&self, agent_id: &str) -> bool {
+        self.stakes
+            .get(agent_id)
+            .map(|s| s.status == StakeStatus::Locked && s.amount >= self.min_stake)
+            .unwrap_or(false)
+    }
+
     /// 罚没质押
     pub fn slash_stake(&mut self, agent_id: &str, amount: Money) -> Result<Money, String> {
         let stake = self

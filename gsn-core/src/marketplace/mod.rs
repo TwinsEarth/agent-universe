@@ -57,6 +57,30 @@ pub fn escrow_account(task_id: &str) -> String {
 pub const SLASH_RATE_ARBITRATION: i64 = 100;
 pub const SLASH_RATE_REJECT: i64 = 10;
 
+/// 认证式 QA 委员会人数下限（v3.5.1，AU-01/AU-05，QA 委员会策略常量）。
+///
+/// # BFT 依据
+///
+/// 通用 [`QaCommittee::with_fixed_members`] 令 `f = (n-1)/3`、法定人数
+/// `quorum = 2f+1`。代入得：
+///
+/// | n  | f=(n-1)/3 | quorum=2f+1 | 单人能否自批 |
+/// |----|-----------|-------------|--------------|
+/// | 1  | 0         | 1           | ✅ 是（1 票即 Stop）|
+/// | 2  | 0         | 1           | ✅ 是 |
+/// | 3  | 0         | 1           | ✅ 是 |
+/// | **4** | **1**   | **3**       | ❌ 需 3 张独立签名票，容忍 1 个恶意/宕机 |
+///
+/// 故取 `n >= 4` 才有 `f >= 1`。旧实现未设此下限，调用方带一把自造密钥、
+/// `n=1` 即可凑成 Stop 自我批准——本常量在市场层闸门处杜绝该退化。
+///
+/// # 残留风险（如实声明）
+///
+/// 本闸门只锚定「独立、已足额质押、非任务执行者」的 DID 身份并设 BFT 下限；
+/// 一个仍掌握 ≥4 个各自足额质押身份的策划者（Sybil）仍可凑齐 Stop。按质押
+/// 加权的验证人集、作恶投票的 slashing 联动，属后续 minor（不在本补丁范围）。
+pub const MIN_QA_COMMITTEE_SIZE: usize = 4;
+
 /// 按质押总额与服务端百分比规则计算罚没金额。
 fn slash_amount_by_rule(stake_total: Money, rate_pct: i64) -> Money {
     // 全额质押：直接返回总额；否则按比例（先乘后除，避免截断误差）。
@@ -488,7 +512,7 @@ impl AgentMarket {
     // ===== F4/F5: 执行与验证 =====
 
     /// 提交执行结果
-    pub fn submit_result(&mut self, envelope: ResultEnvelope) -> Result<(), String> {
+    pub fn submit_result(&mut self, mut envelope: ResultEnvelope) -> Result<(), String> {
         let task = self
             .tasks
             .get(&envelope.task_id)
@@ -528,6 +552,11 @@ impl AgentMarket {
                 .insert(envelope.task_id.clone(), content_hash);
         }
 
+        // v3.5.1（AU-18）：信封自报的 evidence_grade 不可信，入库即强制降为
+        // Unverified。旧实现原样落库，执行者自报 Verified 即可直接满足结算可信
+        // 闸门。此后只有认证 QA Stop（`verify_result_authenticated`）或仲裁路径
+        // 才能把证据提升回 Verified/CpuProto（服务端签发，执行者无法自报）。
+        envelope.evidence_grade = EvidenceGrade::Unverified;
         self.results.insert(envelope.task_id.clone(), envelope);
         Ok(())
     }
@@ -560,6 +589,28 @@ impl AgentMarket {
     /// `members` 为固定委员集 `(did, 公钥)`，`signed_votes` 为委员用私钥签发的
     /// 真实投票。调用方可以指定委员集，但**无法伪造票**，从而根治「服务端按
     /// approvals 合成委员与票、可自我批准」。
+    ///
+    /// # v3.5.1（AU-01/AU-05）服务端资格闸门
+    ///
+    /// 在构造委员会 / 验票**之前**，先在服务端对委员身份做三道闸门（任一不满足
+    /// 即拒绝，错误信息带稳定前缀 `COMMITTEE_TOO_SMALL` /
+    /// `COMMITTEE_EXECUTOR_CONFLICT` / `COMMITTEE_NOT_STAKED`，可被上层断言）：
+    ///
+    /// 1. **人数下限**：`members.len() >= [`MIN_QA_COMMITTEE_SIZE`]`（n≥4 → f≥1），
+    ///    杜绝 n=1/f=0 的单人自批；
+    /// 2. **执行者回避**：任务必须存在，且其 `owner`（中标执行者）不得出现在
+    ///    委员 DID 集合中（利益回避，执行者不能给自己打分）；
+    /// 3. **服务端质押锚定**：每个委员 DID 都必须在本服务端
+    ///    [`ReputationManager`] 中持有有效锁定质押（`status==Locked` 且
+    ///    `amount>=min_stake`，见 [`ReputationManager::has_locked_stake`]）。
+    ///
+    /// 本闸门不修改通用 [`QaCommittee`] 库逻辑，也不改动密码学验签。
+    ///
+    /// ## 残留风险（Sybil）
+    ///
+    /// 本补丁锚定的是「独立、已质押、非执行者」身份并设 BFT 下限；一个仍掌握
+    /// ≥4 个各自足额质押身份的策划型攻击者（Sybil）仍可凑齐 Stop 票。按质押
+    /// 加权的验证人集与 slashing 联动属后续 minor，不在本补丁范围。
     pub fn verify_result_authenticated(
         &mut self,
         task_id: &str,
@@ -568,6 +619,37 @@ impl AgentMarket {
         signed_votes: Vec<SignedQaVote>,
         now: u64,
     ) -> Result<QaDecision, String> {
+        // ── 闸门 1：委员会人数下限（BFT：n≥4 → f≥1，quorum≥3）──
+        if members.len() < MIN_QA_COMMITTEE_SIZE {
+            return Err(format!(
+                "COMMITTEE_TOO_SMALL: 委员数 {} 低于下限 {MIN_QA_COMMITTEE_SIZE}（n≥4 才能保证 f≥1、quorum≥3，杜绝单人自批）",
+                members.len()
+            ));
+        }
+
+        // ── 闸门 2：任务存在 + 执行者回避（先克隆 owner 出作用域，避免借用冲突）──
+        let owner = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.owner.clone())
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
+        if let Some(owner) = &owner {
+            if members.iter().any(|(did, _)| did == owner) {
+                return Err(format!(
+                    "COMMITTEE_EXECUTOR_CONFLICT: 任务执行者 {owner} 不得出任 QA 委员（利益回避）"
+                ));
+            }
+        }
+
+        // ── 闸门 3：每个委员 DID 必须在服务端持有有效锁定质押 ──
+        for (did, _) in &members {
+            if !self.reputation_mgr.has_locked_stake(did) {
+                return Err(format!(
+                    "COMMITTEE_NOT_STAKED: 委员 {did} 无有效锁定质押（需 status=Locked 且 amount≥min_stake），拒绝认证验收"
+                ));
+            }
+        }
+
         let mut committee = QaCommittee::with_fixed_members(task_id, round, members)?;
         for sv in signed_votes {
             committee.cast_signed_vote(sv, now)?;

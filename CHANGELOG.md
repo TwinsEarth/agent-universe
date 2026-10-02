@@ -2,6 +2,66 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.1] - 2026-10-02
+
+### 补丁：QA 委员会自我批准等安全缺陷修复（仅缺陷/安全/正确性修复，无破坏式重构）
+
+本补丁基于 v3.5.0 基线，修复 QA 审计条目 AU-01/AU-05/AU-03/AU-18/AU-32。每条修复均带
+「在旧实现上必败」的回归测试。
+
+- **AU-01 / AU-05（Critical，服务端质押锚定 QA 委员会）**
+  - 根因：`verify_result_authenticated` 只验委员票的签名，不校验委员身份是否在服务端
+    持有有效质押、是否与任务执行者利益冲突，也不设 BFT 人数下限。调用方带一把自造密钥、
+    `n=1`（f=0）即可凑成 Stop「自我批准」并放款。
+  - 修复：在构造委员会 / 验票**之前**新增三道服务端资格闸门（类型化 `Result<String>`，
+    错误前缀稳定可断言 `COMMITTEE_TOO_SMALL` / `COMMITTEE_EXECUTOR_CONFLICT` /
+    `COMMITTEE_NOT_STAKED`）：
+    1. 市场层具名常量 `MIN_QA_COMMITTEE_SIZE = 4`（BFT 依据：`f=(n-1)/3`，n=1/2/3→f=0
+       单人即可自批；n≥4 才有 f≥1、quorum≥3，容忍 1 个恶意/宕机委员）；
+    2. 任务执行者回避：先取任务（不存在返回 `NOT_FOUND`），其 `owner`（中标执行者）
+       不得出现在委员 DID 集合；
+    3. 服务端质押锚定：新增 `ReputationManager::has_locked_stake(did)->bool`
+       （`status==Locked` 且 `amount>=min_stake`，阈值复用质押管理器内部口径），任一委员
+       不满足即拒绝。
+    - 不修改通用 `QaCommittee` 库逻辑，不改密码学验签。
+  - 残留风险（如实声明）：本补丁锚定「独立、已质押、非执行者」身份并设 BFT 下限；掌握
+    ≥4 个各自足额质押身份的策划型 Sybil 仍可凑齐 Stop。按质押加权的验证人集与 slashing
+    联动属后续 minor，不在本补丁范围。
+  - 回归测试（tests/v351_test.rs）：①单把自造密钥 n=1 自签 Stop→`COMMITTEE_TOO_SMALL`、
+    不升 Verified、不放款；②委员含执行者→`COMMITTEE_EXECUTOR_CONFLICT`；③委员未/非
+    Locked 质押→`COMMITTEE_NOT_STAKED`；④4 个独立足额质押且非执行者委员合法 Stop→
+    通过并可 settle（不误伤合法流程）。
+
+- **AU-03（账本哈希链恢复 fail-closed）**
+  - 根因：`spawn_with_store` 恢复路径在 `verify_ledger_chain` 检出断链/锚定不符时，仅
+    eprintln 告警后仍照常 restore 并进入可写/结算数据面——被篡改的账本照样能放款。
+  - 修复：断链/锚定不符时**默认不恢复账本、不进入可写/结算数据面**，进入拒服态——对一切
+    命令回复 `LEDGER_TAMPERED` 错误（不取 oneshot 不悬挂）。仅当显式逃生开关
+    `GSN_ALLOW_TAMPERED_LEDGER=1` 时保留旧的告警+容错恢复，并打印显著 CRITICAL 告警。
+    开关默认关。
+  - 回归测试：构造断链账本，无开关时恢复拒服且不能 settle；开关=1 时（子进程隔离环境变量）
+    恢复旧容错行为、进入数据面。
+
+- **AU-18（提交结果入库即降为未验证）**
+  - 根因：`submit_result` 原样入库客户端自报的 `evidence_grade`，执行者自报 Verified 即可
+    满足结算可信闸门。
+  - 修复：入库前**强制** `evidence_grade = EvidenceGrade::Unverified`；只有认证 QA Stop
+    或仲裁路径可提升（保持现有服务端签发）。
+  - 回归测试：提交时自报 Verified，入库后断言为 Unverified，且不能直接 settle。
+
+- **AU-32（Bearer 常量时间比较）**
+  - 根因：REST（`node.rs` `rest_authorize`）与 MCP（`mcp/sse.rs`）用朴素 `==`/`trim()==`
+    比较 Bearer 令牌，逐字节短路泄露前缀长度（时序侧信道）。
+  - 修复：新增 `security::constant_time_eq[_str]`（逐字节 XOR 累积、长度不等也不提前返回，
+    不引入新第三方依赖，与 `plugin::bus::constant_time_eq_hex` 同范式），两处鉴权统一复用。
+  - 回归测试：`security` 模块内常量时间比较正确/错误用例（功能正确性；时序不在单测断言范围）。
+
+- **测试影响面调整**：既有走认证验收的集成测试（v235/v273）原用临时自造密钥当委员且未
+  注册质押，已改为注册 4 个相互独立、各自足额（100）锁定质押、且均非任务执行者的委员后
+  再投票——即正确新流程。
+- 全量回归：在 v3.5.0 基线 582 passed 之上新增上述回归用例；`cargo fmt`、
+  `cargo clippy --workspace --all-targets -- -D warnings` 零警告。
+
 ## [v3.5.0] - 2026-10-01
 
 ### 中版本：B2 —— 进程插件 outbox 主动通信（新能力）

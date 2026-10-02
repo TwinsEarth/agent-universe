@@ -292,3 +292,26 @@ fn v277_node_heap_limit_blocks_large_allocation() {
     let r = s.run_code(CodeLanguage::JavaScript, code).unwrap();
     assert_ne!(r.exit_code, 0, "node heap overflow should fail, got {r:?}");
 }
+
+#[cfg(target_os = "windows")]
+#[test]
+fn v277_native_shell_cmd_allowed_when_configured() {
+    let mut cfg = mk_cfg("v277-cmdok");
+    cfg.allow_shell = true;
+    let mut s = ProcessSandbox::new("v277-cmdok");
+    s.create(&cfg).unwrap();
+    s.start().unwrap();
+    let r = s
+        .exec("cmd", &["/C".to_string(), "echo cmd-ok".to_string()])
+        .unwrap();
+    assert!(r.stdout.contains("cmd-ok"));
+    s.destroy().unwrap();
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn v277_native_shell_blocked_by_default() {
+    let mut s = spawned("v277-cmdblock");
+    let r = s.exec("cmd", &["/C".to_string(), "echo x".to_string()]);
+    assert!(matches!(r, Err(SandboxError::IsolationViolation(_))));
+}

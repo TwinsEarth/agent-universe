@@ -2,6 +2,23 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.7] - 2026-10-02
+
+### 补丁：MSRV 诚实化——显式声明并实测最低工具链 1.88.0（#75 / W-01）
+
+回应审计项 W-01（历史曾把最低 Rust 写成 1.85，与锁定依赖实际要求不符）。把 MSRV 变成
+可证实、有 CI 关卡的属性，不含功能与运行时变更。
+
+- **下限由锁定依赖算出**：`Cargo.lock` 解析的 385 个包中 269 个声明了 `rust-version`，
+  最高为 `time` 0.3.55 / `time-core` 0.1.9 / `time-macros` 0.2.32 要求的 **1.88.0**
+  （其后 wasip2 1.87、uuid 1.26.1 / hashbrown 0.17.1 / deranged 1.85）。
+- **实测支持**：rustc 1.88.0（2025-06-23）下 `cargo check --bins --locked` 通过（4m40s）。
+- `gsn-core/Cargo.toml` 新增 `rust-version = "1.88"`；CI 新增 `rust-msrv` job
+  （1.88.0 + `cargo check --bins --locked`），依赖升级抬高下限时会立即变红。
+- MSRV 关卡只约束库 + 二进制；测试/clippy/fmt 仍以 stable 运行，避免 dev-dependency
+  无意义抬高发布产物下限。两个 Tauri 桌面壳的 MSRV 由 Tauri 决定，本版不代其声明。
+- 详见 `releases/v3.5.7.md`。
+
 ## [v3.5.6] - 2026-10-02
 
 ### 补丁：中继池遥测落盘失败显式化 + 市场层结算独立审计/防重复结算回归（#74）

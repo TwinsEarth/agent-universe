@@ -18,12 +18,25 @@ class McpHttpClient {
   constructor(
     baseUrl = 'http://127.0.0.1:4002',
     path = '/api/v1/mcp',
-    timeout = 10000
+    timeout = 10000,
+    authToken = null
   ) {
     this.endpoint = baseUrl.replace(/\/$/, '') + path;
     this.timeout = timeout;
     this._id = 0;
     this.initialized = false;
+    // v3.5.3（AU-15）：可选 Bearer token。设置后所有 MCP 请求带
+    // `Authorization: Bearer <token>`；不设置则不发送该头（保持现状）。
+    this.authToken = authToken || null;
+  }
+
+  _headers() {
+    const h = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+    if (this.authToken) h['Authorization'] = `Bearer ${this.authToken}`;
+    return h;
   }
 
   async _post(payload, awaitResponse = true) {
@@ -33,10 +46,7 @@ class McpHttpClient {
     try {
       res = await fetch(this.endpoint, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-        },
+        headers: this._headers(),
         body: JSON.stringify(payload),
         signal: ctrl.signal,
       });
@@ -60,7 +70,7 @@ class McpHttpClient {
       method: 'initialize',
       params: {
         protocolVersion: MCP_PROTOCOL_VERSION,
-        clientInfo: { name: 'agent-universe-js', version: '3.5.0' },
+        clientInfo: { name: 'agent-universe-js', version: '3.6.0' },
         capabilities: {},
       },
     });

@@ -57,6 +57,30 @@ pub fn escrow_account(task_id: &str) -> String {
 pub const SLASH_RATE_ARBITRATION: i64 = 100;
 pub const SLASH_RATE_REJECT: i64 = 10;
 
+/// 认证式 QA 委员会人数下限（v3.5.1，AU-01/AU-05，QA 委员会策略常量）。
+///
+/// # BFT 依据
+///
+/// 通用 [`QaCommittee::with_fixed_members`] 令 `f = (n-1)/3`、法定人数
+/// `quorum = 2f+1`。代入得：
+///
+/// | n  | f=(n-1)/3 | quorum=2f+1 | 单人能否自批 |
+/// |----|-----------|-------------|--------------|
+/// | 1  | 0         | 1           | ✅ 是（1 票即 Stop）|
+/// | 2  | 0         | 1           | ✅ 是 |
+/// | 3  | 0         | 1           | ✅ 是 |
+/// | **4** | **1**   | **3**       | ❌ 需 3 张独立签名票，容忍 1 个恶意/宕机 |
+///
+/// 故取 `n >= 4` 才有 `f >= 1`。旧实现未设此下限，调用方带一把自造密钥、
+/// `n=1` 即可凑成 Stop 自我批准——本常量在市场层闸门处杜绝该退化。
+///
+/// # 残留风险（如实声明）
+///
+/// 本闸门只锚定「独立、已足额质押、非任务执行者」的 DID 身份并设 BFT 下限；
+/// 一个仍掌握 ≥4 个各自足额质押身份的策划者（Sybil）仍可凑齐 Stop。按质押
+/// 加权的验证人集、作恶投票的 slashing 联动，属后续 minor（不在本补丁范围）。
+pub const MIN_QA_COMMITTEE_SIZE: usize = 4;
+
 /// 按质押总额与服务端百分比规则计算罚没金额。
 fn slash_amount_by_rule(stake_total: Money, rate_pct: i64) -> Money {
     // 全额质押：直接返回总额；否则按比例（先乘后除，避免截断误差）。
@@ -123,6 +147,19 @@ pub struct AgentMarket {
     reputation_mgr: ReputationManager,
     /// 最低质押
     min_stake: Money,
+    /// 已消费的认证 QA 投票 nonce（v3.5.2，AU-04，跨请求重放去重）。
+    ///
+    /// 键为 `(task_id, round, voter_did, nonce)`。通用 [`QaCommittee`] 实例内的
+    /// `seen_nonces` 在每次 `verify_result_authenticated` 新建委员会时被清空，
+    /// 无法跨请求去重；本字段把去重提升到市场层，使其在同一进程的多次验收调用间存活。
+    ///
+    /// # 残留边界（如实声明）
+    ///
+    /// 这是**运行期跨请求**去重；服务重启后本集合随内存重建而清空。跨重启窗口内的重放
+    /// 由投票自身的服务端时间窗约束（`cast_signed_vote` 强制 `now ∈ [issued_at,
+    /// expires_at]`，过期票一律拒绝）。要把已消费 nonce 落盘持久化需要既有 PersistentStore
+    /// 的 schema 扩张，超出本补丁（patch）语义，列入后续 minor。
+    seen_qa_nonces: HashSet<(String, u32, String, String)>,
 }
 
 impl AgentMarket {
@@ -140,6 +177,7 @@ impl AgentMarket {
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
+            seen_qa_nonces: HashSet::new(),
         }
     }
 
@@ -157,6 +195,7 @@ impl AgentMarket {
             settlement: SettlementEngine::new(),
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
+            seen_qa_nonces: HashSet::new(),
         }
     }
 
@@ -488,7 +527,7 @@ impl AgentMarket {
     // ===== F4/F5: 执行与验证 =====
 
     /// 提交执行结果
-    pub fn submit_result(&mut self, envelope: ResultEnvelope) -> Result<(), String> {
+    pub fn submit_result(&mut self, mut envelope: ResultEnvelope) -> Result<(), String> {
         let task = self
             .tasks
             .get(&envelope.task_id)
@@ -528,6 +567,11 @@ impl AgentMarket {
                 .insert(envelope.task_id.clone(), content_hash);
         }
 
+        // v3.5.1（AU-18）：信封自报的 evidence_grade 不可信，入库即强制降为
+        // Unverified。旧实现原样落库，执行者自报 Verified 即可直接满足结算可信
+        // 闸门。此后只有认证 QA Stop（`verify_result_authenticated`）或仲裁路径
+        // 才能把证据提升回 Verified/CpuProto（服务端签发，执行者无法自报）。
+        envelope.evidence_grade = EvidenceGrade::Unverified;
         self.results.insert(envelope.task_id.clone(), envelope);
         Ok(())
     }
@@ -560,6 +604,28 @@ impl AgentMarket {
     /// `members` 为固定委员集 `(did, 公钥)`，`signed_votes` 为委员用私钥签发的
     /// 真实投票。调用方可以指定委员集，但**无法伪造票**，从而根治「服务端按
     /// approvals 合成委员与票、可自我批准」。
+    ///
+    /// # v3.5.1（AU-01/AU-05）服务端资格闸门
+    ///
+    /// 在构造委员会 / 验票**之前**，先在服务端对委员身份做三道闸门（任一不满足
+    /// 即拒绝，错误信息带稳定前缀 `COMMITTEE_TOO_SMALL` /
+    /// `COMMITTEE_EXECUTOR_CONFLICT` / `COMMITTEE_NOT_STAKED`，可被上层断言）：
+    ///
+    /// 1. **人数下限**：`members.len() >= [`MIN_QA_COMMITTEE_SIZE`]`（n≥4 → f≥1），
+    ///    杜绝 n=1/f=0 的单人自批；
+    /// 2. **执行者回避**：任务必须存在，且其 `owner`（中标执行者）不得出现在
+    ///    委员 DID 集合中（利益回避，执行者不能给自己打分）；
+    /// 3. **服务端质押锚定**：每个委员 DID 都必须在本服务端
+    ///    [`ReputationManager`] 中持有有效锁定质押（`status==Locked` 且
+    ///    `amount>=min_stake`，见 [`ReputationManager::has_locked_stake`]）。
+    ///
+    /// 本闸门不修改通用 [`QaCommittee`] 库逻辑，也不改动密码学验签。
+    ///
+    /// ## 残留风险（Sybil）
+    ///
+    /// 本补丁锚定的是「独立、已质押、非执行者」身份并设 BFT 下限；一个仍掌握
+    /// ≥4 个各自足额质押身份的策划型攻击者（Sybil）仍可凑齐 Stop 票。按质押
+    /// 加权的验证人集与 slashing 联动属后续 minor，不在本补丁范围。
     pub fn verify_result_authenticated(
         &mut self,
         task_id: &str,
@@ -568,6 +634,61 @@ impl AgentMarket {
         signed_votes: Vec<SignedQaVote>,
         now: u64,
     ) -> Result<QaDecision, String> {
+        // ── 闸门 1：委员会人数下限（BFT：n≥4 → f≥1，quorum≥3）──
+        if members.len() < MIN_QA_COMMITTEE_SIZE {
+            return Err(format!(
+                "COMMITTEE_TOO_SMALL: 委员数 {} 低于下限 {MIN_QA_COMMITTEE_SIZE}（n≥4 才能保证 f≥1、quorum≥3，杜绝单人自批）",
+                members.len()
+            ));
+        }
+
+        // ── 闸门 2：任务存在 + 执行者回避（先克隆 owner 出作用域，避免借用冲突）──
+        let owner = self
+            .tasks
+            .get(task_id)
+            .map(|t| t.owner.clone())
+            .ok_or_else(|| format!("NOT_FOUND: 任务 {} 不存在", task_id))?;
+        if let Some(owner) = &owner {
+            if members.iter().any(|(did, _)| did == owner) {
+                return Err(format!(
+                    "COMMITTEE_EXECUTOR_CONFLICT: 任务执行者 {owner} 不得出任 QA 委员（利益回避）"
+                ));
+            }
+        }
+
+        // ── 闸门 3：每个委员 DID 必须在服务端持有有效锁定质押 ──
+        for (did, _) in &members {
+            if !self.reputation_mgr.has_locked_stake(did) {
+                return Err(format!(
+                    "COMMITTEE_NOT_STAKED: 委员 {did} 无有效锁定质押（需 status=Locked 且 amount≥min_stake），拒绝认证验收"
+                ));
+            }
+        }
+
+        // ── 闸门 4：跨请求 nonce 重放去重（v3.5.2，AU-04）──
+        // 通用 QaCommittee 实例内的 seen_nonces 随每次新建委员会而清空，无法跨请求去重；
+        // 此处把 (task_id, round, voter, nonce) 提升到市场层集合做只读预检。任一已被
+        // 本进程历史消费过即拒绝（稳定前缀 QA_NONCE_REPLAY）。
+        let vote_keys: Vec<(String, u32, String, String)> = signed_votes
+            .iter()
+            .map(|sv| {
+                (
+                    sv.task_id.clone(),
+                    sv.round,
+                    sv.voter.clone(),
+                    sv.nonce.clone(),
+                )
+            })
+            .collect();
+        for k in &vote_keys {
+            if self.seen_qa_nonces.contains(k) {
+                return Err(format!(
+                    "QA_NONCE_REPLAY: 委员 {} 在任务 {} 轮 {} 的投票 nonce {} 已被消费过（重放）",
+                    k.2, k.0, k.1, k.3
+                ));
+            }
+        }
+
         let mut committee = QaCommittee::with_fixed_members(task_id, round, members)?;
         for sv in signed_votes {
             committee.cast_signed_vote(sv, now)?;
@@ -600,6 +721,12 @@ impl AgentMarket {
                     env.evidence_grade = EvidenceGrade::Verified;
                 }
             }
+        }
+
+        // 整条验收链成功落库后，才把本轮投票 nonce 记入市场级去重表（跨请求存活）。
+        // 此前任一环节失败（验签失败/状态转换失败）都不消费 nonce，避免误烧合法票。
+        for k in vote_keys {
+            self.seen_qa_nonces.insert(k);
         }
 
         Ok(decision)
@@ -816,8 +943,16 @@ impl AgentMarket {
     /// 杜绝旧实现 reject 路径「只扣账本、质押记录不变」的不一致。
     fn slash_stake_synced(&mut self, agent_id: &str, amount: Money) -> Result<Money, String> {
         let stake_acct = stake_account(agent_id);
-        self.reputation_mgr.slash_stake(agent_id, amount)?;
+        // v3.5.3（AU-19）：旧顺序「先 reputation_mgr.slash_stake 改质押记录，再 settlement.slash
+        // 扣账本」——账本步失败时质押记录已被扣，口径不一致（账上扣了钱、记录没扣）。
+        // 改为：先扣账本（资金侧），成功后再更新质押记录；若记录步失败则把账本扣的钱补回
+        // （deposit 回滚），保证两视图要么同时扣、要么都不扣。
         self.settlement.slash(&stake_acct, amount)?;
+        if let Err(e) = self.reputation_mgr.slash_stake(agent_id, amount) {
+            // 回滚账本：把刚扣的金额补回，避免资金已出、记录未动。
+            let _ = self.settlement.deposit(&stake_acct, amount);
+            return Err(e);
+        }
         Ok(amount)
     }
 
@@ -1045,6 +1180,8 @@ impl AgentMarket {
                 stake: c.stake.as_i64(),
                 reputation: c.reputation_score,
                 created_at: c.created_at.to_string(),
+                // v3.5.4（W-05）：完整卡片 JSON（version/pricing/sla/modalities/models 等不再丢）
+                card_json: serde_json::to_string(c).ok(),
             })
             .collect()
     }
@@ -1066,6 +1203,8 @@ impl AgentMarket {
                     .unwrap_or_default(),
                 requester: t.requester.clone(),
                 deadline: t.deadline as i64,
+                // v3.5.4（W-04）：完整规格 JSON（context/done/todo/trace/required_skills 不再丢）
+                spec_json: serde_json::to_string(t).ok(),
             })
             .collect()
     }
@@ -1094,43 +1233,44 @@ impl AgentMarket {
 
     /// v2.7.4: 从磁盘快照恢复 agents 到内存 market（重启后 /agents、/stats 可见）。
     ///
-    /// 此前 `spawn_with_store` 只取了 `load_agents().len()` 打日志，业务对象并未注入内存，
-    /// 导致重启后账本/余额从 SQLite 正确恢复、但 `/agents`、`/tasks/{id}`、`/stats` 全空。
-    /// 快照未存字段（version/description/modalities/models/endpoint/pricing/sla 等）用安全默认值补齐。
+    /// v3.5.4（W-05）：优先反序列化 `card_json` 完整卡片（version/pricing/sla/modalities/
+    /// models/endpoint/description/total_calls/success_rate 等不再丢失），再用经济身份权威
+    /// 扁平列（stake/reputation/created_at）覆盖 JSON 内同名字段——资金/信誉以列为准，防止
+    /// 卡片 JSON 与权威列不一致。card_json 缺失/损坏时回退旧的安全默认构造（不 panic）。
     pub fn restore_agents_from_store(&mut self, agents: Vec<crate::storage::StoredAgent>) {
         for a in agents {
-            let skills: Vec<String> = a
-                .skills
-                .split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect();
-            let card = MarketAgentCard {
-                agent_id: a.agent_id.clone(),
-                version: "0.0.0-restored".to_string(),
-                name: a.name,
-                description: String::new(),
-                skills: skills.clone(),
-                modalities: vec![],
-                models: vec![],
-                endpoint: String::new(),
-                pricing: Pricing {
-                    model: PricingModel::Subscription,
-                    price: Money::ZERO,
-                    currency: Currency::Credit,
-                },
-                sla: Sla::default(),
-                owner: a.agent_id.clone(),
-                stake: Money::new(a.stake),
-                reputation_score: a.reputation,
-                total_calls: 0,
-                success_rate: 1.0,
-                evidence_grade: EvidenceGrade::Unverified,
-                verified: false,
-                created_at: a.created_at.parse().unwrap_or(0),
-                updated_at: a.created_at.parse().unwrap_or(0),
+            let mut card = match a.card_json.as_deref() {
+                Some(s) if !s.trim().is_empty() => {
+                    match serde_json::from_str::<MarketAgentCard>(s) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!(
+                                "⚠️ agent {} 卡片 JSON 损坏，回退扁平列默认卡片: {e}",
+                                a.agent_id
+                            );
+                            Self::fallback_agent_card(&a)
+                        }
+                    }
+                }
+                _ => Self::fallback_agent_card(&a),
             };
-            for sk in &skills {
+            // 经济身份以扁平权威列覆盖（资金/信誉/创建时间不允许被 JSON 改写）。
+            card.agent_id = a.agent_id.clone();
+            card.name = a.name.clone();
+            card.stake = Money::new(a.stake);
+            card.reputation_score = a.reputation;
+            card.created_at = a.created_at.parse().unwrap_or(0);
+            card.updated_at = card.updated_at.max(card.created_at);
+            // 若 JSON 内 skills 为空，用扁平 skills 列兜底。
+            if card.skills.is_empty() {
+                card.skills = a
+                    .skills
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect();
+            }
+            for sk in &card.skills {
                 self.skill_index
                     .entry(sk.clone())
                     .or_default()
@@ -1140,10 +1280,48 @@ impl AgentMarket {
         }
     }
 
+    /// v3.5.4：card_json 缺失/损坏时的旧版安全默认卡片（不含丰富声明字段）。
+    fn fallback_agent_card(a: &crate::storage::StoredAgent) -> MarketAgentCard {
+        let skills: Vec<String> = a
+            .skills
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        MarketAgentCard {
+            agent_id: a.agent_id.clone(),
+            version: "0.0.0-restored".to_string(),
+            name: a.name.clone(),
+            description: String::new(),
+            skills,
+            modalities: vec![],
+            models: vec![],
+            endpoint: String::new(),
+            pricing: Pricing {
+                model: PricingModel::Subscription,
+                price: Money::ZERO,
+                currency: Currency::Credit,
+            },
+            sla: Sla::default(),
+            owner: a.agent_id.clone(),
+            stake: Money::new(a.stake),
+            reputation_score: a.reputation,
+            total_calls: 0,
+            success_rate: 1.0,
+            evidence_grade: EvidenceGrade::Unverified,
+            verified: false,
+            created_at: a.created_at.parse().unwrap_or(0),
+            updated_at: a.created_at.parse().unwrap_or(0),
+        }
+    }
+
     /// v2.7.4: 从磁盘快照恢复 tasks 到内存 market。
     ///
-    /// 快照未存字段（context/done/todo/trace/required_skills/requester/winner_price/deadline）
-    /// 用安全默认值补齐；状态经 `TaskState::from_label` 反解析，坏值回 `Open`。
+    /// v3.5.4（W-04）：优先反序列化 `spec_json` 完整规格（context/done/todo/trace/
+    /// required_skills 不再丢失，旧实现把 context 清空、todo 退化为 "(restored from disk)"）。
+    /// 随后用扁平权威列覆盖经济/生命周期字段（budget/winner_price/deadline/state/owner/goal/
+    /// requester/created_at）与单独解析的 verification_policy（保留 v2.8.4 的损坏告警语义）。
+    /// spec_json 缺失/损坏时回退旧的安全默认规格（不 panic）。
     pub fn restore_tasks_from_store(&mut self, tasks: Vec<crate::storage::StoredTask>) {
         for t in tasks {
             // v2.8.4: 恢复验证策略（GAP §3.2）。新持久化的 None 也会序列化为
@@ -1165,24 +1343,62 @@ impl AgentMarket {
                     VerificationPolicy::None
                 }
             };
-            let spec = TaskSpec {
-                task_id: t.task_id,
-                goal: t.goal,
-                context: String::new(),
-                done: vec![],
-                todo: vec!["(restored from disk)".to_string()],
-                trace: vec![],
-                owner: t.owner,
-                budget: Money::new(t.budget),
-                winner_price: t.winner_price.map(Money::new),
-                deadline: t.deadline.max(0) as u64,
-                required_skills: vec![],
-                verification_policy: policy,
-                requester: t.requester,
-                state: TaskState::from_label(&t.state),
-                created_at: t.created_at.parse().unwrap_or(0),
+
+            // v3.5.4: 优先从完整 spec_json 恢复 context/done/todo/trace/required_skills。
+            let mut spec = match t.spec_json.as_deref() {
+                Some(s) if !s.trim().is_empty() => match serde_json::from_str::<TaskSpec>(s) {
+                    Ok(sp) => sp,
+                    Err(e) => {
+                        eprintln!(
+                            "⚠️ 任务 {} 规格 JSON 损坏，context/todo/skills 回退默认: {e}",
+                            t.task_id
+                        );
+                        Self::fallback_task_spec(&t, policy.clone())
+                    }
+                },
+                _ => {
+                    eprintln!(
+                        "⚠️ 任务 {} 为 v3.5.4 之前遗留数据、未持久化完整规格，context/todo/skills 回退默认",
+                        t.task_id
+                    );
+                    Self::fallback_task_spec(&t, policy.clone())
+                }
             };
+
+            // 经济/生命周期字段一律以扁平权威列覆盖（不信任 JSON 内可能过期的副本）。
+            spec.task_id = t.task_id;
+            spec.goal = t.goal;
+            spec.state = TaskState::from_label(&t.state);
+            spec.owner = t.owner;
+            spec.budget = Money::new(t.budget);
+            spec.created_at = t.created_at.parse().unwrap_or(0);
+            spec.winner_price = t.winner_price.map(Money::new);
+            spec.deadline = t.deadline.max(0) as u64;
+            spec.requester = t.requester;
+            spec.verification_policy = policy;
+
             self.tasks.insert(spec.task_id.clone(), spec);
+        }
+    }
+
+    /// v3.5.4：spec_json 缺失/损坏时的旧版安全默认规格（丰富字段用默认占位）。
+    fn fallback_task_spec(t: &crate::storage::StoredTask, policy: VerificationPolicy) -> TaskSpec {
+        TaskSpec {
+            task_id: t.task_id.clone(),
+            goal: t.goal.clone(),
+            context: String::new(),
+            done: vec![],
+            todo: vec!["(restored from disk)".to_string()],
+            trace: vec![],
+            owner: t.owner.clone(),
+            budget: Money::new(t.budget),
+            winner_price: t.winner_price.map(Money::new),
+            deadline: t.deadline.max(0) as u64,
+            required_skills: vec![],
+            verification_policy: policy,
+            requester: t.requester.clone(),
+            state: TaskState::from_label(&t.state),
+            created_at: t.created_at.parse().unwrap_or(0),
         }
     }
 

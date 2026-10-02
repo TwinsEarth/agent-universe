@@ -18,7 +18,7 @@ import urllib.request
 from typing import Any, Dict, List, Optional
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
-_SDK_VERSION = "3.5.0"
+_SDK_VERSION = "3.6.0"
 
 
 class McpError(RuntimeError):
@@ -38,11 +38,24 @@ class McpHttpClient:
         base_url: str = "http://127.0.0.1:4002",
         path: str = "/api/v1/mcp",
         timeout: float = 10.0,
+        auth_token: Optional[str] = None,
     ):
         self.endpoint = base_url.rstrip("/") + path
         self.timeout = timeout
         self._next = 0
         self._initialized = False
+        # v3.5.3（AU-15）：可选 Bearer token。设置后所有 MCP 请求带
+        # ``Authorization: Bearer <token>``；不设置则不发送该头（保持现状）。
+        self.auth_token = auth_token or None
+
+    def _headers(self) -> Dict[str, str]:
+        h = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self.auth_token:
+            h["Authorization"] = f"Bearer {self.auth_token}"
+        return h
 
     def _id(self) -> int:
         self._next += 1
@@ -53,10 +66,7 @@ class McpHttpClient:
         req = urllib.request.Request(
             self.endpoint,
             data=data,
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
+            headers=self._headers(),
             method="POST",
         )
         try:

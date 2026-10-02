@@ -1,6 +1,438 @@
 # Changelog
 
-"本文件记录 Agent Universe 各版本的重要变更。
+本文件记录 Agent Universe 各版本的重要变更。
+
+## [v3.6.0] - 2026-10-02
+
+### 次版本：新增只读运维 CLI `gsn ledger verify` 与 `gsn doctor`（#78，minor）
+
+不改动任何资金/共识/持久化写入语义，新增两条只读运维命令，均复用守护进程生产校验路径。
+
+- **`gsn ledger verify [--data-dir D]`**：离线核验本地 gsn.db——缺库报 `MissingDb`（退出码 2，
+  **不创建空库**）；坏行显式 `CorruptRows(n)` 不静默跳过；调用生产 `verify_ledger_chain()`
+  报首个断链 seq、锚定 head 不符报 `u64::MAX`；`SettlementEngine::restore` +
+  `independent_audit()` 重放守恒并输出 expected/actual/账实不符。退出码 0/1/2。
+  边界：哈希链 tamper-evident 非 tamper-proof；离线只验流水自洽，在线账实交叉由 daemon 承担。
+- **`gsn doctor [--data-dir D] [--api U]`**：版本（仅 CARGO_PKG_VERSION，不新增声明点）、
+  本地账本（硬检查，缺库为 WARN）、daemon `/health` 连通性（900ms 软检查，离线不致命）；
+  有硬错误退出 1，否则 0。
+- 全程类型化错误、生产无裸 unwrap；新增 5 个在旧实现会失败的 CLI 回归测试；
+  真实 daemon E2E（充值 1000+250→停服→离线 verify，守恒 1250）PASS。
+- 632 tests / clippy（all-targets）/ fmt / no-panics / unsafe / metadata 全绿；
+  npm 3.6.0 ↔ gsn-core 0.3.60。
+
+
+## [v3.5.9] - 2026-10-02
+
+### 补丁：能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）
+
+纯文档与模块注释变更，不改变运行时代码与资金/共识语义。
+
+- **新增 `docs/CAPABILITY-STATUS.md`**：随版本维护的状态登记册。逐条给出 DEV-01~05 的
+  当前代码事实与状态——LLM 全 Mock 明确未做；自研应用层 P2P 明确采用 libp2p 不重开；
+  TEE/WASM/fault_tolerance/evolution 为路线项（WASM 类型化拒绝）；HMAC/离线 anchor·bridge/
+  非长驻 outbox 保持 v3.5.0 边界；流式/QA 委员授权门槛/Unix·macOS 隔离由「沉默」补为明确。
+  规则：闭合须标注版本+证据，不得静默删除。
+- **库面模块诚实标注（DOC-05/F-4）**：核实 topology/scheduler/memory/swarm/mesh/nat 六模块
+  公开类型仅被 lib.rs re-export、不在 daemon 启动运行图构造；为 scheduler/memory/swarm/mesh
+  补模块头注释（topology/nat v3.5.3 已标注）；README 加库面/运行面区分；记录待决 D-1
+  「接线 or 收敛删除」，补丁版不接线不删除。
+- **历史勘误（DOC-08）**：v2.4.1「路由恒为 7 跳」加指针到 v2.6.5（真实 LCA）；
+  v2.4.4「LRU」加指针到 v2.6.7（实为 LFU→真 LRU）。原文保留备查。
+- 627 tests / clippy / fmt / no-panics / unsafe / metadata 全绿；npm 3.5.9 ↔ gsn-core 0.3.59。
+
+## [v3.5.8] - 2026-10-02
+
+### 补丁：守护进程真实端到端吞吐/延迟基准 + 历史无测量性能小节诚实化（#76 / DOC-07）
+
+回应审计项 DOC-07（此前全文无守护进程吞吐/延迟基准，v2.1.8「性能指标」未经测量）。
+不含产品功能变更。
+
+- **新增可复现真实基准 `scripts/bench-e2e.mjs`**：拉起临时 data-dir 的 release
+  `gsn-daemon`，经真实 HTTP/1.1 回环跑「充值→发布托管→投标→匹配→验收→结算」闭环 N 轮，
+  记各阶段 avg/p50/p95/p99/max 与整轮吞吐；结束拉 `/api/v1/audit`、`/api/v1/conservation`，
+  审计不过或资金不守恒即退出码 2。方法学/口径/快照见 `docs/benchmarks/`。
+- **实测（gsn-core 0.3.58，Linux 云沙箱，n=200）**：**4.27 轮/秒**；publish 1.7 /
+  bid 4.8 / **match 109.2** / result 1.9 / **settle 116.3** ms；audit passed
+  （663 流水独立重放 expected=actual=12100）、conservation true。
+- **瓶颈诚实归因**：match/settle 约 110ms 来自 SQLite 默认 rollback journal +
+  `synchronous=FULL` 的逐提交 fsync（overlayfs 上约 100ms），与版本无关。本版刻意不改
+  WAL/NORMAL（涉及崩溃一致性权衡），登记后续候选。
+- **历史文档诚实化**：`releases/v2.1.8.md`「性能指标」改名「性能指标（设计目标，非实测）」
+  并加勘误指针；那三项数字发布时未测量，原文保留备查。
+- 口径：单机回环/单连接/顺序，含真实落盘与 HTTP，不含跨网 libp2p/LLM/并发/TLS，
+  不可外推为公网多节点 TPS。详见 `releases/v3.5.8.md`。
+
+## [v3.5.7] - 2026-10-02
+
+### 补丁：MSRV 诚实化——显式声明并实测最低工具链 1.88.0（#75 / W-01）
+
+回应审计项 W-01（历史曾把最低 Rust 写成 1.85，与锁定依赖实际要求不符）。把 MSRV 变成
+可证实、有 CI 关卡的属性，不含功能与运行时变更。
+
+- **下限由锁定依赖算出**：`Cargo.lock` 解析的 385 个包中 269 个声明了 `rust-version`，
+  最高为 `time` 0.3.55 / `time-core` 0.1.9 / `time-macros` 0.2.32 要求的 **1.88.0**
+  （其后 wasip2 1.87、uuid 1.26.1 / hashbrown 0.17.1 / deranged 1.85）。
+- **实测支持**：rustc 1.88.0（2025-06-23）下 `cargo check --bins --locked` 通过（4m40s）。
+- `gsn-core/Cargo.toml` 新增 `rust-version = "1.88"`；CI 新增 `rust-msrv` job
+  （1.88.0 + `cargo check --bins --locked`），依赖升级抬高下限时会立即变红。
+- MSRV 关卡只约束库 + 二进制；测试/clippy/fmt 仍以 stable 运行，避免 dev-dependency
+  无意义抬高发布产物下限。两个 Tauri 桌面壳的 MSRV 由 Tauri 决定，本版不代其声明。
+- 详见 `releases/v3.5.7.md`。
+
+## [v3.5.6] - 2026-10-02
+
+### 补丁：中继池遥测落盘失败显式化 + 市场层结算独立审计/防重复结算回归（#74）
+
+本补丁收尾 GAP §3.6「持久化写入失败被静默吞掉」在**网络中继池运维路径**上的残留，
+并为「中标价付款 + 差额退款」补齐市场层独立审计与防二次结算断言。不含功能新增，
+不改变任何资金/共识语义；结算按中标价付执行者、预算余款退回需求方的实现早已在
+v3.5.1–3.5.3 落地并由端到端用例钉住，本版只补观测性与测试覆盖，不重复实现。
+
+- **中继池遥测落盘失败不再静默（AU-持久化·relay）**：`node.rs` 中 11 处对 SQLite
+  的中继池写入（`set_relay_status` / `mark_relay_failed` / `delete_relay` / `set_meta`，
+  覆盖 hop 自动入池、连接掉线/失败、reservation 续约、通道 listen 失败、周期 probe
+  健康/失败/超时、手动删除、容量扩容、池启动元数据）旧实现一律 `let _ = store.…(...)`，
+  磁盘/锁错误被完全丢弃，运维无从察觉内存中的中继池健康位/失败计数/容量正与磁盘漂移。
+  本版新增统一 helper `log_relay_persist_err`，落盘失败时打印
+  `⚠️ [relay-persist] <op>(<id>) 落盘失败…`（含操作、对象 id、根因）。
+  **控制流刻意不中断**：这些是尽力而为的运维遥测，不能让一次磁盘错误打断 P2P/swarm
+  主事件循环（与 `market_actor` 的 `warn_persist` 同一原则：降级路径必须留痕，但不阻断
+  数据面）。资金路径不受影响——资金流水 `append_ledger_record` 早已是「失败返回错误且
+  不推进水位」（v3.5.3 AU-14），本次不涉及。
+- **市场层独立审计回归**：新增 `test_market_independent_audit_passes_after_winner_price_refund`：
+  走完「充值→质押注册→发布托管 50→投标 10→匹配→验收→结算」完整市场状态机后，断言
+  `independent_audit().passed == true`，且从只追加流水独立重放的 `expected_total` 与当前
+  全部账户余额并集 `actual_total` 精确相等（均为总充值 150）。此前市场层只断言了
+  `conservation_check`，未断言比守恒更严、能抓「自洽但未入账」变动的独立审计。
+- **市场层防二次结算回归**：新增 `test_market_settle_task_twice_rejected`：同一任务
+  首次结算成功后再次 `settle_task` 必须返回 `Err`（错误含「不能结算」，Settled 为终态、
+  无入边），且执行者/需求方余额不再变动、`settled_count` 不增加。SettlementEngine 层
+  早有等价测试，本版补齐**市场层经任务状态机拒绝**这条此前无断言的路径，防止状态机放宽
+  后二次结算铸出第二笔款。
+
+**验证**：`cargo +1.98.1 build --bins` 通过；新增 2 个市场层测试通过；
+`cargo test --workspace -j2`、`cargo clippy --all-targets -- -D warnings`、
+`cargo fmt --all --check`、`cargo metadata --locked`、no-panics/unsafe 静态关卡结果见
+`releases/v3.5.6.md`（全量回归在发版前执行并回填）。版本 npm 3.5.6 ↔ gsn-core 0.3.56 一致。
+
+**刻意不改**：8 处 `let _ = stream.flush().await`（HTTP 响应刷新，无持久化语义）、
+`let _ = reply.send(…)`（oneshot 对端已离开，属正常取消）、测试临时目录清理，均非
+持久化静默点，保持原样。
+
+## [v3.5.5] - 2026-10-02
+
+### 补丁：gsn CLI 鉴权/金额/仲裁契约加固（W-03）与 daemon 版本开关（W-02）（仅缺陷修复）
+
+本补丁修复 `gsn` 命令行客户端在 daemon 开启鉴权后不可用、以及会把非法金额静默存成 0 的问题，
+并补齐 `gsn-daemon --version`。均为 CLI 侧缺陷，不改变服务端资金/共识语义。
+
+- **W-03-a（写操作无法带鉴权）**：`gsn market` 使用手写 HTTP/1.1 客户端，从不发送
+  `Authorization` 头。daemon 配置 `REST_BEARER_TOKEN` 后，所有写操作（deposit/publish/bid/
+  settle/arbitrate 等）一律 401。本版新增 `--token <t>` 选项与 `GSN_API_TOKEN` 环境变量，
+  非空时注入 `Authorization: Bearer <t>`；未配置则不发该头（与无鉴权 daemon 向后兼容）。
+- **W-03-b（非法金额静默存 0）**：`deposit` 旧实现 `p[1].parse::<i64>().unwrap_or(0)`，
+  `gsn market deposit acct lots` 会向服务端发送 `{"amount":0}` 并返回成功（GAP §8.1 在 CLI 侧
+  的复现）。本版新增 `parse_amount`：只接受十进制整数（可选 `+`/`-`），拒绝浮点、指数、
+  千分位、空串、非数字与 i64 溢出，非法即以退出码 2 终止，**绝不发出会被理解成 0 的请求**。
+- **W-03-c（arbitrate 契约漂移）**：旧 CLI 发送 `slash_amount`（f64）且仲裁者身份缺失。
+  v2.8.5 起服务端**已忽略请求体 `slash_amount`、罚没由服务端规则 `slash_amount_by_rule` 决定**，
+  并强制必填非空 `arbitrator`。本版把命令签名改为
+  `arbitrate <dispute_id> <guilty> <arbitrator>`，请求体只含 `{"guilty","arbitrator"}`，
+  不再发送会被忽略的 f64 罚没值；缺仲裁者直接报错。
+- **W-02（daemon 无版本开关）**：`gsn-daemon` / `gsn daemon` 新增 `--version`/`-V`，
+  输出 gsn-core 权威 crate 版本后退出，与 `gsn --version` 一致（参数在共享的
+  `node::parse_daemon_args` 处理，两个入口同时生效）。
+
+**回归测试（在旧实现上必失败）**：`gsn` 二进制内新增 4 个纯解析单测：
+`amount_accepts_plain_integers_and_signs`（接受整数/符号）、
+`amount_rejects_non_integer_instead_of_defaulting_to_zero`（拒绝 lots/10.5/1e3/1,000/空串/
+i64 溢出——旧实现会把它们静默变 0）、`deposit_body_carries_parsed_integer_and_rejects_bad_amount`、
+`arbitrate_requires_arbitrator_and_omits_client_slash_amount`（缺仲裁者报错、请求体不含
+slash_amount——旧实现无法表达该契约）。
+
+**验证**：`cargo +1.98.1 test --workspace -j2` **625 passed / 0 failed / 0 ignored**
+（基线 621，净增 4）；`cargo clippy --workspace --all-targets -- -D warnings` 零警告；
+`cargo fmt --all --check` 干净；`cargo metadata --locked` 通过；no-panics/unsafe 静态关卡全绿；
+版本 npm 3.5.5 ↔ gsn-core 0.3.55 一致。
+
+**诚实边界**：本版只改 CLI 与参数解析；Bearer 校验仍在服务端既有 fail-closed 逻辑
+（配了 token 必校验、未配默认拒绝写操作，除非显式 `REST_ALLOW_UNAUTHENTICATED=1`），
+CLI 无法也不应对服务端鉴权策略做任何旁路。
+
+## [v3.5.4] - 2026-10-02
+
+### 补丁：重启持久化全字段保真（W-04 任务规格 / W-05 智能体卡片）（仅缺陷修复，无破坏式重构）
+
+本补丁把 Windows 实机（win-deploy-v3.5.0，提交 416b5bc/9603735）已验证的两个重启丢字段修复
+回合到云开发树。根因同源：`spawn_with_store` 重启恢复时，业务对象只从 SQLite 的**少量扁平列**
+重建，列里没有的丰富字段全部退化为默认值——任务的执行轨迹与卡片的能力声明在一次重启后丢失。
+
+- **W-04（任务规格重启丢失）**：旧 `StoredTask` 只有 10 个扁平列，`restore_tasks_from_store`
+  重建 `TaskSpec` 时把 `context` 清空、`todo` 退化为 `"(restored from disk)"`，`done`/`trace`/
+  `required_skills` 全丢，导致重启后任务的执行上下文与技能要求不可用。本版为 `tasks` 表新增
+  `spec_json TEXT`，快照写入完整 `TaskSpec` 规范 JSON，恢复时**优先反序列化完整规格**，再用
+  扁平权威列覆盖经济/生命周期字段（`budget`/`winner_price`/`deadline`/`state`/`owner`/`goal`/
+  `requester`/`created_at` 与单独解析的 `verification_policy`，保留 v2.8.4 坏值告警语义）。
+- **W-05（智能体卡片重启保真）**：旧 `StoredAgent` 只有 6 个扁平列，`restore_agents_from_store`
+  重建的卡片 `version` 恒为 `"0.0.0-restored"`，`description`/`modalities`/`models`/`endpoint`/
+  `pricing`/`sla`/`total_calls`/`success_rate`/`evidence_grade`/`verified` 全部退化为默认值。
+  本版为 `agents` 表新增 `card_json TEXT`，快照写入完整 `MarketAgentCard`，恢复时**优先反序列化
+  完整卡片**，再用经济身份权威扁平列覆盖（`stake`/`reputation`/`created_at`，资金与信誉以列为准、
+  不允许被 JSON 改写；`updated_at` 取 max），JSON 内 skills 为空时用扁平 `skills` 列兜底。
+
+**迁移与健壮性**
+- 新增幂等迁移 `migrate_add_text_column(conn, table, column)`：`PRAGMA table_info` 探测列是否
+  存在，新库（CREATE TABLE 已含两列）与旧库（ALTER ADD TEXT）都安全，可重复打开不报错。
+- 完整 JSON 缺失或损坏时**不 panic**：回退旧的安全默认构造并显式 `eprintln!` 告警（含 agent/
+  task id 与错误），经济字段仍由扁平权威列恢复，不影响账本与结算。
+
+**回归测试（在旧实现上必失败，非绿了也证明不了什么的测试）**
+- `storage::persist::tests::task_spec_json_survives_reopen` / `agent_card_json_survives_reopen`：
+  写入含丰富 `spec_json`/`card_json` 的记录，重开库后断言 context/todo/done/required_skills、
+  version/modalities/models/pricing.price/sla.latency_p95_ms/total_calls 存活（旧实现必失败）。
+- `json_column_migration_is_idempotent`：同一库连续三次 open + 写入，迁移幂等不报错。
+- `tests/v274_test.rs` 两条恢复测试升级为携带丰富 JSON 并断言字段存活（W-04/W-05 端到端，
+  覆盖 `restore_*_from_store` 生产恢复路径，而非仅存储层往返）。
+
+**验证**：`cargo +1.98.1 test --workspace -j2` **621 passed / 0 failed / 0 ignored**
+（基线 618，新增 3 个持久化测试；v274 两条为存量测试增强断言）；`cargo clippy --workspace
+--all-targets -- -D warnings` 零警告；`cargo fmt --all --check` 干净；`cargo metadata --locked`
+通过；`scripts/bump-version.sh 3.5.4` 全套版本声明点一致（npm 3.5.4 ↔ gsn-core 0.3.54）。
+
+**诚实边界**：本版只解决"重启后内存重建丢字段"，不改动 v2.8.4 已有的证据闸门/账本哈希链/
+资金守恒机制；`card_json`/`spec_json` 与扁平列的权威关系是"经济/生命周期以列为准、丰富声明以
+JSON 为准"，不是把 JSON 当作可信资金来源。
+
+
+
+### 补丁：数值健壮性 / JS·Python 客户端一致性 / 测试与文档诚实化（仅缺陷修复，无破坏式重构）
+
+本补丁基于 v3.5.2，修复 AU-33/34/35/36/19/17/14/30/31/27/15/16/39/02/11/12/13/20/29/40/37/38。
+
+**A 组：Rust 数值/正确性硬化**
+- **AU-33（apply_decay 除零）**：`ReputationSystem::apply_decay` 在 `decay_halflife_secs==0`
+  时旧实现 `elapsed / 0` 整数除零 panic；改为 halflife==0 视为"不衰减"并跳过。测试
+  `au33_decay_halflife_zero_no_panic_and_no_decay`（sleep 令 elapsed>0，旧实现必 panic）。
+- **AU-34（非有限 f64）**：`with_supply_demand` 对 NaN 静默落 2.0、`price()` 对 Inf 饱和成
+  u64::MAX；改为入口拒绝非有限 ratio（`PricingError::NonFiniteSupplyDemandRatio`）、price()
+  非有限/溢出显式报错（`NonFiniteOrOverflowPrice`）。测试覆盖 NaN/+Inf/-Inf/0/溢出。
+- **AU-35（round 静默截断）**：MCP/REST 的 `round` 旧用 `as_u64().unwrap_or(0) as u32`
+  （1.5 退 0、5e9 截断）；MCP schema 改 integer，两侧用 `u32::try_from` 严格校验，
+  非整数/负数/越界返 -32602 风格参数错误。
+- **AU-36（get_money 静默 0）**：取不到合法整数金额旧 `unwrap_or(Money::ZERO)`；改为显式工具
+  错误，不再把金额静默写成 0。
+- **AU-19（罚没两阶段顺序）**：`slash_stake_synced` 旧先改质押记录再扣账本，第二步失败留
+  口径不一致；改为先扣账本、再改质押记录，记录步失败则把账本扣额补回（回滚），保证两视图一致。
+- **AU-17（启动自审）**：`spawn_with_store` 恢复完成后自动跑一次 `independent_audit`；
+  通过记日志，账实不符打印显著 CRITICAL 并留可观测信号（账本链篡改已由 v3.5.1 fail-closed 拦截）。
+- **AU-14（双写竞态）**：node.rs POST /agents 后直写 `store.upsert_agent`（reputation 硬编码 0）
+  与 market actor 写后快照同键 last-writer-wins；删除冗余直写，以 actor 为唯一 SQLite 写者
+  （注册后读回走内存 market，不受异步快照时序影响），并移除 run_api_server 未用的 store 参数。
+
+**B 组：沙箱运维诚实化与真实行为测试**
+- **AU-30（非 root）**：run_daemon 早期加 `ensure_not_root(allow_root,euid)`——euid==0 且未设
+  `GSN_ALLOW_ROOT=1` 拒绝启动；不引 libc，Linux 下解析 /proc/self/status 的 Uid 行。纯函数测试
+  root+未允许拒 / root+允许放 / 非 root 放。
+- **AU-31（cpu_time_ms 恒 0）**：`SandboxResult.cpu_time_ms: u64` 恒填 0 易被误读为"测得 0ms"；
+  改 `Option<u64>`，进程后端如实返回 `None`=未测量（不为此新引 libc/unsafe，不填假值）。
+- **AU-27（隔离真实行为测试）**：新增 v353_test 真跑 env 白名单清洗（宿主秘密变量不泄漏）、
+  workdir 与宿主 cwd 隔离、白名单变量透传。内存 OOM/Windows Job Object/网络-FS-quota 因容器/平台
+  不可确定性断言，**不写空洞测试**，在测试模块注释与本节明确列出。
+
+**C 组：JS / Python 客户端一致性（已真实运行）**
+- **AU-15（Bearer 注入）**：js/lib/mcp.js 与 aip-sdk-py mcp_client 增加可选 auth token，设置后发
+  `Authorization: Bearer <token>`，不设置不发该头。两侧各加头断言测试。
+- **AU-16（Python 三端签名钉向量）**：新增 tests/test_cross_lang_vector.py，读取
+  conformance/vectors.json，断言 Python 由固定 seed 派生的公钥/DID/规范载荷签名与 Rust、JS
+  逐字节一致。
+- **AU-39（JS 恒真断言）**：`shardOf('key-0',16)===shardOf('key-0',16)` 恒真，改为"同 key 两次一致
+  且结果落在 [0,16)"的有意义不变量。
+
+**D 组：文档诚实化（只标注，不接线）**
+- **AU-02/11/12/13/20/29/40**：topology 纯算法库、mcp/server.rs McpServer（线上 MCP 走
+  Market/Sandbox bridge）、gossipsub（dormant，发现实际仅 Kademlia）、`gsn mcp --transport stdio`
+  （独立内存市场演练场，无 SQLite/恢复，裸 default 沙箱会 422）、swarm/consensus.rs LightweightConsensus
+  （模块头显著警告"未接线；接入前必须 weight=stake、去重、验签"）、sandbox NetworkGuard/ExecutionToken/
+  SandboxIdentity（设计预留、当前不做短时令牌/网络强制）、official root 不预置且 T3 平台可达性——
+  均在对应 doc 注释如实标注"library-only / dormant / 设计预留"，不再暗示已在 daemon 生产生效。
+- **AU-37/38（README 数字订正）**：本版实测 Rust **618** 测试 / Python **19** / JS **22**；
+  MCP 市场工具实测 **20** 个（含 market_audit、market_reject_task）。README 已从过时的
+  155 Rust / 12 JS / 18 工具订正，并加"随 cargo test 增长、以发布时实测为准"。
+
+**已知限制 / 后续（跨版残留，诚实声明）**
+- v3.5.1 委员会仍可能被 ≥4 个各自足额质押的 Sybil 身份凑齐 Stop；按质押加权的验证人集与
+  slashing 联动留待 minor。
+- v3.5.2 QA nonce 为运行期跨请求去重；跨重启窗口内的重放由既有服务端时间窗约束。
+- 本版未接线的库能力清单（topology/mesh/nat、McpServer、gossipsub 发布消费、LightweightConsensus、
+  NetworkGuard/ExecutionToken/SandboxIdentity）见 D 组；进程后端不测量 CPU 时间（cpu_time_ms=None）。
+
+## [v3.5.2] - 2026-10-02
+
+### 补丁：插件 / PMB / 沙箱健壮性与隔离诚实化（仅缺陷/安全/正确性修复，无破坏式重构）
+
+本补丁基于 v3.5.1，修复审计条目 AU-04/06/07/08/09/10/21/22/23/24/25/26/28。每组均带
+「在旧实现上必败」的回归测试。
+
+- **AU-04（QA nonce 跨请求去重 / 重放）**
+  - 根因：`QaCommittee.seen_nonces` 是实例内 `HashSet`，而 `verify_result_authenticated`
+    每请求新建委员会即清空，同一组签名 Stop 票在第二次验收调用里被当作新票重放并通过。
+  - 修复：把 nonce 去重提升为 **`AgentMarket` 字段级**集合，键
+    `(task_id, round, voter_did, nonce)`，跨请求存活；闸门 3（质押）后做只读预检，命中即
+    返 `QA_NONCE_REPLAY`；整条验收成功后才 insert 键（失败不烧合法票）。QA 时间窗确为
+    服务端强制（`cast_signed_vote` 拒绝 `now<issued_at`/`now>expires_at`）。
+  - 残留（如实声明）：去重在**运行期**跨请求存活；跨进程/重启持久化需 schema 扩张，本补丁
+    不做架构扩张——跨重启窗口内的重放由既有服务端时间窗约束。
+  - 回归测试（tests/v352_test.rs）：同一组合法 Stop 票第二次原样重放被 `QA_NONCE_REPLAY` 拒绝。
+
+- **AU-06（插件生命周期受守卫转换）**
+  - 根因：`lifecycle.rs` 的合法转移图生产无人走；host 经 `bus.set_state` 无条件直改状态，
+    终态插件可被静默回 Running。
+  - 修复：`bus.set_state` 复用与 `PluginLifecycle` 同一终态谓词 `is_terminal()`
+    （Refused/Quarantined/Archived）做**终态锁定后门**——终态插件再改写到任何其它状态
+    返类型化 `InvalidTransition`。最小侵入，不改热更新正常路径语义。
+  - 回归测试（bus.rs）：插件置 Quarantined 后 `set_state` 回 Running/Stopped/Discovered
+    均失败、状态保持终态。
+
+- **AU-08（拒绝外部自证系统命名空间）+ AU-23（spawn 失败不留孤儿注册）**
+  - 根因：`com.twinsearth.sys.*` 在 arbiter 走 `Tier::System` 臂，「签名由宿主构建链保证」
+    实际不验签；外部 install 自证系统名即可提权获进程内全能力。install 又先 `register`
+    后 `spawn`，spawn 失败留下与实例 desync 的孤儿注册项。
+  - 修复：`install()` 在 ABI 校验后立即拒绝 `Tier::System` 名
+    （`PLUGIN_SYS_NAMESPACE_FORBIDDEN`）；系统插件只走 `boot_system()`。并把注册推迟到
+    **spawn 成功之后**（spawn 失败不写 registry / 总线）。
+  - 回归测试（host.rs）：①外部自签 `com.twinsearth.sys.*`→被拒；②构造 spawn 必败的清单
+    （非法资源）后 install 失败，registry 与总线路由均无残留。
+
+- **AU-07（黑名单可播种）+ AU-24（start 复检 / uninstall 清路由）**
+  - 根因：`Blacklist::new()` 恒空、启动不播种；`start()` 不复检；`uninstall` 只置 Stopped
+    而保留总线 `RouteEntry`（孤儿路由）。
+  - 修复：新增 `Blacklist::load_operator_file`（每行一个 plugin-id、`#` 注释、文件不存在=空，
+    不联网、无硬编码封禁）与 `host.seed_blacklist_from_env()`（读 `GSN_BLACKLIST_FILE`）；
+    `start()` 重新过黑名单闸门；`uninstall()` 末尾 `bus.remove_route(id)`。
+    `file_appeal` 确为死代码，不接线（现状保留）。**生产接线（复核补修）**：`run_daemon`
+    （node.rs）在构造 `PluginHost` 后、`boot_system`/`boot_official` 之前真实调用
+    `seed_blacklist_from_env()`——未设变量=空黑名单 no-op（现状）；已设但读取/解析失败则打印
+    CRITICAL 并 fail-closed 拒绝启动插件子系统，绝不静默按空表继续。
+  - 回归测试（host.rs/blacklist.rs）：播种某 id→install 被拒；停止期间拉黑→`start` 被拒；
+    uninstall 后 `route_table` 无该 id；另加 `blacklist_seed_read_failure_is_error_not_silent_empty`
+    证明"显式配置却读失败"返回错误（run_daemon 据此 fail-closed）、未设变量才是 no-op。
+
+- **AU-09 + AU-22（outbox 有界与健壮解析）**
+  - 根因：`collect_outbox` 先 `read_to_string` 整文件（无上限，内存 DoS）；非 UTF8 静默
+    `Ok(())`；单坏行 `from_str?` 毒丸整次失败；仅全成功才清文件。
+  - 修复：具名常量 `OUTBOX_MAX_BYTES=16MiB`，用 `Read::take` 有界读取（超限具名失败
+    `OUTBOX_TOO_LARGE` + 审计）；逐行隔离坏 JSON / 未知 kind / send 缺 target（记
+    `outbox_issues` 后继续，不毒丸）；非 UTF8 记 `OUTBOX_NON_UTF8` 审计并清理；合法行搬入
+    outbox 后清文件。
+  - 回归测试（plugin/runtime/process.rs）：超大 outbox 被拒；一行损坏不影响其余合法消息
+    投递且有审计信号；非 UTF8 不再静默当空；缺 target 的 send 被隔离（旧实现整次失败）。
+
+- **AU-21 + AU-25（PMB TTL 新鲜度 / 淘汰顺序 / 先验签后计速率）**
+  - 根因：`ttl_ms` 入签名却从不比对时钟；nonce 窗口超 1024 用 `BTreeSet.iter().next()`
+    按**字典序**淘汰（可能误删刚签发的合法 nonce）；速率槽在 HMAC 验签 / nonce 校验**之前**
+    消耗——坏签名/重放攻击者可白嫖合法插件的速率配额。
+  - 修复：①`PluginBus::set_server_clock_ms` 注入服务端时钟后，强制
+    `now ∈ [issued_at, issued_at+ttl_ms]`，过期返 `PMB_MESSAGE_EXPIRED`。**生产接线（复核
+    补修）**：时钟注入点从"仅测试"改为在宿主唯一发送路径 `PluginHost::dispatch_for_plugin`
+    （`send_to`/`publish` 及 outbox 代投全部汇聚于此）签名后、dispatch 前用真实墙钟即时写入；
+    `issued_at` 取宿主时钟（生产 `now_ms==0` 时退到真墙钟，避免自签消息被钉到 1970）。
+    bus.rs 直接驱动 PluginBus 的单测仍在未注入时钟的确定性回放模式下（向后兼容）；
+    ②nonce 改 `HashSet` membership + `BTreeSet<(issued_at,nonce)>` 时间序，超窗淘汰**时间最旧**
+    而非字典序；③把速率桶消耗移到 HMAC 验签 + nonce + 新鲜度全部通过之后。
+  - 回归测试：bus.rs 注入时钟到未来后过期消息被拒、字典序与时间序相反时按时间淘汰最旧、
+    坏签名不消耗速率配额；**另加经真实 PluginHost 的 `au21_production_path_enforces_ttl_freshness`**
+    （不手动 set_server_clock）：窗口内新鲜消息被接受投递，把宿主时钟钉到 epoch+1s（issued_at 陈旧）、
+    总线仍按真墙钟判定时被 `PMB_MESSAGE_EXPIRED` 拒绝——证明生产发送路径真的强制了 TTL。
+
+- **AU-10（waiver 理由入审计）**
+  - 根因：`AuditEntry` 无 waiver 字段，`create` 审计点不传 `cfg.waivers`——「在缺边界后端
+    带理由放行」不留痕。
+  - 修复：`AuditEntry` 增加 `waivers: Vec<WaiverAuditEntry>`（边界名+理由，`#[serde(default)]`
+    兼容历史日志）；create 成功/失败都把 `cfg.waivers` 序列化落 `sandbox-audit.log`。不改
+    隔离运行时行为。
+  - 回归测试（tests/v352_test.rs）：带 waiver（trusted_local）create 后，审计条目含
+    `network_deny_all` 边界与非空理由。
+
+- **AU-26（Windows 绝对路径逃逸）**
+  - 根因：`safe_join` 仅挡 `/` 前缀与 `..`，未查 Windows 盘符 `C:\` / UNC `\\server`；
+    `config.validate` 同。因 `Path::is_absolute()` 语义随编译平台变化，Linux 上构造
+    `C:\foo` 会被判相对路径。
+  - 修复：新增跨平台 `path_escapes_sandbox`，按字符串同时拒绝前导 `/`、前导 `\`、`X:` 盘符
+    （X 为 ASCII 字母），并以 `is_absolute()` 兜底 + ParentDir 组件；`safe_join` 与
+    `config.validate` 统一复用。
+  - 回归测试（sandbox/config.rs）：`/etc/passwd`、`../x`、`C:\Windows`、`C:/x`、
+    `\\server\share`、`\unc` 均判逃逸；合法相对路径放行。
+
+- **AU-28（隔离级别不静默降级）**
+  - 根因：`cfg.isolation` 从不与后端实际可达级别比对；进程后端硬编码返 `Process`，调用方
+    请求 MicroVM 也被静默按 Process 跑。
+  - 修复：`ProcessSandbox::create` 在能力校验后，若
+    `cfg.isolation.strength() > self.isolation().strength()`（MicroVM/Container 请求落在
+    Process 后端）且无带非空理由的 `Waiver(Capability::IsolationLevel)` 豁免，返具名
+    `PolicyNotEnforceable`（详情含 `SANDBOX_ISOLATION_UNAVAILABLE`），绝不静默降级。
+  - 回归测试（tests/v352_test.rs）：请求 MicroVM 在进程后端且无豁免→具名拒绝；显式豁免→
+    按现状接受。
+
+## [v3.5.1] - 2026-10-02
+
+### 补丁：QA 委员会自我批准等安全缺陷修复（仅缺陷/安全/正确性修复，无破坏式重构）
+
+本补丁基于 v3.5.0 基线，修复 QA 审计条目 AU-01/AU-05/AU-03/AU-18/AU-32。每条修复均带
+「在旧实现上必败」的回归测试。
+
+- **AU-01 / AU-05（Critical，服务端质押锚定 QA 委员会）**
+  - 根因：`verify_result_authenticated` 只验委员票的签名，不校验委员身份是否在服务端
+    持有有效质押、是否与任务执行者利益冲突，也不设 BFT 人数下限。调用方带一把自造密钥、
+    `n=1`（f=0）即可凑成 Stop「自我批准」并放款。
+  - 修复：在构造委员会 / 验票**之前**新增三道服务端资格闸门（类型化 `Result<String>`，
+    错误前缀稳定可断言 `COMMITTEE_TOO_SMALL` / `COMMITTEE_EXECUTOR_CONFLICT` /
+    `COMMITTEE_NOT_STAKED`）：
+    1. 市场层具名常量 `MIN_QA_COMMITTEE_SIZE = 4`（BFT 依据：`f=(n-1)/3`，n=1/2/3→f=0
+       单人即可自批；n≥4 才有 f≥1、quorum≥3，容忍 1 个恶意/宕机委员）；
+    2. 任务执行者回避：先取任务（不存在返回 `NOT_FOUND`），其 `owner`（中标执行者）
+       不得出现在委员 DID 集合；
+    3. 服务端质押锚定：新增 `ReputationManager::has_locked_stake(did)->bool`
+       （`status==Locked` 且 `amount>=min_stake`，阈值复用质押管理器内部口径），任一委员
+       不满足即拒绝。
+    - 不修改通用 `QaCommittee` 库逻辑，不改密码学验签。
+  - 残留风险（如实声明）：本补丁锚定「独立、已质押、非执行者」身份并设 BFT 下限；掌握
+    ≥4 个各自足额质押身份的策划型 Sybil 仍可凑齐 Stop。按质押加权的验证人集与 slashing
+    联动属后续 minor，不在本补丁范围。
+  - 回归测试（tests/v351_test.rs）：①单把自造密钥 n=1 自签 Stop→`COMMITTEE_TOO_SMALL`、
+    不升 Verified、不放款；②委员含执行者→`COMMITTEE_EXECUTOR_CONFLICT`；③委员未/非
+    Locked 质押→`COMMITTEE_NOT_STAKED`；④4 个独立足额质押且非执行者委员合法 Stop→
+    通过并可 settle（不误伤合法流程）。
+
+- **AU-03（账本哈希链恢复 fail-closed）**
+  - 根因：`spawn_with_store` 恢复路径在 `verify_ledger_chain` 检出断链/锚定不符时，仅
+    eprintln 告警后仍照常 restore 并进入可写/结算数据面——被篡改的账本照样能放款。
+  - 修复：断链/锚定不符时**默认不恢复账本、不进入可写/结算数据面**，进入拒服态——对一切
+    命令回复 `LEDGER_TAMPERED` 错误（不取 oneshot 不悬挂）。仅当显式逃生开关
+    `GSN_ALLOW_TAMPERED_LEDGER=1` 时保留旧的告警+容错恢复，并打印显著 CRITICAL 告警。
+    开关默认关。
+  - 回归测试：构造断链账本，无开关时恢复拒服且不能 settle；开关=1 时（子进程隔离环境变量）
+    恢复旧容错行为、进入数据面。
+
+- **AU-18（提交结果入库即降为未验证）**
+  - 根因：`submit_result` 原样入库客户端自报的 `evidence_grade`，执行者自报 Verified 即可
+    满足结算可信闸门。
+  - 修复：入库前**强制** `evidence_grade = EvidenceGrade::Unverified`；只有认证 QA Stop
+    或仲裁路径可提升（保持现有服务端签发）。
+  - 回归测试：提交时自报 Verified，入库后断言为 Unverified，且不能直接 settle。
+
+- **AU-32（Bearer 常量时间比较）**
+  - 根因：REST（`node.rs` `rest_authorize`）与 MCP（`mcp/sse.rs`）用朴素 `==`/`trim()==`
+    比较 Bearer 令牌，逐字节短路泄露前缀长度（时序侧信道）。
+  - 修复：新增 `security::constant_time_eq[_str]`（逐字节 XOR 累积、长度不等也不提前返回，
+    不引入新第三方依赖，与 `plugin::bus::constant_time_eq_hex` 同范式），两处鉴权统一复用。
+  - 回归测试：`security` 模块内常量时间比较正确/错误用例（功能正确性；时序不在单测断言范围）。
+
+- **测试影响面调整**：既有走认证验收的集成测试（v235/v273）原用临时自造密钥当委员且未
+  注册质押，已改为注册 4 个相互独立、各自足额（100）锁定质押、且均非任务执行者的委员后
+  再投票——即正确新流程。
+- 全量回归：在 v3.5.0 基线 582 passed 之上新增上述回归用例；`cargo fmt`、
+  `cargo clippy --workspace --all-targets -- -D warnings` 零警告。
 
 ## [v3.5.0] - 2026-10-01
 

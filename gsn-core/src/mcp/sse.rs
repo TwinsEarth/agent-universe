@@ -47,20 +47,21 @@ pub async fn handle_post(
     // ── 认证闸门（先于任何分发）──
     if let Some(t) = expected_token {
         let want = format!("Bearer {t}");
-        match auth_header {
-            Some(h) if h.trim() == want => {}
-            _ => {
-                return McpHttp {
-                    status: 401,
-                    status_text: "Unauthorized",
-                    content_type: "application/json".to_string(),
-                    body: serde_json::to_string(&McpResponse::error(
-                        RequestId::Null,
-                        McpError::Unauthorized("invalid or missing bearer token".to_string()),
-                    ))
-                    .unwrap_or_default(),
-                };
-            }
+        // v3.5.1（AU-32）：常量时间比较，不提前短路，避免时序侧信道
+        let authed = auth_header
+            .map(|h| crate::security::constant_time_eq_str(h.trim(), &want))
+            .unwrap_or(false);
+        if !authed {
+            return McpHttp {
+                status: 401,
+                status_text: "Unauthorized",
+                content_type: "application/json".to_string(),
+                body: serde_json::to_string(&McpResponse::error(
+                    RequestId::Null,
+                    McpError::Unauthorized("invalid or missing bearer token".to_string()),
+                ))
+                .unwrap_or_default(),
+            };
         }
     }
 

@@ -307,11 +307,19 @@ pub async fn route(
             // v2.5.9 认证式：固定委员集 (did + 公钥) + 委员私钥签名票，
             // 不再接受 approvals / committee_size 合成投票。
             let body = parsed_body.as_ref();
-            let round = body
-                .and_then(|v| v.get("round"))
-                .and_then(|x| x.as_u64())
-                .map(|x| x as u32)
-                .unwrap_or(0);
+            // v3.5.3（AU-35）：round 必须是 u32 范围内整数；1.5/-1/5e9 一律 400，
+            // 旧实现 `as_u64().map(|x| x as u32)` 对非整数静默退 0、对大值静默截断。
+            let round: u32 = match body.and_then(|v| v.get("round")) {
+                None | Some(serde_json::Value::Null) => 0,
+                Some(v) => match v.as_i64().and_then(|n| u32::try_from(n).ok()) {
+                    Some(r) => r,
+                    None => {
+                        return Routed::bad_request(&format!(
+                            "INVALID_PARAM: round 必须为 u32 范围内整数，实际: {v}"
+                        ));
+                    }
+                },
+            };
             let members = match parse_committee_members(body) {
                 Ok(m) => m,
                 Err(e) => return Routed::bad_request(&e),

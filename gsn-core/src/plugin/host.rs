@@ -60,6 +60,15 @@ pub struct PluginHost {
     now_ms: u64,
 }
 
+/// 当前墙钟毫秒（Unix epoch）。SystemTime 早于 epoch 在实践中不可能，若真出现则返回 0——
+/// 此时总线时钟等于 `CLOCK_NOT_SET`，TTL 检查按未注入处理（安全降级，绝不 panic）。
+fn real_wall_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl PluginHost {
     /// 新建宿主（未装配系统插件）。
     pub fn new(version: impl Into<String>, data_dir: Option<PathBuf>) -> Self {
@@ -83,6 +92,16 @@ impl PluginHost {
     /// 注入当前时间（测试）。
     pub fn set_now(&mut self, now_ms: u64) {
         self.now_ms = now_ms;
+    }
+
+    /// 构造消息 issued_at 时使用的宿主时钟：测试经 [`set_now`] 显式注入则沿用（确定性），
+    /// 生产 `now_ms==0` 时退到真实墙钟，避免把自签消息的 issued_at 钉死在 1970 年。
+    fn clock_now_ms(&self) -> u64 {
+        if self.now_ms != 0 {
+            self.now_ms
+        } else {
+            real_wall_ms()
+        }
     }
 
     /// 加官方根密钥（T1/T2 副签验证）。
@@ -113,6 +132,26 @@ impl PluginHost {
     /// 黑名单可变引用（导入黑名单数据库）。
     pub fn blacklist_mut(&mut self) -> &mut Blacklist {
         &mut self.blacklist
+    }
+
+    /// 启动时从环境变量 `GSN_BLACKLIST_FILE` 播种黑名单（v3.5.2，AU-07/AU-24）。
+    ///
+    /// 文件每行一个 plugin-id；未设置该变量或文件不存在 = 空黑名单（保持现状）。
+    /// 文件存在但读取失败时返回类型化错误，由调用方（节点启动）决定是否拒绝启动。
+    /// 不联网、不引入任何硬编码封禁。
+    pub fn seed_blacklist_from_env(&mut self) -> PluginResult<()> {
+        let Ok(path) = std::env::var("GSN_BLACKLIST_FILE") else {
+            return Ok(());
+        };
+        if path.trim().is_empty() {
+            return Ok(());
+        }
+        let loaded = Blacklist::load_operator_file(std::path::Path::new(&path))
+            .map_err(|e| PluginError::Runtime(format!("GSN_BLACKLIST_FILE: {e}")))?;
+        for e in loaded.entries().iter().cloned() {
+            self.blacklist.add(e);
+        }
+        Ok(())
     }
 
     /// ABI 主版本兼容性（热兼容）。
@@ -205,6 +244,18 @@ impl PluginHost {
         // 0. ABI 兼容性（热兼容）。
         Self::check_abi(&manifest.plugin.abi)?;
 
+        // 0.5（v3.5.2，AU-08）外部 install() 不得占用系统命名空间
+        //     `com.twinsearth.sys.*`。该命名空间在 arbiter 中走 Tier::System 分支、
+        //     「签名由宿主构建链路保证」而**不验签**；若外部自证系统名，即可绕过一切
+        //     签名/发布者信任，直接获得进程内全能力（提权）。系统插件只允许由
+        //     [`PluginHost::boot_system`]（宿主构建链路）装配。
+        if Tier::from_name(&manifest.plugin.name) == Tier::System {
+            return Err(PluginError::Manifest(format!(
+                "PLUGIN_SYS_NAMESPACE_FORBIDDEN: 外部安装不得使用系统命名空间 {}",
+                manifest.plugin.name
+            )));
+        }
+
         // 1. 黑名单检查（在签名校验之前也拦一道）。
         if self
             .blacklist
@@ -228,13 +279,15 @@ impl PluginHost {
             self.registry.register(manifest.clone())?;
             return Ok(manifest.plugin.name);
         }
-        self.registry.register(manifest.clone())?;
 
-        // 5. 选 runtime 并 spawn（supports 在内校验，无法强制即拒绝）。
+        // 5.（v3.5.2，AU-23）选 runtime 并 spawn：**先 spawn 成功再落注册/总线**，
+        //    spawn 失败时不写 registry、不留孤儿注册项（旧实现先 registry.register
+        //    再 spawn，spawn 失败会留下与实例 desync 的残留注册）。
         let instance = self.spawn_runtime(&manifest, tier)?;
 
-        // 6. 总线注册、令牌、置 RUNNING。
+        // 6. spawn 成功：注册 + 总线注册、令牌、置 RUNNING。
         let id = manifest.plugin.name.clone();
+        self.registry.register(manifest.clone())?;
         self.bus.register(&id);
         self.bus.set_token(&id, token)?;
         self.bus.set_state(&id, PluginState::Running)?;
@@ -262,6 +315,16 @@ impl PluginHost {
             .get(id)
             .map(|rp| rp.manifest.clone())
             .ok_or_else(|| PluginError::NotFound(id.to_string()))?;
+        //（v3.5.2，AU-07）start() 重新过黑名单闸门：插件可能在停止期间被操作员/运行时
+        // 加入黑名单，不得仅因「之前装过」就重新拉起进入数据面。
+        if self
+            .blacklist
+            .is_blacklisted(id, &manifest.plugin.module_sha256)
+        {
+            return Err(PluginError::Blacklisted(format!(
+                "插件 {id} 在黑名单中，拒绝启动"
+            )));
+        }
         let tier = Tier::from_name(id);
         let instance = self.spawn_runtime(&manifest, tier)?;
         self.instances.insert(id.to_string(), instance);
@@ -283,7 +346,9 @@ impl PluginHost {
         }
         self.instances.remove(id);
         self.registry.unregister(id)?;
-        self.bus.set_state(id, PluginState::Stopped)?;
+        //（v3.5.2，AU-24）卸载必须从总线移除整条 RouteEntry（Sender/状态/令牌），
+        // 旧实现只置 Stopped 而保留路由，形成总线上的孤儿路由。
+        self.bus.remove_route(id);
         Ok(())
     }
 
@@ -388,7 +453,9 @@ impl PluginHost {
         payload: serde_json::Value,
         kind: MessageKind,
     ) -> PluginResult<()> {
-        let issued_at = self.now_ms / 1000;
+        // v3.5.2（AU-21 生产接线）：issued_at 取宿主时钟；生产 now_ms==0 时退到真实墙钟，
+        // 避免自签消息被打成 1970 年。测试可经 set_now() 固定 issued_at。
+        let issued_at = self.clock_now_ms() / 1000;
         let mut msg = PmbMessage {
             id: uuid::Uuid::new_v4().to_string(),
             corr_id: None,
@@ -405,6 +472,12 @@ impl PluginHost {
             signature: String::new(),
         };
         self.bus.sign_message(&mut msg)?;
+        // v3.5.2（AU-21 生产接线）：这是插件消息离开宿主的唯一发送点（send_to/publish
+        // 及 outbox 代投全部汇聚于此）。旧实现 set_server_clock_ms 仅被测试调用，生产总线
+        // server_now_ms 恒为 CLOCK_NOT_SET，TTL 新鲜度检查形同关闭。此处每次发送前把**真实
+        // 墙钟**写入总线，使 now∈[issued_at, issued_at+ttl_ms] 断言在生产真正生效；重放/陈旧
+        // 消息据此被拒。测试用 set_now 固定旧 issued_at、总线仍取真墙钟即可复现过期。
+        self.bus.set_server_clock_ms(real_wall_ms());
         self.bus.dispatch(&msg)
     }
 
@@ -576,7 +649,12 @@ mod tests {
         host.add_official_root(&hex::encode(dev.public_key()));
         host.install(manifest).unwrap();
         host.uninstall(id).unwrap();
-        assert_eq!(host.route_table().get(id), Some(&PluginState::Stopped));
+        // v3.5.2（AU-24）：卸载后总线路由应被整体移除（不再是残留的 Stopped 路由）。
+        assert!(
+            !host.route_table().contains_key(id),
+            "卸载后 RouteEntry 应被移除，实际: {:?}",
+            host.route_table().get(id)
+        );
         assert!(!host.plugin_count_is_registered(id));
     }
 
@@ -729,6 +807,48 @@ mod tests {
         }
     }
 
+    // ── v3.5.2（AU-21 生产接线）：经真实 PluginHost 证明 TTL 新鲜度在生产发送路径被强制 ──
+    // 不手动 set_server_clock——时钟由宿主在 dispatch_for_plugin 内用真实墙钟注入。
+    #[test]
+    fn au21_production_path_enforces_ttl_freshness() {
+        let dev = Keypair::generate();
+        let source = official::OFF_MARKET_MATCH;
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(signed_official(source, &dev)).unwrap();
+        let rx = host.open_inbox("bridge-peer-au21").unwrap();
+
+        // 新鲜消息：issued_at 取真墙钟，总线时钟也是真墙钟 → 在 ttl 窗口内，应被接受投递。
+        host.send_to(
+            source,
+            "bridge-peer-au21",
+            "plugin:message:send",
+            serde_json::json!({"seq": 1}),
+        )
+        .expect("窗口内新鲜消息应被接受");
+        let got = rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .unwrap();
+        assert_eq!(got.payload["seq"], 1);
+
+        // 过期消息：把宿主时钟钉到 epoch+1s（issued_at=1s=1000ms，ttl=5000ms→有效至6000ms），
+        // 但总线仍按真实墙钟判定（早已远超 6000ms）→ 必须 PMB_MESSAGE_EXPIRED 拒绝。
+        host.set_now(1_000);
+        let err = host
+            .send_to(
+                source,
+                "bridge-peer-au21",
+                "plugin:message:send",
+                serde_json::json!({"seq": 2}),
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("PMB_MESSAGE_EXPIRED"),
+            "陈旧 issued_at 的消息应被生产 TTL 闸门拒绝，实际: {err}"
+        );
+    }
+
     // ── B2（v3.5.0）：host.call 把插件 outbox 经 PMB 投递 ─────────────
     #[test]
     fn call_delivers_plugin_send_outbox_over_pmb() {
@@ -821,6 +941,121 @@ mod tests {
             serde_json::json!({}),
         );
         assert!(r.is_err());
+    }
+
+    // ── v3.5.2（AU-08）：外部 install 拒绝系统命名空间 ───────────────
+    #[test]
+    fn install_rejects_external_system_namespace() {
+        let mut host = PluginHost::new("3.0.0", None);
+        // 即使开发者自签 com.twinsearth.sys.* 名称，也必须在签名校验前被拒——
+        // 该命名空间在 arbiter 走 System 分支不验签，外部自证即可提权。
+        let mut m = official::official_manifest("com.twinsearth.sys.evil", "3.0.0");
+        let dev = Keypair::generate();
+        m.sign_with(&dev).unwrap();
+        let err = host.install(m).unwrap_err();
+        assert!(
+            err.to_string().contains("PLUGIN_SYS_NAMESPACE_FORBIDDEN"),
+            "外部自证系统名必须被拒，got {err}"
+        );
+    }
+
+    // ── v3.5.2（AU-07）：黑名单可播种 + start() 复检 ────────────────
+    #[test]
+    fn blacklist_seeded_from_operator_file_blocks_install() {
+        let dir = std::env::temp_dir().join(format!("au-bl-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let blf = dir.join("blacklist.txt");
+        // 注释行 + 一个被拉黑 id。
+        std::fs::write(&blf, "# seed file\ncom.twinsearth.official.evil\n").unwrap();
+        // 环境变量仅在本测试内设入并立即清除，避免污染全局。
+        std::env::set_var("GSN_BLACKLIST_FILE", &blf);
+        let mut host = PluginHost::new("3.0.0", None);
+        let r = host.seed_blacklist_from_env();
+        std::env::remove_var("GSN_BLACKLIST_FILE");
+        r.unwrap();
+        assert!(host
+            .blacklist()
+            .is_blacklisted("com.twinsearth.official.evil", ""));
+        // 播种后该 id 安装被拒。
+        let mut m = official::official_manifest("com.twinsearth.official.evil", "3.0.0");
+        let dev = Keypair::generate();
+        m.sign_with(&dev).unwrap();
+        m.counter_sign_with(&dev).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        assert!(host.install(m).is_err());
+    }
+
+    /// v3.5.2（AU-07 生产接线）：操作员显式设置 GSN_BLACKLIST_FILE 但文件不可读/损坏时，
+    /// seed_blacklist_from_env 必须返回类型化错误——run_daemon 据此 fail-closed 拒绝启动，
+    /// 而不是静默按空黑名单继续。
+    #[test]
+    fn blacklist_seed_read_failure_is_error_not_silent_empty() {
+        // 指向一个目录（load_operator_file 读它会失败），模拟"显式配置却读不出来"。
+        let dir = std::env::temp_dir().join(format!("au-bldir-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("GSN_BLACKLIST_FILE", &dir);
+        let mut host = PluginHost::new("3.0.0", None);
+        let r = host.seed_blacklist_from_env();
+        std::env::remove_var("GSN_BLACKLIST_FILE");
+        assert!(
+            r.is_err(),
+            "显式设置的黑名单文件读失败必须报错（run_daemon 据此 fail-closed），实际: {r:?}"
+        );
+        // 未设置变量时才是 no-op（现状）。
+        let mut host2 = PluginHost::new("3.0.0", None);
+        assert!(host2.seed_blacklist_from_env().is_ok());
+    }
+
+    #[test]
+    fn start_rechecks_blacklist_after_stop() {
+        let dev = Keypair::generate();
+        let id = official::OFF_MARKET_MATCH;
+        let manifest = signed_official(id, &dev);
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        host.install(manifest).unwrap();
+        host.stop(id).unwrap();
+        // 停止期间被操作员加入黑名单。
+        host.blacklist_mut()
+            .add(crate::plugin::blacklist::BlacklistEntry {
+                plugin_name: id.to_string(),
+                module_sha256: None,
+                reason: crate::plugin::blacklist::BlacklistReason::RuntimeAbuse,
+                blacklisted_at: 0,
+                evidence: "stopped-then-blacklisted".to_string(),
+                appeal: None,
+            });
+        // start() 必须重新过黑名单闸门，不得仅因「之前装过」就拉起。
+        assert!(host.start(id).is_err());
+    }
+
+    // ── v3.5.2（AU-23）：spawn 失败不留孤儿注册 ────────────────────
+    #[test]
+    fn spawn_failure_leaves_no_orphan_registration() {
+        let dev = Keypair::generate();
+        let id = official::OFF_MARKET_MATCH;
+        // 构造一个签名合法、但资源 cpu_ms=0 的清单 → ProcessSandbox::create 的
+        // validate 拒绝 → spawn 失败。旧实现先 register 再 spawn，spawn 失败会留
+        // 下与实例 desync 的注册项；新实现先 spawn 后 register。
+        let mut m = official::official_manifest(id, "3.0.0");
+        m.limits.cpu_ms = 0;
+        m.sign_with(&dev).unwrap();
+        m.counter_sign_with(&dev).unwrap();
+        let mut host = PluginHost::new("3.0.0", None);
+        host.boot_system(&system::SystemHandles::default()).unwrap();
+        host.add_official_root(&hex::encode(dev.public_key()));
+        let r = host.install(m);
+        assert!(r.is_err(), "spawn 应因非法资源失败，got {r:?}");
+        // 失败不得留下孤儿注册或总线路由。
+        assert!(
+            !host.plugin_count_is_registered(id),
+            "spawn 失败不得留注册项"
+        );
+        assert!(
+            !host.route_table().contains_key(id),
+            "spawn 失败不得留总线路由"
+        );
     }
 
     // 辅助断言。

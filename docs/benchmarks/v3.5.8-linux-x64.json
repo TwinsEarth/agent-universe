@@ -1,0 +1,92 @@
+{
+  "benchmark": "gsn-daemon e2e market loop (loopback, serial, real SQLite + HTTP)",
+  "generated_at": "2026-10-02T12:21:23.751Z",
+  "binary": "gsn-core/target/release/gsn-daemon",
+  "loops_measured": 200,
+  "warmup": 20,
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "node": "v22.23.2",
+    "note": "单连接顺序负载；不含跨网 libp2p/LLM/并发竞争，结果不可外推为公网多节点 TPS"
+  },
+  "closed_loop": {
+    "wall_s": 46.823,
+    "loops_per_sec": 4.27,
+    "loop_avg_ms": 234.11,
+    "loop_p50_ms": 234.585,
+    "loop_p95_ms": 247.726,
+    "loop_p99_ms": 251.007
+  },
+  "per_stage_latency_ms": {
+    "publish": {
+      "calls": 200,
+      "avg_ms": 1.686,
+      "p50_ms": 1.485,
+      "p95_ms": 2.487,
+      "p99_ms": 7.114,
+      "max_ms": 7.873
+    },
+    "bid": {
+      "calls": 200,
+      "avg_ms": 4.835,
+      "p50_ms": 4.914,
+      "p95_ms": 7.289,
+      "p99_ms": 8.057,
+      "max_ms": 11.477
+    },
+    "match": {
+      "calls": 200,
+      "avg_ms": 109.243,
+      "p50_ms": 109.135,
+      "p95_ms": 114.372,
+      "p99_ms": 117.587,
+      "max_ms": 122.763
+    },
+    "result": {
+      "calls": 200,
+      "avg_ms": 1.93,
+      "p50_ms": 1.498,
+      "p95_ms": 3.554,
+      "p99_ms": 7.28,
+      "max_ms": 8.651
+    },
+    "settle": {
+      "calls": 200,
+      "avg_ms": 116.331,
+      "p50_ms": 115.939,
+      "p95_ms": 123.414,
+      "p99_ms": 126.897,
+      "max_ms": 144.499
+    },
+    "deposit_one_off": {
+      "calls": 1,
+      "avg_ms": 2.079,
+      "p50_ms": 2.079,
+      "p95_ms": 2.079,
+      "p99_ms": 2.079,
+      "max_ms": 2.079
+    }
+  },
+  "correctness": {
+    "audit_passed": true,
+    "audit": {
+      "actual_total": 12100,
+      "aggregate_matches": true,
+      "expected_total": 12100,
+      "mismatches": [],
+      "passed": true,
+      "replayed_deposits": 12100,
+      "replayed_records": 663,
+      "replayed_slashed": 0
+    },
+    "conservation_conserved": true,
+    "conservation": {
+      "balance_sum": 12100,
+      "conserved": true,
+      "total_deposits": 12100,
+      "total_paid": 2200,
+      "total_slashed": 0
+    }
+  }
+}

@@ -82,3 +82,16 @@ def test_pricing():
     )
     assert pricing.base_price == 1000
     assert pricing.per_task_price == 10
+
+
+def test_mcp_bearer_header_injection():
+    """v3.5.3（AU-15）：可选 token 时发送 Authorization: Bearer，不设置则不发。"""
+    from aip.mcp_client import McpHttpClient
+
+    no_auth = McpHttpClient()
+    headers = no_auth._headers()
+    assert "Authorization" not in headers
+    assert headers["Content-Type"] == "application/json"
+
+    with_auth = McpHttpClient(auth_token="secret-xyz")
+    assert with_auth._headers()["Authorization"] == "Bearer secret-xyz"

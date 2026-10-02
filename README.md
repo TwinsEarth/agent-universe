@@ -6,10 +6,18 @@
 
 [![CI](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml/badge.svg)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
+
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88%2B-orange)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![npm](https://img.shields.io/badge/npm-%40twinsearth%2Fagent--universe-red.svg)](https://github.com/TwinsEarth/agent-universe/packages)
+[![Node](https://img.shields.io/badge/node-18%2B-green.svg)](https://nodejs.org/)
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Safety Gates](https://img.shields.io/badge/safety-no%20panic%20%E2%80%A2%20unsafe%20contained-success)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
+[![Contributors](https://img.shields.io/github/contributors/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/contributors)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 ## 核心理念
 
@@ -86,6 +94,15 @@
 | `aca/` | **ACA 兼容 API**（v2.3.2） |
 | `marketplace/` | **智能体市场 Agent Market**（v2.3.4）：注册/发现/匹配/BFT验证/结算/信誉 |
 | `bin/` | **gsn-daemon** 守护进程 |
+
+> **库面模块与运行面的区分（v3.5.9，DOC-05 / 自审 F-4）**：上表是 **gsn-core 代码库的
+> 模块清单**，不等于「守护进程实际构造运行的能力」。其中 `topology/`、`scheduler/`、
+> `memory/`、`swarm/`、`mesh/`、`nat/` 目前是 **library-only / 实验性模块**：它们的类型
+> 被 `lib.rs` re-export、有单元测试，但**不在 `gsn-daemon` 的启动运行图中构造**；节点实际的
+> 网络发现/广播/打洞走 **libp2p**（`net/` 的 Kademlia、GossipSub、AutoNAT、DCUtR、Relay），
+> 调度与群体涌现的运行能力由官方插件以各自实现提供。各模块头注释有逐条标注，「接线启用
+> 还是收敛删除」的待决记录与能力边界现状见
+> [`docs/CAPABILITY-STATUS.md`](docs/CAPABILITY-STATUS.md)。
 
 ### Python SDK（aip-sdk-py）
 
@@ -167,7 +184,7 @@ cargo run --release --bin gsn-daemon -- \
 | `GET /tasks` | 任务列表 |
 | `POST /agents` | 注册 AgentCard（同时落 SQLite 与 DHT） |
 
-> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 155 个 Rust 测试 + 17 个 Python 测试 + 12 个 JS 测试守护，跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
+> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 618 个 Rust 测试 + 19 个 Python 测试 + 22 个 JS 测试守护（随版本增长，以发布时 cargo test / pytest / node 实测为准），跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
 ### 三大连接层：CLI · API · MCP（v2.3.5 引入，v2.3.6 深化）
 
@@ -219,14 +236,14 @@ gsn market stats                        # 市场统计
 
 业务错误返回 `422`，资源不存在返回 `404`，注册类成功返回 `201`，`OPTIONS` 返回 `204`。
 
-**③ MCP（18 个市场工具，支持 stdio 与 HTTP/SSE 两种传输）**
+**③ MCP（20 个市场工具，支持 stdio 与 HTTP/SSE 两种传输）**
 
 - stdio：`gsn mcp`，逐行读写 JSON-RPC（日志走 stderr），可直接接入 Claude Desktop / Cursor 等；
 - HTTP：`POST /api/v1/mcp` 无状态 JSON-RPC，`GET /api/v1/mcp` 返回 `text/event-stream` 初始化帧。
 
-工具命名 `market_*`，覆盖：`market_register_agent`、`market_discover_agents`、`market_publish_task`、`market_submit_bid`、`market_match_task`、`market_submit_result`、`market_verify_result`、`market_settle_task`、`market_open_dispute`、`market_arbitrate`、`market_deposit`、`market_balance`、`market_conservation`、`market_leaderboard`、`market_stats` 等共 18 个。`tools/call` 全部路由到市场 actor **真实执行**（非占位）。
+工具命名 `market_*`，覆盖：`market_register_agent`、`market_discover_agents`、`market_publish_task`、`market_submit_bid`、`market_match_task`、`market_submit_result`、`market_verify_result`、`market_settle_task`、`market_open_dispute`、`market_arbitrate`、`market_deposit`、`market_balance`、`market_conservation`、`market_leaderboard`、`market_stats` 等共 20 个。`tools/call` 全部路由到市场 actor **真实执行**（非占位）。
 
-> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（18 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 155 个 Rust 测试守护，跨语言签名测试保证 Rust/Python/JS 三端身份、规范载荷与签名逐字节一致、可互验。
+> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（20 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 618 个 Rust 测试守护，跨语言签名测试保证 Rust/Python/JS 三端身份、规范载荷与签名逐字节一致、可互验。
 
 ### Python SDK 使用
 
@@ -445,7 +462,7 @@ AipIdentity.verifyObject(manifest, id.publicKey);   // true
 const { McpHttpClient } = require('@twinsearth/agent-universe');
 const mcp = new McpHttpClient('http://127.0.0.1:4002');
 await mcp.initialize();
-const tools = await mcp.listTools();        // 18 个工具，字段为规范 inputSchema
+const tools = await mcp.listTools();        // 20 个工具，字段为规范 inputSchema
 await mcp.callTool('market_stats', {});    // 经 daemon 真实路由执行
 ```
 

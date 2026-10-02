@@ -217,6 +217,28 @@ fn test_unverified_result_authenticated_verify_then_settle() {
             let pk: [u8; 32] = kp.public_key().try_into().unwrap();
             // v2.8.9：DID 必须由公钥派生（GAP §2.4），不再使用伪造的 qa-i
             let did = format!("did:nau:{}", gsn_core::Did::fingerprint(&pk));
+
+            // v3.5.1（AU-01/AU-05）：委员 DID 必须是服务端已足额锁定质押、且非任务
+            // 执行者的独立身份，否则认证验收闸门会拒绝。这里让每个委员自充并注册质押。
+            let (s, _) = rest(
+                &market,
+                "POST",
+                &format!("/api/v1/accounts/{did}/deposit"),
+                r#"{"amount":100}"#,
+            )
+            .await;
+            assert_ok(s);
+            let reg = json!({
+                "agent_id": did,
+                "name": format!("QA委员{i}"),
+                "skills": ["qa"],
+                "stake": 100,
+                "price": 1,
+                "currency": "credit"
+            });
+            let (s, body) = rest(&market, "POST", "/api/v1/agents", &reg.to_string()).await;
+            assert_eq!(s, 201, "委员 {did} 注册（足额质押）应 201: {body}");
+
             members_json.push(json!({"did": did, "public_key": to_hex(&pk)}));
             if i <= 3 {
                 let sv = gsn_core::marketplace::SignedQaVote::sign(

@@ -98,7 +98,19 @@ pub struct ProcessInstance {
     has_entry: bool,
     /// 插件主动产生、待宿主投递的消息（B2 outbox）。
     outbox: Vec<OutboxMessage>,
+    /// outbox 解析期被隔离/跳过的坏行与异常审计信号（v3.5.2，AU-09/AU-22）。
+    ///
+    /// 旧实现：单个坏行 `?` 直接毒丸整次 collect、非 UTF8 静默当空。新策略把坏行
+    /// 隔离（记录原因后继续处理其余合法行），这些原因由此字段暴露给宿主/测试审计。
+    outbox_issues: Vec<String>,
 }
+
+/// outbox.jsonl 总字节硬上限（v3.5.2，AU-09）。
+///
+/// 旧实现 `read_to_string` 整文件无上限入内存——一个插件写一个超大 outbox 即可
+/// 撑爆宿主。这里硬上限 16MiB（单条消息 1MiB，正常一屏消息远小于此）；超限即具名
+/// 失败并审计，不继续解析。读取用 `Read::take` 有界，绝不先把整个文件读进内存。
+const OUTBOX_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 impl ProcessInstance {
     /// 在隔离进程中加载 entry 模块并调用其业务方法。
@@ -157,30 +169,87 @@ sys.stdout.write(json.dumps(out))
     }
 
     /// 读取工作目录 outbox，解析为 [`OutboxMessage`] 并清空文件（B2）。
+    ///
+    /// v3.5.2（AU-09/AU-22）健壮化：
+    /// - 用 `Read::take` 有界读取，硬上限 [`OUTBOX_MAX_BYTES`]，超限具名失败+审计；
+    /// - 逐行隔离坏行（坏 JSON / 未知 kind / send 缺 target / 非 UTF8），记
+    ///   [`outbox_issues`](Self::outbox_issues) 后继续处理其余合法行，不再毒丸整次；
+    /// - 非 UTF8 不再静默当空，而是记录审计信号；
+    /// - 合法行已搬入 `self.outbox` 后清空文件，避免重复投递。
     fn collect_outbox(&mut self) -> PluginResult<()> {
-        let text = match self.sb.read_file("outbox.jsonl") {
-            Ok(t) => t,
-            // 插件未写 outbox（未主动通信）：正常。
-            Err(_) => return Ok(()),
+        let dir = match self.sb.work_dir() {
+            Some(d) => d.to_path_buf(),
+            // 沙箱尚未建工作目录 → 无 outbox，正常。
+            None => return Ok(()),
         };
+        let path = dir.join("outbox.jsonl");
+
+        // 有界读取：最多读 OUTBOX_MAX_BYTES+1 字节，绝不先整文件入内存。
+        use std::io::Read;
+        let f = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            // 插件未写 outbox（未主动通信）：正常。
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => {
+                return Err(PluginError::Runtime(format!("OUTBOX_READ_FAILED: {e}")));
+            }
+        };
+        let mut raw = Vec::new();
+        f.take(OUTBOX_MAX_BYTES + 1)
+            .read_to_end(&mut raw)
+            .map_err(|e| PluginError::Runtime(format!("OUTBOX_READ_FAILED: {e}")))?;
+
+        // 超限：具名失败 + 审计，不清理文件（交运维），不投递任何消息。
+        if raw.len() as u64 > OUTBOX_MAX_BYTES {
+            let msg = format!(
+                "OUTBOX_TOO_LARGE: outbox 超过 {} 字节（实际 {}），拒绝解析",
+                OUTBOX_MAX_BYTES,
+                raw.len()
+            );
+            self.outbox_issues.push(msg.clone());
+            return Err(PluginError::Runtime(msg));
+        }
+
+        // 非 UTF8：不再静默当空——记录审计信号，清理坏文件。
+        let text = match String::from_utf8(raw) {
+            Ok(t) => t,
+            Err(e) => {
+                self.outbox_issues
+                    .push(format!("OUTBOX_NON_UTF8: outbox 非合法 UTF-8: {e}"));
+                let _ = self.sb.write_file("outbox.jsonl", "");
+                return Ok(());
+            }
+        };
+
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            let v: serde_json::Value = serde_json::from_str(line)
-                .map_err(|e| PluginError::Runtime(format!("outbox 行非法: {e}")))?;
+            // 逐行隔离：坏 JSON 记录审计后跳过，不毒丸整次。
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.outbox_issues
+                        .push(format!("OUTBOX_BAD_JSON 行已跳过: {e}"));
+                    continue;
+                }
+            };
             let kind = v
                 .get("kind")
                 .and_then(|x| x.as_str())
                 .unwrap_or("")
                 .to_string();
             if kind != "send" && kind != "publish" {
-                return Err(PluginError::Runtime(format!("outbox 未知 kind: {kind}")));
+                self.outbox_issues
+                    .push(format!("OUTBOX_UNKNOWN_KIND({kind}) 行已跳过"));
+                continue;
             }
             let target = v.get("target").and_then(|x| x.as_str()).map(String::from);
             if kind == "send" && target.is_none() {
-                return Err(PluginError::Runtime("send 消息缺少 target".into()));
+                self.outbox_issues
+                    .push("OUTBOX_SEND_NO_TARGET 行已跳过".to_string());
+                continue;
             }
             let capability = v
                 .get("capability")
@@ -195,11 +264,16 @@ sys.stdout.write(json.dumps(out))
                 payload,
             });
         }
-        // 清空 outbox 文件，避免下次重复读。
+        // 已逐行处理（合法行入 outbox，坏行隔离记 issue）→ 清空文件避免下次重复读。
         self.sb
             .write_file("outbox.jsonl", "")
             .map_err(|e| PluginError::Runtime(format!("outbox 清空失败: {e}")))?;
         Ok(())
+    }
+
+    /// 取出并清空 outbox 解析期的审计信号（v3.5.2，AU-09/AU-22）。
+    pub fn drain_outbox_issues(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.outbox_issues)
     }
 }
 
@@ -343,6 +417,7 @@ impl ProcessRuntime {
             alive: true,
             has_entry,
             outbox: Vec::new(),
+            outbox_issues: Vec::new(),
         })
     }
 }
@@ -585,22 +660,97 @@ def notify(data):
     }
 
     #[test]
-    fn outbox_send_without_target_rejected() {
+    fn outbox_send_without_target_is_isolated_not_poison() {
         let mut rt = unique_rt();
         let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
         let mut inst = rt.spawn_concrete(&m).unwrap();
-        // 直接写一条缺 target 的 send 记录到 outbox。
+        // v3.5.2（AU-09/AU-22）：旧实现把"缺 target 的 send"当作毒丸，? 直接让整个
+        // collect 失败、连合法行一起丢。新策略隔离坏行（记审计）并继续。
         inst.sb
             .write_file(
                 "outbox.jsonl",
                 "{\"kind\":\"send\",\"capability\":\"message\",\"payload\":{}}\n",
             )
             .unwrap();
-        // 下一次 entry 调用收集 outbox 时必须报错。
         inst.sb
             .write_file("plugin.py", "def ping(data):\n    return {}\n")
             .unwrap();
-        assert!(inst.call("ping", b"{}").is_err());
+        // 坏行被隔离，ping 本身成功（不再整次失败）。
+        assert!(inst.call("ping", b"{}").is_ok());
+        // 没有合法消息被投递（缺 target 的 send 被跳过）。
+        assert!(inst.drain_outbox().unwrap().is_empty());
+        // 且留下了审计信号。
+        let issues = inst.drain_outbox_issues();
+        assert!(
+            issues.iter().any(|i| i.contains("SEND_NO_TARGET")),
+            "got {issues:?}"
+        );
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn outbox_bad_line_isolated_other_lines_still_delivered() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // 一行损坏（非 JSON）+ 一行合法 send：坏行跳过，合法行仍投递，且有审计信号。
+        inst.sb
+            .write_file(
+                "outbox.jsonl",
+                "this is not json at all\n{\"kind\":\"send\",\"target\":\"peer-b\",\"capability\":\"plugin:message:send\",\"payload\":{\"n\":1}}\n",
+            )
+            .unwrap();
+        inst.sb
+            .write_file("plugin.py", "def ping(data):\n    return {}\n")
+            .unwrap();
+        assert!(inst.call("ping", b"{}").is_ok());
+        let msgs = inst.drain_outbox().unwrap();
+        assert_eq!(msgs.len(), 1, "合法行应被投递，got {msgs:?}");
+        assert_eq!(msgs[0].target.as_deref(), Some("peer-b"));
+        let issues = inst.drain_outbox_issues();
+        assert!(
+            issues.iter().any(|i| i.contains("BAD_JSON")),
+            "应有坏行审计信号，got {issues:?}"
+        );
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn outbox_non_utf8_is_audited_not_silently_empty() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // 手工写非 UTF-8 字节（非法序列）。旧实现 read_to_string 失败 → 静默 Ok(())。
+        let bad: Vec<u8> = vec![0xff, 0xfe, 0x00, 0x01, 0xc3, 0x28];
+        let dir = inst.sb.work_dir().unwrap().to_path_buf();
+        std::fs::write(dir.join("outbox.jsonl"), &bad).unwrap();
+        inst.sb
+            .write_file("plugin.py", "def ping(data):\n    return {}\n")
+            .unwrap();
+        // 非 UTF8 不再静默：调用仍成功（清理了坏文件），但必须留下审计信号。
+        assert!(inst.call("ping", b"{}").is_ok());
+        let issues = inst.drain_outbox_issues();
+        assert!(
+            issues.iter().any(|i| i.contains("NON_UTF8")),
+            "应有非 UTF8 审计信号，got {issues:?}"
+        );
+        inst.stop().unwrap();
+    }
+
+    #[test]
+    fn outbox_oversize_is_rejected() {
+        let mut rt = unique_rt();
+        let m = entry_manifest(crate::plugin::official::OFF_MARKET_MATCH);
+        let mut inst = rt.spawn_concrete(&m).unwrap();
+        // 构造超过 OUTBOX_MAX_BYTES 的 outbox（全是 'a'，一行坏行也无妨——超限在解析前拒绝）。
+        let big = "a".repeat((OUTBOX_MAX_BYTES + 1) as usize);
+        inst.sb.write_file("outbox.jsonl", &big).unwrap();
+        inst.sb
+            .write_file("plugin.py", "def ping(data):\n    return {}\n")
+            .unwrap();
+        // 超限必须具名失败（OUTBOX_TOO_LARGE），而非整文件吞入内存。
+        let err = inst.call("ping", b"{}").unwrap_err();
+        assert!(err.to_string().contains("OUTBOX_TOO_LARGE"), "got {err:?}");
         inst.stop().unwrap();
     }
 

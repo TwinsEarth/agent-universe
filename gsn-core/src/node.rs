@@ -7,7 +7,7 @@ use crate::api::market_actor::MarketActorHandle;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
-use crate::storage::{PersistentStore, StoredAgent, StoredRelay};
+use crate::storage::{PersistentStore, StoredRelay};
 use crate::NodeMode;
 use libp2p::{Multiaddr, PeerId};
 use std::collections::{HashMap, HashSet};
@@ -213,6 +213,12 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                 }
                 i += 1;
             }
+            "--version" | "-V" => {
+                // v3.5.5（W-02）：gsn-daemon / `gsn daemon` 支持 --version/-V，
+                // 与 `gsn --version` 输出同一权威版本（gsn-core crate 版本）。
+                println!("gsn-daemon {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
             "--help" | "-h" => {
                 print_daemon_help();
                 std::process::exit(0);
@@ -302,6 +308,17 @@ pub fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
+/// v3.5.6（AU-持久化）：中继池遥测/容量写入 SQLite 失败时**显式告警**而非静默丢弃。
+///
+/// 这些写入是尽力而为的运维状态（健康位/失败计数/容量元数据），不能让一次落盘失败
+/// 打断 P2P 主路径（否则一次磁盘错误会拖垮整个 swarm 事件循环），因此控制流不中断；
+/// 但旧实现用 `let _ =` 完全吞掉错误，运维无从察觉中继池状态可能正在与磁盘漂移。
+/// 这里统一记录操作、对象 id 与根因，使「持久化失败」可观测（与 market_actor 的
+/// `warn_persist` 同一原则：降级路径必须留痕）。
+fn log_relay_persist_err(op: &str, id: &str, err: &anyhow::Error) {
+    eprintln!("⚠️ [relay-persist] {op}({id}) 落盘失败（本次运行仍按内存状态继续）: {err}");
+}
+
 /// 从 start_time(RFC3339) 计算已运行天数
 fn elapsed_days_since(start_iso: &str) -> i64 {
     if start_iso.is_empty() {
@@ -366,7 +383,9 @@ fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: 
         .map(|v| v.iter().any(|r| r.relay_id == id))
         .unwrap_or(false);
     if exists {
-        let _ = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso());
+        if let Err(e) = store.set_relay_status(&id, true, "healthy", 0, 0, &now_iso()) {
+            log_relay_persist_err("set_relay_status", &id, &e);
+        }
         return;
     }
     let cap = current_capacity(store);
@@ -408,7 +427,9 @@ fn process_swarm_event(
             let id = peer_id.to_string();
             if active.remove(&id).is_some() || connecting.remove(peer_id) {
                 peer.remove_relay(&id);
-                let _ = store.mark_relay_failed(&id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &id, &e);
+                }
                 eprintln!("🔌 中继通道掉线 {}，准备自动切换", id);
                 need_ensure = true;
             }
@@ -420,7 +441,9 @@ fn process_swarm_event(
                 let id = pid.to_string();
                 active.remove(&id);
                 peer.remove_relay(&id);
-                let _ = store.mark_relay_failed(&id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &id, &e);
+                }
                 eprintln!("❌ relay {} 连接失败，准备自动切换", id);
                 need_ensure = true;
             }
@@ -446,7 +469,11 @@ fn process_swarm_event(
                             ),
                             None => (0, 0),
                         };
-                        let _ = store.set_relay_status(&id, true, "active", dur, data, &now_iso());
+                        if let Err(e) =
+                            store.set_relay_status(&id, true, "active", dur, data, &now_iso())
+                        {
+                            log_relay_persist_err("set_relay_status", &id, &e);
+                        }
                         eprintln!(
                             "✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)",
                             id, renewal, dur, data
@@ -514,7 +541,9 @@ fn ensure_channels(
                 }
                 Err(e) => {
                     eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
-                    let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                    if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                        log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                    }
                     in_use.insert(r.relay_id.clone());
                 }
             },
@@ -546,14 +575,22 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
         }
         match tokio::time::timeout(std::time::Duration::from_secs(15), rx).await {
             Ok(Ok(Ok(true))) => {
-                let _ = store.set_relay_status(&r.relay_id, true, "healthy", 0, 0, &now_iso());
+                if let Err(e) =
+                    store.set_relay_status(&r.relay_id, true, "healthy", 0, 0, &now_iso())
+                {
+                    log_relay_persist_err("set_relay_status", &r.relay_id, &e);
+                }
                 eprintln!("✅ probe 确认 hop relay: {}", r.relay_id);
             }
             Ok(Ok(Ok(false))) => {
-                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                }
             }
             _ => {
-                let _ = store.mark_relay_failed(&r.relay_id, &now_iso());
+                if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
+                    log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
+                }
             }
         }
     }
@@ -798,7 +835,9 @@ fn handle_peer_command(
                 let id = pid.to_string();
                 active.remove(&id);
                 connecting.remove(&pid);
-                let _ = store.delete_relay(&id);
+                if let Err(e) = store.delete_relay(&id) {
+                    log_relay_persist_err("delete_relay", &id, &e);
+                }
             }
             let _ = reply.send(Ok(()));
         }
@@ -814,7 +853,9 @@ fn handle_peer_command(
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
             let new = (cur + amount).max(0);
-            let _ = store.set_meta("relay_pool:manual_bonus", &new.to_string());
+            if let Err(e) = store.set_meta("relay_pool:manual_bonus", &new.to_string()) {
+                log_relay_persist_err("set_meta", "relay_pool:manual_bonus", &e);
+            }
             let cap = current_capacity(store);
             let _ = reply.send(Ok(cap.effective_cap));
         }
@@ -908,7 +949,8 @@ fn rest_authorize(
             })
             .map(|s| s.trim())
             .unwrap_or("");
-        if provided == expected {
+        // v3.5.1（AU-32）：常量时间比较，避免逐字节短路泄露 token 前缀（时序侧信道）
+        if crate::security::constant_time_eq_str(provided, &expected) {
             return Ok(());
         }
         return Err((
@@ -1494,7 +1536,6 @@ async fn run_api_server(
     mode: String,
     p2p_port: u16,
     start: Instant,
-    store: Arc<PersistentStore>,
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
@@ -1525,7 +1566,8 @@ async fn run_api_server(
             }
         };
         let mode = mode.clone();
-        let store = store.clone();
+        // v3.5.3（AU-14）：本连接处理不再直接写 store（agent 落盘统一由 market actor 快照负责），
+        // 故不再 clone store 进此闭包。
         let peer_cmd_tx = peer_cmd_tx.clone();
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
@@ -1856,37 +1898,19 @@ async fn run_api_server(
             )
             .await;
 
-            // 注册 agent 落 SQLite + DHT
+            // 注册 agent：DHT 索引（SQLite 落盘由 market actor 快照负责，见下）。
+            // v3.5.3（AU-14）：旧实现这里在 201 后直接 `store.upsert_agent`，与 actor 的
+            // 写后快照（market_actor.rs：dispatch 后对同一 agent_id upsert 完整 MarketAgentCard）
+            // 形成同键双写、last-writer-wins，且此处 reputation 硬编码 0.0，会与 actor 的权威快照
+            // 竞态、可能覆盖 actor 刚写入的真实信誉/状态。现删除冗余直写，以 market actor 为唯一
+            // SQLite 写者（每次写命令后 upsert 完整、权威的 agent 行）；注册后立即读回走内存 market，
+            // 不受此异步快照时序影响。
             if method == "POST"
                 && (path_part == "/api/v1/agents" || path_part == "/agents")
                 && routed.status == 201
             {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                     let agent_id = v.get("agent_id").and_then(|x| x.as_str()).unwrap_or("");
-                    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let skills = v
-                        .get("skills")
-                        .and_then(|x| x.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        })
-                        .unwrap_or_default();
-                    let stake = v
-                        .get("stake")
-                        .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
-                        .unwrap_or(0);
-                    let stored = StoredAgent {
-                        agent_id: agent_id.to_string(),
-                        name: name.to_string(),
-                        skills,
-                        stake,
-                        reputation: 0.0,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let _ = store.upsert_agent(&stored);
                     let _ = peer_cmd_tx
                         .send(PeerCommand::DhtPut {
                             key: format!("/aip/agent/{}", agent_id),
@@ -1948,7 +1972,9 @@ fn init_relay_pool(store: &PersistentStore) {
         .flatten()
         .is_none()
     {
-        let _ = store.set_meta("relay_pool:start_time", &now_iso());
+        if let Err(e) = store.set_meta("relay_pool:start_time", &now_iso()) {
+            log_relay_persist_err("set_meta", "relay_pool:start_time", &e);
+        }
     }
     if store
         .get_meta("relay_pool:manual_bonus")
@@ -1956,7 +1982,9 @@ fn init_relay_pool(store: &PersistentStore) {
         .flatten()
         .is_none()
     {
-        let _ = store.set_meta("relay_pool:manual_bonus", "0");
+        if let Err(e) = store.set_meta("relay_pool:manual_bonus", "0") {
+            log_relay_persist_err("set_meta", "relay_pool:manual_bonus", &e);
+        }
     }
     if store.relay_count().unwrap_or(0) == 0 {
         // 已真机验证的社区 relay（kubo，hop+stop+dcutr，reservation 120s/128KB）
@@ -1987,6 +2015,37 @@ fn init_relay_pool(store: &PersistentStore) {
     }
 }
 
+/// v3.5.3（AU-30）：root 启动闸门（纯函数，便于单测）。
+///
+/// euid==0（root）且未显式允许时拒绝启动；非 root 或显式 `GSN_ALLOW_ROOT=1` 放行。
+/// 沙箱/插件子系统无 setuid 降权，以 root 跑一旦逃逸即获得 root，故默认 fail-closed。
+pub fn ensure_not_root(allow_root: bool, euid: u32) -> Result<(), String> {
+    if euid == 0 && !allow_root {
+        return Err(
+            "REFUSAL_RUN_AS_ROOT: daemon 检测到以 root(euid=0) 运行。沙箱/插件子系统无 setuid 降权，\
+             不应以 root 运行；如确需，显式设置 GSN_ALLOW_ROOT=1 后重启。"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// 读取当前进程有效 UID（不引 libc）。Linux 下解析 /proc/self/status 的 `Uid:` 行
+/// （格式：`Uid:\teff\teuid...`，第二列为 euid）；其它平台或读取失败返回 None。
+pub fn current_euid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            let mut parts = rest.split_whitespace();
+            // 列：real effective saved fs。取第二列（effective）。
+            let _real = parts.next()?;
+            let euid = parts.next()?;
+            return euid.parse::<u32>().ok();
+        }
+    }
+    None
+}
+
 /// 启动节点（核心入口，gsn-daemon 与 gsn daemon 共用）
 pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v2.5.4: 初始化 tracing，使 libp2p 内部（relay/identify/autonat/dcutr/swarm）的
@@ -2001,6 +2060,18 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         .try_init();
 
     println!("=== GSN Daemon v{} ===", env!("CARGO_PKG_VERSION"));
+
+    // v3.5.3（AU-30）：沙箱/插件子系统不应以 root 运行（代码无 setuid 降权，一旦逃逸即 root）。
+    // 默认 fail-closed：检测到 euid==0 且未显式设置 GSN_ALLOW_ROOT=1 则拒绝启动。
+    // 不引 libc：Linux 下从 /proc/self/status 的 Uid 行解析 euid；非 Linux / 无法读取则跳过
+    // （无法判定时不臆断 root，保持可启动）。
+    if let Some(euid) = current_euid() {
+        let allow_root = std::env::var("GSN_ALLOW_ROOT").as_deref() == Ok("1");
+        if let Err(e) = ensure_not_root(allow_root, euid) {
+            eprintln!("🚨 CRITICAL: {e}");
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    }
 
     let node_mode = match args.mode.as_str() {
         "archive" => NodeMode::Archive,
@@ -2124,6 +2195,16 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         env!("CARGO_PKG_VERSION"),
         Some(args.data_dir.join("plugins")),
     );
+    // v3.5.2（AU-07/AU-24 生产接线）：构造 host 后、装配/启动任何插件之前，从
+    // GSN_BLACKLIST_FILE 播种操作员黑名单。未设置/空路径/文件缺失 = 空黑名单（现状 no-op）；
+    // 但一旦操作员显式设置了该文件却读取/解析失败，属"显式配置被无视"，危险——打印 CRITICAL
+    // 并 fail-closed 拒绝启动插件子系统，绝不静默按空表继续。
+    if let Err(e) = plugin_host.seed_blacklist_from_env() {
+        eprintln!(
+            "CRITICAL: GSN_BLACKLIST_FILE 黑名单播种失败，拒绝以不完整黑名单启动插件子系统: {e}"
+        );
+        return Err(anyhow::anyhow!("plugin blacklist seed failed: {e}"));
+    }
     match plugin_host.boot_system(&system_handles) {
         Ok(started) => println!(
             "✅ Plugin Host 已启动：{} 个 T0 系统插件（{}）",
@@ -2150,7 +2231,6 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         args.mode.clone(),
         args.port,
         Instant::now(),
-        store,
         peer_cmd_tx,
         market,
         sandbox_mgr,
@@ -2320,5 +2400,18 @@ mod http_security_tests {
         assert_eq!(st, 200, "unblock 应可达: {body}");
         let (_, body) = handle_plugin_api("GET", "/api/v1/plugins/blacklist", "", &mut host);
         assert_eq!(body["blacklist"].as_array().unwrap().len(), 0);
+    }
+
+    // v3.5.3（AU-30）：root 启动闸门纯函数用例。
+    #[test]
+    fn au30_root_gate() {
+        use super::ensure_not_root;
+        // root + 未允许 → 拒绝。
+        assert!(ensure_not_root(false, 0).is_err());
+        // root + 显式允许 → 放行。
+        assert!(ensure_not_root(true, 0).is_ok());
+        // 非 root → 放行（无论 allow 与否）。
+        assert!(ensure_not_root(false, 1000).is_ok());
+        assert!(ensure_not_root(true, 1000).is_ok());
     }
 }

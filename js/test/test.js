@@ -25,6 +25,7 @@ const {
   verifyMessage,
   verifyReceipt,
   verifyReceiptResult,
+  McpHttpClient,
 } = require('../index');
 
 let passed = 0;
@@ -43,8 +44,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 3.5.0', () => {
-  assert.strictEqual(version, '3.5.0');
+test('版本号为 3.6.0', () => {
+  assert.strictEqual(version, '3.6.0');
 });
 
 // 2. 密钥对 + DID + 签名验证
@@ -101,7 +102,11 @@ test('ShardedIndex 分片落盘且分片号合法', () => {
     assert.ok(s >= 0 && s < 16);
   }
   assert.strictEqual(idx.size, 100);
-  assert.strictEqual(shardOf('key-0', 16), shardOf('key-0', 16));
+  // v3.5.3（AU-39）：旧断言 shardOf('key-0',16) === shardOf('key-0',16) 恒真（自身比自身）。
+  // 改为有意义的不变量：①同一 key 分片结果确定（两次调用一致）；②结果落在合法区间 [0,16)。
+  const shard = shardOf('key-0', 16);
+  assert.strictEqual(shardOf('key-0', 16), shard);
+  assert.ok(Number.isInteger(shard) && shard >= 0 && shard < 16, `分片号合法: ${shard}`);
   // 分布：100 key 到 16 片，不应有大片为空（概率性，至少覆盖 8 片）
   const nonEmpty = idx.distribution().filter((n) => n > 0).length;
   assert.ok(nonEmpty >= 8, `非空分片 ${nonEmpty} >= 8`);
@@ -445,6 +450,17 @@ test('v2.7.1 stableStringify：undefined 键省略、BigInt/Date 显式拒绝、
   assert.throws(() => stableStringify(undefined), /undefined/);
   // 正常路径不受影响
   assert.strictEqual(stableStringify({ b: 1, a: 2 }), '{"a":2,"b":1}');
+});
+
+// 18. MCP Bearer 注入（v3.5.3，AU-15）
+test('McpHttpClient：带 token 发 Bearer 头、不带则不发', () => {
+  // 不设置 token → 不出现 Authorization 头。
+  const noAuth = new McpHttpClient();
+  assert.strictEqual(noAuth._headers().Authorization, undefined);
+  assert.strictEqual(noAuth._headers()['Content-Type'], 'application/json');
+  // 设置 token → 带正确的 Bearer 头。
+  const withAuth = new McpHttpClient('http://127.0.0.1:4002', '/api/v1/mcp', 10000, 'secret-xyz');
+  assert.strictEqual(withAuth._headers().Authorization, 'Bearer secret-xyz');
 });
 
 console.log(`\n${passed} 项测试通过`);

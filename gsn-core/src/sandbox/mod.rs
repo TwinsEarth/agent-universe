@@ -76,7 +76,11 @@ pub struct SandboxResult {
     pub exit_code: i32,
     pub stdout: String,
     pub stderr: String,
-    pub cpu_time_ms: u64,
+    /// CPU 时间（毫秒）。v3.5.3（AU-31）：当前进程后端**不测量** CPU 时间——本仓无
+    /// libc/ Rusage 依赖（不为此新引依赖或 unsafe），旧实现恒填 `0` 会被误读为"测得 0ms"。
+    /// 改为 `Option<u64>`：`None` = 未测量（如实），`Some(_)` = 真实测得值。
+    /// 任何后端都不得用 `Some(0)` 冒充已测到零；接入真实测量前一律保持 `None`。
+    pub cpu_time_ms: Option<u64>,
     pub wall_ms: u64,
     pub isolation: IsolationLevel,
     pub state: state::SandboxState,

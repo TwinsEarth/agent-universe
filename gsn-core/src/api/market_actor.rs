@@ -285,6 +285,55 @@ impl MarketResponse {
     }
 }
 
+/// v3.5.1（AU-03）：账本哈希链校验失败、且未显式逃生时的拒服错误前缀。
+/// 稳定可断言；REST/MCP 上层据此映射为 503/错误体。
+pub const LEDGER_TAMPERED_ERR: &str = "LEDGER_TAMPERED";
+
+impl MarketCommand {
+    /// v3.5.1（AU-03）：拒服态下排空本命令——把内嵌 oneshot 回复通道取出并
+    /// 回复 `LEDGER_TAMPERED` 错误，绝不分发、绝不写账本、绝不结算。
+    ///
+    /// 取全部分支的 `reply` 是机械但必要的：每个命令变体都带一个 oneshot，
+    /// 若不取出发送，调用方会永久悬挂。
+    fn refuse(self) {
+        use MarketCommand::*;
+        let reply = match self {
+            RegisterAgent { reply, .. }
+            | GetAgent { reply, .. }
+            | Discover { reply, .. }
+            | Search { reply, .. }
+            | ListAllAgents { reply }
+            | PublishTask { reply, .. }
+            | GetTask { reply, .. }
+            | ListTasks { reply }
+            | ListAllTasks { reply }
+            | SubmitBid { reply, .. }
+            | MatchTask { reply, .. }
+            | SubmitResult { reply, .. }
+            | VerifyResult { reply, .. }
+            | SettleTask { reply, .. }
+            | ResumeRework { reply, .. }
+            | ReopenTask { reply, .. }
+            | RejectTask { reply, .. }
+            | OpenDispute { reply, .. }
+            | Arbitrate { reply, .. }
+            | Deposit { reply, .. }
+            | Balance { reply, .. }
+            | Conservation { reply }
+            | Audit { reply }
+            | Leaderboard { reply, .. }
+            | Stats { reply }
+            | LedgerSnapshot { reply }
+            | BidsForPlugin { reply, .. }
+            | MatchTaskWithWinner { reply, .. }
+            | ReputationDimensions { reply, .. } => reply,
+        };
+        let _ = reply.send(MarketResponse::err(format!(
+            "{LEDGER_TAMPERED_ERR}: 账本哈希链校验失败，市场处于拒服态，拒绝一切变更/结算（如需紧急强制恢复请设置 GSN_ALLOW_TAMPERED_LEDGER=1 后重启）"
+        )));
+    }
+}
+
 /// 市场 Actor 句柄（克隆廉价，内部是 mpsc Sender）
 #[derive(Clone)]
 pub struct MarketActorHandle {
@@ -327,7 +376,13 @@ impl MarketActorHandle {
             let mut market = AgentMarket::new();
 
             // ── v2.8.3: 启动先校验账本哈希链（GAP §3.1，tamper-evident）──
-            match store.verify_ledger_chain() {
+            // v3.5.1（AU-03）：断链/锚定不符默认 **fail-closed**。
+            // 旧实现只 eprintln 告警后仍照常 restore 并进入可写/结算数据面——
+            // 这意味着篡改过的账本照样能放款、结算。现在默认：不恢复账本、不开放
+            // 可写/结算数据面，进入拒服态（一切命令回 LEDGER_TAMPERED）。
+            // 仅当显式逃生开关 GSN_ALLOW_TAMPERED_LEDGER=1 时保留旧的告警+容错恢复，
+            // 并打印显著 CRITICAL 告警。开关默认关。
+            let chain_broken = match store.verify_ledger_chain() {
                 Ok(head) => {
                     if head.is_empty() {
                         println!("🔗 账本哈希链：空（全新库）");
@@ -337,14 +392,32 @@ impl MarketActorHandle {
                             &head[..head.len().min(12)]
                         );
                     }
+                    false
                 }
                 Err(seq) => {
+                    let allow_tampered =
+                        std::env::var("GSN_ALLOW_TAMPERED_LEDGER").as_deref() == Ok("1");
                     if seq == u64::MAX {
                         eprintln!("🚨 CRITICAL: 账本链 head 锚定不一致（kv_meta 与链末不符），疑似持久化被篡改");
                     } else {
-                        eprintln!("🚨 CRITICAL: 账本哈希链在 seq={seq} 处断裂，疑似持久化被篡改（当前以容错模式加载，请人工核查）");
+                        eprintln!("🚨 CRITICAL: 账本哈希链在 seq={seq} 处断裂，疑似持久化被篡改");
+                    }
+                    if allow_tampered {
+                        eprintln!("🚨 CRITICAL: 已显式设置 GSN_ALLOW_TAMPERED_LEDGER=1，按逃生口容忍断链恢复（旧容错行为；仅限紧急救援，强烈建议事后人工核查并独立重放审计）");
+                        false
+                    } else {
+                        eprintln!("🚨 CRITICAL: fail-closed——拒绝恢复账本、不开放可写/结算数据面，市场进入拒服态（一切变更/结算将被 LEDGER_TAMPERED 拒绝）。如确为紧急救援，设置 GSN_ALLOW_TAMPERED_LEDGER=1 后重启。");
+                        true
                     }
                 }
+            };
+
+            // 拒服态：不恢复任何数据面；仅排空命令并回复错误（oneshot 不悬挂）。
+            if chain_broken {
+                while let Some(cmd) = rx.recv().await {
+                    cmd.refuse();
+                }
+                return;
             }
 
             // ── 启动恢复：账本（权威，资金安全）。v2.8.3: 坏行显式报告（GAP §3.6）──
@@ -397,6 +470,27 @@ impl MarketActorHandle {
                 .load_json_rows("stakes", "agent_id")
                 .unwrap_or_default();
             market.restore_reputation_state_from_store(rep_rows, stake_rows);
+
+            // v3.5.3（AU-17）：恢复完成后自动跑一次独立审计（重放流水对账）。
+            // settlement.rs 注释承诺"恢复后做独立审计"但此前从未调用。账本哈希链篡改已由
+            // v3.5.1 fail-closed 拦截（见上）；此处审计用于捕捉"链没断但账实不符/重放不一致"
+            // 的静默漂移。通过则记录一行；不一致打印显著 CRITICAL 并留可观测信号（不再二次拒服，
+            // 避免与已 fail-closed 的链校验重复阻断；运维据 CRITICAL 日志介入）。
+            let audit = market.independent_audit();
+            if audit.passed {
+                println!(
+                    "🔍 启动独立审计通过：重放 {} 条流水，账实一致（deposits={}, slashed={}）",
+                    audit.replayed_records, audit.replayed_deposits, audit.replayed_slashed
+                );
+            } else {
+                eprintln!(
+                    "🚨 CRITICAL: 启动独立审计未通过——重放 {} 条流水，expected={}, actual={}, mismatches={:?}。账本链校验虽通过，但账实不符，请立即介入核查，勿继续放款/结算。",
+                    audit.replayed_records,
+                    audit.expected_total,
+                    audit.actual_total,
+                    audit.mismatches
+                );
+            }
 
             // v2.8.3: 水位 = 成功恢复的逻辑记录数（GAP §3.6，不再用物理 COUNT，
             // 物理行数含损坏行会导致水位超前、账本空洞）。

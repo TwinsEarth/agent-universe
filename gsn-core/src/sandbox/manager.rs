@@ -174,9 +174,24 @@ impl SandboxManager {
         ))
     }
 
+    /// 追加一条已构造好的审计记录（v3.5.2，AU-10）。
+    ///
+    /// create 路径专用：调用方（API 层）用 [`super::security::audit_entry`] 构造记录后，
+    /// 把 `cfg.waivers`（被放弃的边界 + 非空理由）填入 `entry.waivers`，再落盘到
+    /// sandbox-audit.log。这样"在缺边界后端上带理由放行"可被事后复查。其余操作
+    /// （exec/pause/destroy）不新增豁免，仍走 [`record_audit`]。
+    pub fn log_audit(&mut self, entry: super::security::AuditEntry) -> Result<(), SandboxError> {
+        self.audit.append(entry)
+    }
+
     /// 审计条目数（测试/运维用）
     pub fn audit_len(&self) -> usize {
         self.audit.len()
+    }
+
+    /// 审计条目只读视图（测试/运维用，验证 AU-10 waiver 落盘）
+    pub fn audit_entries(&self) -> &[super::security::AuditEntry] {
+        self.audit.entries()
     }
 
     /// 默认配置（API 层据此叠加请求体覆盖项）

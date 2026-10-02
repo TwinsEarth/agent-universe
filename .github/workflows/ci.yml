@@ -57,6 +57,33 @@ jobs:
       - name: Run gsn-daemon --help
         run: cd gsn-core && cargo run --bin gsn-daemon -- --help
 
+  # MSRV 关卡（W-01，v3.5.7）：gsn-core 的最低支持工具链是声明且实测的 1.88.0——
+  # 下限来自锁定依赖中最高的 rust-version（time 0.3.x 家族要求 1.88），不是猜的。
+  # 仅保证「库 + 两个二进制」在该工具链可编译；测试与 clippy 仍以 stable 运行
+  # （部分 dev-dependency 可能需要更新的编译器，这不应抬高发布产物的 MSRV）。
+  rust-msrv:
+    name: Rust MSRV 1.88.0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.88.0
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: "1.88.0"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.toml') }}
+
+      - name: Check library and bins under MSRV
+        run: cd gsn-core && cargo check --bins --locked
+
   workbench-check:
     name: Workbench Desktop
     runs-on: ubuntu-latest
@@ -138,7 +165,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='3.5.0') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='3.6.0') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

@@ -783,10 +783,12 @@ fn test_end_to_end_market_flow() {
         .unwrap();
 
     // 2. 充值需求方并发布任务（预算 50，发布即托管）
+    //    v3.5.1（AU-18）：本用例主体是资金守恒，不依赖 QA；用 policy=None（无需 QA，
+    //    证据闸门合法豁免）。旧版靠客户端自报 CpuProto 通过结算闸门，正是 AU-18 封堵点。
     market.deposit("requester-1", Money::new(50)).unwrap();
-    market
-        .publish_task(make_task("task-1", 50, "requester-1"))
-        .unwrap();
+    let mut task = make_task("task-1", 50, "requester-1");
+    task.verification_policy = VerificationPolicy::None;
+    market.publish_task(task).unwrap();
 
     // 3. 投标（报价 10）
     market
@@ -797,7 +799,7 @@ fn test_end_to_end_market_flow() {
     let winner = market.match_task("task-1").unwrap();
     assert_eq!(winner, "agent-1");
 
-    // 5. 提交结果
+    // 5. 提交结果（policy=None：Matched → Accepted，无需 QA）
     let envelope = ResultEnvelope {
         task_id: "task-1".to_string(),
         agent_id: "agent-1".to_string(),
@@ -805,23 +807,14 @@ fn test_end_to_end_market_flow() {
         confidence: 0.95,
         error_type: ErrorType::None,
         trace_ref: "trace://t1/1".to_string(),
-        evidence_grade: EvidenceGrade::CpuProto,
+        evidence_grade: EvidenceGrade::Unverified,
         latency_ms: 300,
     };
     market.submit_result(envelope).unwrap();
-
-    // 6. QA 验证（3 票 Stop）
-    let mut committee = QaCommittee::new(4, 1).unwrap();
-    for i in 0..4 {
-        committee.add_member(format!("qa-{}", i));
-    }
-    committee.cast_vote("qa-0", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-1", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-2", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-3", QaVote::Continue).unwrap();
-
-    let decision = market.verify_result("task-1", &committee).unwrap();
-    assert_eq!(decision, QaDecision::Stop);
+    assert_eq!(
+        market.get_task("task-1").unwrap().state,
+        TaskState::Accepted
+    );
 
     // 7. 结算：按中标价 10 支付（min(10,50)），余款 40 退回
     let paid = market.settle_task("task-1").unwrap();
@@ -1082,15 +1075,17 @@ fn test_money_vector_matches_conformance() {
     // requester：充值 50
     market.deposit("requester-1", Money::new(50)).unwrap();
     // 发布任务（预算 50，发布即托管）
-    market
-        .publish_task(make_task("task-1", 50, "requester-1"))
-        .unwrap();
+    // v3.5.1（AU-18）：本用例主体是跨语言金额向量，不依赖 QA；用 policy=None（证据闸门
+    // 合法豁免），保持金额与 money-vectors.json 完全一致。旧版靠自报 CpuProto 通过闸门。
+    let mut task = make_task("task-1", 50, "requester-1");
+    task.verification_policy = VerificationPolicy::None;
+    market.publish_task(task).unwrap();
     // 投标 10、匹配
     market
         .submit_bid(make_bid("agent-1", "task-1", 10))
         .unwrap();
     assert_eq!(market.match_task("task-1").unwrap(), "agent-1");
-    // 提交结果
+    // 提交结果（policy=None → Accepted，无需 QA）
     market
         .submit_result(ResultEnvelope {
             task_id: "task-1".to_string(),
@@ -1099,23 +1094,10 @@ fn test_money_vector_matches_conformance() {
             confidence: 0.95,
             error_type: ErrorType::None,
             trace_ref: "trace://t1".to_string(),
-            evidence_grade: EvidenceGrade::CpuProto,
+            evidence_grade: EvidenceGrade::Unverified,
             latency_ms: 300,
         })
         .unwrap();
-    // QA 委员会（3 STOP 通过）
-    let mut committee = QaCommittee::new(4, 1).unwrap();
-    for i in 0..4 {
-        committee.add_member(format!("qa-{}", i));
-    }
-    committee.cast_vote("qa-0", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-1", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-2", QaVote::Stop).unwrap();
-    committee.cast_vote("qa-3", QaVote::Continue).unwrap();
-    assert_eq!(
-        market.verify_result("task-1", &committee).unwrap(),
-        QaDecision::Stop
-    );
     // 结算
     let paid = market.settle_task("task-1").unwrap();
     assert_eq!(paid, Money::new(exp_rep["total_paid"].as_i64().unwrap()));
@@ -1286,14 +1268,40 @@ fn test_reopen_after_no_quorum_then_resettle() {
     // 非 NoQuorum 状态不能 reopen
     assert!(market.reopen_after_no_quorum("task-1").is_err());
 
-    // reopen 后重新走全链路：匹配 → 提交 → 验收 → 结算
+    // reopen 后重新走全链路：匹配 → 提交 → 认证 QA Stop（服务端提升证据）→ 结算。
+    // v3.5.1（AU-01/AU-18）：非认证 verify 不再提升证据、客户端自报等级也不再可信，
+    // 故末段用 4 个独立、足额质押、非执行者的委员做认证 Stop（正确新流程）。
     market.match_task("task-1").unwrap();
-    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::CpuProto);
-    let c2 = stop_committee("r");
-    assert_eq!(
-        market.verify_result("task-1", &c2).unwrap(),
-        QaDecision::Stop
-    );
+    submit_envelope(&mut market, "task-1", "agent-1", EvidenceGrade::Unverified);
+    let now = 1_000_000u64;
+    let mut members: Vec<(String, [u8; 32])> = Vec::new();
+    let mut votes: Vec<SignedQaVote> = Vec::new();
+    for i in 1..=4u8 {
+        let mut seed = [0u8; 32];
+        seed[0] = i + 40;
+        let kp = gsn_core::Keypair::from_seed(&seed);
+        let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+        let did = format!("did:nau:qa{i}");
+        market.deposit(&did, Money::new(100)).unwrap();
+        market.register_agent(make_agent_card(&did, 100)).unwrap();
+        members.push((did.clone(), pk));
+        if i <= 3 {
+            votes.push(SignedQaVote::sign(
+                "task-1",
+                0,
+                &did,
+                QaVote::Stop,
+                &format!("n-{i}"),
+                now - 10,
+                now + 60,
+                &kp,
+            ));
+        }
+    }
+    let decision = market
+        .verify_result_authenticated("task-1", 0, members, votes, now)
+        .unwrap();
+    assert_eq!(decision, QaDecision::Stop);
     let paid = market.settle_task("task-1").unwrap();
     assert_eq!(paid, Money::new(10));
     assert_eq!(market.get_task("task-1").unwrap().state, TaskState::Settled);

@@ -117,7 +117,7 @@ fn test_task_pricing() {
         .with_difficulty(DifficultyLevel::Hard)
         .with_urgency(UrgencyLevel::High);
 
-    let price = pricing.price();
+    let price = pricing.price().unwrap();
     assert!(price > 1000);
     assert!(price > 4000); // Hard(4.0) * High(1.5) * 1000 = 6000
 }

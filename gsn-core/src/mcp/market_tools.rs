@@ -105,7 +105,12 @@ impl MarketMcpBridge {
                 "委员私钥签发的投票数组（vote 传 Stop/Continue）",
                 true,
             )
-            .param("round", "number", "视图轮次（默认 0）", false),
+            .param(
+                "round",
+                "integer",
+                "视图轮次（默认 0；必须为 u32 范围内整数）",
+                false,
+            ),
             tool("market_settle_task", "结算已验收任务").param(
                 "task_id",
                 "string",
@@ -159,14 +164,19 @@ impl MarketMcpBridge {
                 .unwrap_or("")
                 .to_string()
         };
-        let get_money = |key: &str| -> crate::marketplace::Money {
+        let get_money = |key: &str| -> Result<crate::marketplace::Money, ToolResult> {
             // v2.8.6（GAP §4.1）：金额入口只接受整数（i64），拒绝 JSON 浮点
             // （10.5 截断、10.0 亦为 f64）。非法值由 validate_arguments 先返 -32602，
             // 此处纵深防御，绝不做浮点→整数截断。
-            args.get(key)
-                .and_then(|v| v.as_i64())
-                .map(crate::marketplace::Money::new)
-                .unwrap_or(crate::marketplace::Money::ZERO)
+            // v3.5.3（AU-36）：取不到合法整数时旧实现 `unwrap_or(Money::ZERO)` 会把金额
+            // 静默写成 0（往账户存 0，脚枪）。改为显式工具错误，不得静默当 0。
+            match args.get(key).and_then(|v| v.as_i64()) {
+                Some(n) => Ok(crate::marketplace::Money::new(n)),
+                None => Err(ToolResult::error(format!(
+                    "INVALID_PARAM(-32602): {key} 必须为整数金额，实际: {}",
+                    args.get(key).cloned().unwrap_or(serde_json::Value::Null)
+                ))),
+            }
         };
 
         let result: MarketResponse = match name {
@@ -180,8 +190,27 @@ impl MarketMcpBridge {
             "market_match_task" => self.market.match_task(get_str("task_id")).await,
             "market_submit_result" => self.market.submit_result(get("envelope")).await,
             "market_verify_result" => {
-                // v2.5.9 认证式：固定委员集 + 委员签名票
-                let round = args.get("round").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                // v3.5.3（AU-35）：round 必须是 u32 范围内的合法整数。旧实现
+                // `as_u64().unwrap_or(0) as u32`：1.5 经 number 校验后静默退 0、5e9 经
+                // `as u32` 静默截断。现在非整数/负数/越界一律返 -32602 风格参数错误。
+                let round: u32 = match args.get("round") {
+                    None | Some(serde_json::Value::Null) => 0,
+                    Some(v) => match v.as_i64() {
+                        Some(n) => match u32::try_from(n) {
+                            Ok(r) => r,
+                            Err(_) => {
+                                return ToolResult::error(format!(
+                                    "INVALID_PARAM(-32602): round 超出 u32 范围，实际: {n}"
+                                ));
+                            }
+                        },
+                        None => {
+                            return ToolResult::error(format!(
+                                "INVALID_PARAM(-32602): round 必须为整数，实际: {v}"
+                            ));
+                        }
+                    },
+                };
                 let members = match crate::api::rest::parse_committee_members(args.get("members")) {
                     Ok(m) => m,
                     Err(e) => return ToolResult::error(e),
@@ -223,9 +252,11 @@ impl MarketMcpBridge {
                 }
             }
             "market_deposit" => {
-                self.market
-                    .deposit(get_str("account"), get_money("amount"))
-                    .await
+                let amount = match get_money("amount") {
+                    Ok(m) => m,
+                    Err(e) => return e,
+                };
+                self.market.deposit(get_str("account"), amount).await
             }
             "market_balance" => self.market.balance(get_str("account")).await,
             "market_conservation" => self.market.conservation().await,

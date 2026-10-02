@@ -1180,6 +1180,8 @@ impl AgentMarket {
                 stake: c.stake.as_i64(),
                 reputation: c.reputation_score,
                 created_at: c.created_at.to_string(),
+                // v3.5.4（W-05）：完整卡片 JSON（version/pricing/sla/modalities/models 等不再丢）
+                card_json: serde_json::to_string(c).ok(),
             })
             .collect()
     }
@@ -1201,6 +1203,8 @@ impl AgentMarket {
                     .unwrap_or_default(),
                 requester: t.requester.clone(),
                 deadline: t.deadline as i64,
+                // v3.5.4（W-04）：完整规格 JSON（context/done/todo/trace/required_skills 不再丢）
+                spec_json: serde_json::to_string(t).ok(),
             })
             .collect()
     }
@@ -1229,43 +1233,44 @@ impl AgentMarket {
 
     /// v2.7.4: 从磁盘快照恢复 agents 到内存 market（重启后 /agents、/stats 可见）。
     ///
-    /// 此前 `spawn_with_store` 只取了 `load_agents().len()` 打日志，业务对象并未注入内存，
-    /// 导致重启后账本/余额从 SQLite 正确恢复、但 `/agents`、`/tasks/{id}`、`/stats` 全空。
-    /// 快照未存字段（version/description/modalities/models/endpoint/pricing/sla 等）用安全默认值补齐。
+    /// v3.5.4（W-05）：优先反序列化 `card_json` 完整卡片（version/pricing/sla/modalities/
+    /// models/endpoint/description/total_calls/success_rate 等不再丢失），再用经济身份权威
+    /// 扁平列（stake/reputation/created_at）覆盖 JSON 内同名字段——资金/信誉以列为准，防止
+    /// 卡片 JSON 与权威列不一致。card_json 缺失/损坏时回退旧的安全默认构造（不 panic）。
     pub fn restore_agents_from_store(&mut self, agents: Vec<crate::storage::StoredAgent>) {
         for a in agents {
-            let skills: Vec<String> = a
-                .skills
-                .split(',')
-                .map(|x| x.trim().to_string())
-                .filter(|x| !x.is_empty())
-                .collect();
-            let card = MarketAgentCard {
-                agent_id: a.agent_id.clone(),
-                version: "0.0.0-restored".to_string(),
-                name: a.name,
-                description: String::new(),
-                skills: skills.clone(),
-                modalities: vec![],
-                models: vec![],
-                endpoint: String::new(),
-                pricing: Pricing {
-                    model: PricingModel::Subscription,
-                    price: Money::ZERO,
-                    currency: Currency::Credit,
-                },
-                sla: Sla::default(),
-                owner: a.agent_id.clone(),
-                stake: Money::new(a.stake),
-                reputation_score: a.reputation,
-                total_calls: 0,
-                success_rate: 1.0,
-                evidence_grade: EvidenceGrade::Unverified,
-                verified: false,
-                created_at: a.created_at.parse().unwrap_or(0),
-                updated_at: a.created_at.parse().unwrap_or(0),
+            let mut card = match a.card_json.as_deref() {
+                Some(s) if !s.trim().is_empty() => {
+                    match serde_json::from_str::<MarketAgentCard>(s) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!(
+                                "⚠️ agent {} 卡片 JSON 损坏，回退扁平列默认卡片: {e}",
+                                a.agent_id
+                            );
+                            Self::fallback_agent_card(&a)
+                        }
+                    }
+                }
+                _ => Self::fallback_agent_card(&a),
             };
-            for sk in &skills {
+            // 经济身份以扁平权威列覆盖（资金/信誉/创建时间不允许被 JSON 改写）。
+            card.agent_id = a.agent_id.clone();
+            card.name = a.name.clone();
+            card.stake = Money::new(a.stake);
+            card.reputation_score = a.reputation;
+            card.created_at = a.created_at.parse().unwrap_or(0);
+            card.updated_at = card.updated_at.max(card.created_at);
+            // 若 JSON 内 skills 为空，用扁平 skills 列兜底。
+            if card.skills.is_empty() {
+                card.skills = a
+                    .skills
+                    .split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect();
+            }
+            for sk in &card.skills {
                 self.skill_index
                     .entry(sk.clone())
                     .or_default()
@@ -1275,10 +1280,48 @@ impl AgentMarket {
         }
     }
 
+    /// v3.5.4：card_json 缺失/损坏时的旧版安全默认卡片（不含丰富声明字段）。
+    fn fallback_agent_card(a: &crate::storage::StoredAgent) -> MarketAgentCard {
+        let skills: Vec<String> = a
+            .skills
+            .split(',')
+            .map(|x| x.trim().to_string())
+            .filter(|x| !x.is_empty())
+            .collect();
+        MarketAgentCard {
+            agent_id: a.agent_id.clone(),
+            version: "0.0.0-restored".to_string(),
+            name: a.name.clone(),
+            description: String::new(),
+            skills,
+            modalities: vec![],
+            models: vec![],
+            endpoint: String::new(),
+            pricing: Pricing {
+                model: PricingModel::Subscription,
+                price: Money::ZERO,
+                currency: Currency::Credit,
+            },
+            sla: Sla::default(),
+            owner: a.agent_id.clone(),
+            stake: Money::new(a.stake),
+            reputation_score: a.reputation,
+            total_calls: 0,
+            success_rate: 1.0,
+            evidence_grade: EvidenceGrade::Unverified,
+            verified: false,
+            created_at: a.created_at.parse().unwrap_or(0),
+            updated_at: a.created_at.parse().unwrap_or(0),
+        }
+    }
+
     /// v2.7.4: 从磁盘快照恢复 tasks 到内存 market。
     ///
-    /// 快照未存字段（context/done/todo/trace/required_skills/requester/winner_price/deadline）
-    /// 用安全默认值补齐；状态经 `TaskState::from_label` 反解析，坏值回 `Open`。
+    /// v3.5.4（W-04）：优先反序列化 `spec_json` 完整规格（context/done/todo/trace/
+    /// required_skills 不再丢失，旧实现把 context 清空、todo 退化为 "(restored from disk)"）。
+    /// 随后用扁平权威列覆盖经济/生命周期字段（budget/winner_price/deadline/state/owner/goal/
+    /// requester/created_at）与单独解析的 verification_policy（保留 v2.8.4 的损坏告警语义）。
+    /// spec_json 缺失/损坏时回退旧的安全默认规格（不 panic）。
     pub fn restore_tasks_from_store(&mut self, tasks: Vec<crate::storage::StoredTask>) {
         for t in tasks {
             // v2.8.4: 恢复验证策略（GAP §3.2）。新持久化的 None 也会序列化为
@@ -1300,24 +1343,62 @@ impl AgentMarket {
                     VerificationPolicy::None
                 }
             };
-            let spec = TaskSpec {
-                task_id: t.task_id,
-                goal: t.goal,
-                context: String::new(),
-                done: vec![],
-                todo: vec!["(restored from disk)".to_string()],
-                trace: vec![],
-                owner: t.owner,
-                budget: Money::new(t.budget),
-                winner_price: t.winner_price.map(Money::new),
-                deadline: t.deadline.max(0) as u64,
-                required_skills: vec![],
-                verification_policy: policy,
-                requester: t.requester,
-                state: TaskState::from_label(&t.state),
-                created_at: t.created_at.parse().unwrap_or(0),
+
+            // v3.5.4: 优先从完整 spec_json 恢复 context/done/todo/trace/required_skills。
+            let mut spec = match t.spec_json.as_deref() {
+                Some(s) if !s.trim().is_empty() => match serde_json::from_str::<TaskSpec>(s) {
+                    Ok(sp) => sp,
+                    Err(e) => {
+                        eprintln!(
+                            "⚠️ 任务 {} 规格 JSON 损坏，context/todo/skills 回退默认: {e}",
+                            t.task_id
+                        );
+                        Self::fallback_task_spec(&t, policy.clone())
+                    }
+                },
+                _ => {
+                    eprintln!(
+                        "⚠️ 任务 {} 为 v3.5.4 之前遗留数据、未持久化完整规格，context/todo/skills 回退默认",
+                        t.task_id
+                    );
+                    Self::fallback_task_spec(&t, policy.clone())
+                }
             };
+
+            // 经济/生命周期字段一律以扁平权威列覆盖（不信任 JSON 内可能过期的副本）。
+            spec.task_id = t.task_id;
+            spec.goal = t.goal;
+            spec.state = TaskState::from_label(&t.state);
+            spec.owner = t.owner;
+            spec.budget = Money::new(t.budget);
+            spec.created_at = t.created_at.parse().unwrap_or(0);
+            spec.winner_price = t.winner_price.map(Money::new);
+            spec.deadline = t.deadline.max(0) as u64;
+            spec.requester = t.requester;
+            spec.verification_policy = policy;
+
             self.tasks.insert(spec.task_id.clone(), spec);
+        }
+    }
+
+    /// v3.5.4：spec_json 缺失/损坏时的旧版安全默认规格（丰富字段用默认占位）。
+    fn fallback_task_spec(t: &crate::storage::StoredTask, policy: VerificationPolicy) -> TaskSpec {
+        TaskSpec {
+            task_id: t.task_id.clone(),
+            goal: t.goal.clone(),
+            context: String::new(),
+            done: vec![],
+            todo: vec!["(restored from disk)".to_string()],
+            trace: vec![],
+            owner: t.owner.clone(),
+            budget: Money::new(t.budget),
+            winner_price: t.winner_price.map(Money::new),
+            deadline: t.deadline.max(0) as u64,
+            required_skills: vec![],
+            verification_policy: policy,
+            requester: t.requester.clone(),
+            state: TaskState::from_label(&t.state),
+            created_at: t.created_at.parse().unwrap_or(0),
         }
     }
 

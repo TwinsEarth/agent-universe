@@ -2,7 +2,51 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
-## [v3.5.3] - 2026-10-02
+## [v3.5.4] - 2026-10-02
+
+### 补丁：重启持久化全字段保真（W-04 任务规格 / W-05 智能体卡片）（仅缺陷修复，无破坏式重构）
+
+本补丁把 Windows 实机（win-deploy-v3.5.0，提交 416b5bc/9603735）已验证的两个重启丢字段修复
+回合到云开发树。根因同源：`spawn_with_store` 重启恢复时，业务对象只从 SQLite 的**少量扁平列**
+重建，列里没有的丰富字段全部退化为默认值——任务的执行轨迹与卡片的能力声明在一次重启后丢失。
+
+- **W-04（任务规格重启丢失）**：旧 `StoredTask` 只有 10 个扁平列，`restore_tasks_from_store`
+  重建 `TaskSpec` 时把 `context` 清空、`todo` 退化为 `"(restored from disk)"`，`done`/`trace`/
+  `required_skills` 全丢，导致重启后任务的执行上下文与技能要求不可用。本版为 `tasks` 表新增
+  `spec_json TEXT`，快照写入完整 `TaskSpec` 规范 JSON，恢复时**优先反序列化完整规格**，再用
+  扁平权威列覆盖经济/生命周期字段（`budget`/`winner_price`/`deadline`/`state`/`owner`/`goal`/
+  `requester`/`created_at` 与单独解析的 `verification_policy`，保留 v2.8.4 坏值告警语义）。
+- **W-05（智能体卡片重启保真）**：旧 `StoredAgent` 只有 6 个扁平列，`restore_agents_from_store`
+  重建的卡片 `version` 恒为 `"0.0.0-restored"`，`description`/`modalities`/`models`/`endpoint`/
+  `pricing`/`sla`/`total_calls`/`success_rate`/`evidence_grade`/`verified` 全部退化为默认值。
+  本版为 `agents` 表新增 `card_json TEXT`，快照写入完整 `MarketAgentCard`，恢复时**优先反序列化
+  完整卡片**，再用经济身份权威扁平列覆盖（`stake`/`reputation`/`created_at`，资金与信誉以列为准、
+  不允许被 JSON 改写；`updated_at` 取 max），JSON 内 skills 为空时用扁平 `skills` 列兜底。
+
+**迁移与健壮性**
+- 新增幂等迁移 `migrate_add_text_column(conn, table, column)`：`PRAGMA table_info` 探测列是否
+  存在，新库（CREATE TABLE 已含两列）与旧库（ALTER ADD TEXT）都安全，可重复打开不报错。
+- 完整 JSON 缺失或损坏时**不 panic**：回退旧的安全默认构造并显式 `eprintln!` 告警（含 agent/
+  task id 与错误），经济字段仍由扁平权威列恢复，不影响账本与结算。
+
+**回归测试（在旧实现上必失败，非绿了也证明不了什么的测试）**
+- `storage::persist::tests::task_spec_json_survives_reopen` / `agent_card_json_survives_reopen`：
+  写入含丰富 `spec_json`/`card_json` 的记录，重开库后断言 context/todo/done/required_skills、
+  version/modalities/models/pricing.price/sla.latency_p95_ms/total_calls 存活（旧实现必失败）。
+- `json_column_migration_is_idempotent`：同一库连续三次 open + 写入，迁移幂等不报错。
+- `tests/v274_test.rs` 两条恢复测试升级为携带丰富 JSON 并断言字段存活（W-04/W-05 端到端，
+  覆盖 `restore_*_from_store` 生产恢复路径，而非仅存储层往返）。
+
+**验证**：`cargo +1.98.1 test --workspace -j2` **621 passed / 0 failed / 0 ignored**
+（基线 618，新增 3 个持久化测试；v274 两条为存量测试增强断言）；`cargo clippy --workspace
+--all-targets -- -D warnings` 零警告；`cargo fmt --all --check` 干净；`cargo metadata --locked`
+通过；`scripts/bump-version.sh 3.5.4` 全套版本声明点一致（npm 3.5.4 ↔ gsn-core 0.3.54）。
+
+**诚实边界**：本版只解决"重启后内存重建丢字段"，不改动 v2.8.4 已有的证据闸门/账本哈希链/
+资金守恒机制；`card_json`/`spec_json` 与扁平列的权威关系是"经济/生命周期以列为准、丰富声明以
+JSON 为准"，不是把 JSON 当作可信资金来源。
+
+
 
 ### 补丁：数值健壮性 / JS·Python 客户端一致性 / 测试与文档诚实化（仅缺陷修复，无破坏式重构）
 

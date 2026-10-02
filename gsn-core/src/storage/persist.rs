@@ -29,6 +29,10 @@ pub struct StoredAgent {
     pub stake: i64,
     pub reputation: f64,
     pub created_at: String,
+    /// v3.5.4（W-05）：完整 MarketAgentCard 的规范 JSON。
+    /// 扁平列（stake/reputation/created_at）是经济身份权威列，恢复时覆盖 JSON 内同名字段；
+    /// 本列承载扁平列未覆盖的 version/pricing/sla/modalities/models/description/endpoint 等。
+    pub card_json: Option<String>,
 }
 
 /// 持久化的 Task 记录
@@ -48,6 +52,11 @@ pub struct StoredTask {
     pub requester: String,
     /// v2.8.4: 截止时间（Unix 毫秒）
     pub deadline: i64,
+    /// v3.5.4（W-04）：完整 TaskSpec 的规范 JSON。
+    /// 扁平列是经济/生命周期权威列（恢复时覆盖 JSON 内同名的 budget/winner_price/
+    /// verification_policy/requester/deadline/state/created_at/owner/goal/task_id）；
+    /// 本列承载扁平列未覆盖的 context/done/todo/trace/required_skills，修复重启后这些字段丢失。
+    pub spec_json: Option<String>,
 }
 
 /// v2.5.5: 持久化的 Relay 节点记录
@@ -92,7 +101,8 @@ impl PersistentStore {
                 skills     TEXT NOT NULL DEFAULT '',
                 stake      INTEGER NOT NULL DEFAULT 0,
                 reputation REAL NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                card_json  TEXT
             );
 
             CREATE TABLE IF NOT EXISTS tasks (
@@ -105,7 +115,8 @@ impl PersistentStore {
                 winner_price      INTEGER,
                 verification_policy TEXT NOT NULL DEFAULT '',
                 requester  TEXT NOT NULL DEFAULT '',
-                deadline   INTEGER NOT NULL DEFAULT 0
+                deadline   INTEGER NOT NULL DEFAULT 0,
+                spec_json  TEXT
             );
 
             -- v2.8.4: 结果信封（GAP §3.2，已验收未结算任务重启后可结算）
@@ -162,6 +173,10 @@ impl PersistentStore {
         // v2.8.4: 旧库迁移（tasks 补 winner_price/verification_policy/requester/deadline 列），幂等
         migrate_tasks_v284(&conn)?;
 
+        // v3.5.4: W-04/W-05 全字段保真——tasks.spec_json / agents.card_json，幂等
+        migrate_add_text_column(&conn, "tasks", "spec_json")?;
+        migrate_add_text_column(&conn, "agents", "card_json")?;
+
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -174,13 +189,14 @@ impl PersistentStore {
             e.into_inner()
         });
         conn.execute(
-            "INSERT INTO agents (agent_id, name, skills, stake, reputation, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO agents (agent_id, name, skills, stake, reputation, created_at, card_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(agent_id) DO UPDATE SET
                 name = excluded.name,
                 skills = excluded.skills,
                 stake = excluded.stake,
-                reputation = excluded.reputation",
+                reputation = excluded.reputation,
+                card_json = excluded.card_json",
             params![
                 agent.agent_id,
                 agent.name,
@@ -188,6 +204,7 @@ impl PersistentStore {
                 agent.stake,
                 agent.reputation,
                 agent.created_at,
+                agent.card_json,
             ],
         )?;
         Ok(())
@@ -199,8 +216,9 @@ impl PersistentStore {
             eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
             e.into_inner()
         });
-        let mut stmt = conn
-            .prepare("SELECT agent_id, name, skills, stake, reputation, created_at FROM agents")?;
+        let mut stmt = conn.prepare(
+            "SELECT agent_id, name, skills, stake, reputation, created_at, card_json FROM agents",
+        )?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredAgent {
                 agent_id: row.get(0)?,
@@ -209,6 +227,7 @@ impl PersistentStore {
                 stake: row.get(3)?,
                 reputation: row.get(4)?,
                 created_at: row.get(5)?,
+                card_json: row.get(6)?,
             })
         })?;
         let mut agents = Vec::new();
@@ -226,8 +245,8 @@ impl PersistentStore {
         });
         conn.execute(
             "INSERT INTO tasks (task_id, goal, state, owner, budget, created_at,
-                                winner_price, verification_policy, requester, deadline)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                winner_price, verification_policy, requester, deadline, spec_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(task_id) DO UPDATE SET
                 goal = excluded.goal,
                 state = excluded.state,
@@ -236,7 +255,8 @@ impl PersistentStore {
                 winner_price = excluded.winner_price,
                 verification_policy = excluded.verification_policy,
                 requester = excluded.requester,
-                deadline = excluded.deadline",
+                deadline = excluded.deadline,
+                spec_json = excluded.spec_json",
             params![
                 task.task_id,
                 task.goal,
@@ -248,6 +268,7 @@ impl PersistentStore {
                 task.verification_policy,
                 task.requester,
                 task.deadline,
+                task.spec_json,
             ],
         )?;
         Ok(())
@@ -261,7 +282,7 @@ impl PersistentStore {
         });
         let mut stmt = conn.prepare(
             "SELECT task_id, goal, state, owner, budget, created_at,
-                    winner_price, verification_policy, requester, deadline FROM tasks",
+                    winner_price, verification_policy, requester, deadline, spec_json FROM tasks",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(StoredTask {
@@ -275,6 +296,7 @@ impl PersistentStore {
                 verification_policy: row.get(7)?,
                 requester: row.get(8)?,
                 deadline: row.get(9)?,
+                spec_json: row.get(10)?,
             })
         })?;
         let mut tasks = Vec::new();
@@ -777,6 +799,29 @@ fn migrate_tasks_v284(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// v3.5.4: 幂等地为某表补一个可空 TEXT 列（W-04/W-05）。
+///
+/// 用 `PRAGMA table_info` 探测列是否已存在，存在即直接返回；不存在才 `ALTER TABLE ADD COLUMN`。
+/// 因此对新库（CREATE TABLE 已含该列）与旧库（需 ALTER）都安全，可重复执行。
+fn migrate_add_text_column(conn: &Connection, table: &str, column: &str) -> anyhow::Result<()> {
+    let present = {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let cols = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        let mut found = false;
+        for c in cols {
+            if c? == column {
+                found = true;
+            }
+        }
+        found
+    };
+    if present {
+        return Ok(());
+    }
+    conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT;"))?;
+    Ok(())
+}
+
 /// 行映射：relay
 fn row_to_relay(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRelay> {
     Ok(StoredRelay {
@@ -814,6 +859,7 @@ mod tests {
             stake: 100,
             reputation: 0.5,
             created_at: "10".into(),
+            card_json: None,
         }
     }
 
@@ -829,6 +875,7 @@ mod tests {
             verification_policy: r#"{"BftLite":{"n":3,"f":1}}"#.into(),
             requester: "req".into(),
             deadline: 1000,
+            spec_json: None,
         }
     }
 
@@ -977,5 +1024,73 @@ mod tests {
             Err(u64::MAX),
             "锚定 head 不符必须报 u64::MAX"
         );
+    }
+
+    /// v3.5.4（W-05）：agent card_json 全字段在重开后存活。
+    /// 旧实现只有 6 个扁平列，version/pricing/sla/modalities 等全部丢失（恢复成 0.0.0-restored）。
+    #[test]
+    fn agent_card_json_survives_reopen() {
+        let path = tmp_db("card");
+        let rich = r#"{"agent_id":"did:nau:a1","version":"9.9.9-w05","name":"A",
+            "description":"d","skills":["rust","wasm"],"modalities":["text","image"],
+            "models":["m1"],"endpoint":"ep","pricing":{"model":"PerCall","price":150,"currency":"Credit"},
+            "sla":{"latency_p95_ms":1234,"availability":0.9,"max_concurrency":7},"owner":"did:nau:a1",
+            "stake":10000,"reputation_score":0.8,"total_calls":42,"success_rate":0.9,
+            "evidence_grade":"Verified","verified":true,"created_at":7,"updated_at":8}"#;
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            let mut a = sample_agent("did:nau:a1", "A");
+            a.card_json = Some(rich.to_string());
+            s.upsert_agent(&a).unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        let agents = s.load_agents().unwrap();
+        let got = agents[0].card_json.as_ref().expect("card_json 必须存活");
+        let v: serde_json::Value = serde_json::from_str(got).unwrap();
+        assert_eq!(v["version"], "9.9.9-w05");
+        assert_eq!(v["pricing"]["price"], 150);
+        assert_eq!(v["sla"]["latency_p95_ms"], 1234);
+        assert_eq!(v["skills"][0], "rust");
+        assert_eq!(v["total_calls"], 42);
+    }
+
+    /// v3.5.4（W-04）：task spec_json 全字段在重开后存活。
+    /// 旧实现恢复时 context 为空、todo 退化为 "(restored from disk)"、required_skills 丢失。
+    #[test]
+    fn task_spec_json_survives_reopen() {
+        let path = tmp_db("spec");
+        let rich = r#"{"task_id":"t1","goal":"g","context":"ctx","done":["d1"],
+            "todo":["todo1","todo2"],"trace":["tr"],"owner":null,"budget":200,
+            "winner_price":150,"deadline":1000,
+            "required_skills":["rust","ops"],"verification_policy":"None",
+            "requester":"req","state":"Open","created_at":10}"#;
+        {
+            let s = PersistentStore::open(&path).unwrap();
+            let mut t = sample_task("t1", "Open");
+            t.spec_json = Some(rich.to_string());
+            s.upsert_task(&t).unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        let tasks = s.load_tasks().unwrap();
+        let got = tasks[0].spec_json.as_ref().expect("spec_json 必须存活");
+        let v: serde_json::Value = serde_json::from_str(got).unwrap();
+        assert_eq!(v["context"], "ctx");
+        assert_eq!(v["todo"][0], "todo1");
+        assert_eq!(v["required_skills"][1], "ops");
+        assert_eq!(v["done"][0], "d1");
+    }
+
+    /// v3.5.4：spec_json/card_json 迁移对"新建即含列"与"旧库 ALTER"都幂等（重复 open 不报错）。
+    #[test]
+    fn json_column_migration_is_idempotent() {
+        let path = tmp_db("idem");
+        for _ in 0..3 {
+            let s = PersistentStore::open(&path).unwrap();
+            s.upsert_agent(&sample_agent("a", "A")).unwrap();
+            s.upsert_task(&sample_task("t", "Open")).unwrap();
+        }
+        let s = PersistentStore::open(&path).unwrap();
+        assert_eq!(s.load_agents().unwrap().len(), 1);
+        assert_eq!(s.load_tasks().unwrap().len(), 1);
     }
 }

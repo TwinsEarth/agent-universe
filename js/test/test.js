@@ -44,8 +44,8 @@ function test(name, fn) {
 console.log('Agent Universe JS SDK 测试\n');
 
 // 1. 版本号
-test('版本号为 3.5.3', () => {
-  assert.strictEqual(version, '3.5.3');
+test('版本号为 3.5.4', () => {
+  assert.strictEqual(version, '3.5.4');
 });
 
 // 2. 密钥对 + DID + 签名验证

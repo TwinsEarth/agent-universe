@@ -943,8 +943,16 @@ impl AgentMarket {
     /// 杜绝旧实现 reject 路径「只扣账本、质押记录不变」的不一致。
     fn slash_stake_synced(&mut self, agent_id: &str, amount: Money) -> Result<Money, String> {
         let stake_acct = stake_account(agent_id);
-        self.reputation_mgr.slash_stake(agent_id, amount)?;
+        // v3.5.3（AU-19）：旧顺序「先 reputation_mgr.slash_stake 改质押记录，再 settlement.slash
+        // 扣账本」——账本步失败时质押记录已被扣，口径不一致（账上扣了钱、记录没扣）。
+        // 改为：先扣账本（资金侧），成功后再更新质押记录；若记录步失败则把账本扣的钱补回
+        // （deposit 回滚），保证两视图要么同时扣、要么都不扣。
         self.settlement.slash(&stake_acct, amount)?;
+        if let Err(e) = self.reputation_mgr.slash_stake(agent_id, amount) {
+            // 回滚账本：把刚扣的金额补回，避免资金已出、记录未动。
+            let _ = self.settlement.deposit(&stake_acct, amount);
+            return Err(e);
+        }
         Ok(amount)
     }
 

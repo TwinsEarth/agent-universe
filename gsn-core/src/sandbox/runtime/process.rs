@@ -445,7 +445,9 @@ impl super::super::Sandbox for ProcessSandbox {
             exit_code,
             stdout,
             stderr,
-            cpu_time_ms: 0,
+            // v3.5.3（AU-31）：进程后端不测量 CPU 时间，如实标 None（未测量），
+            // 不再填 0 冒充"测得 0ms"。
+            cpu_time_ms: None,
             wall_ms,
             isolation: IsolationLevel::Process,
             state: self.state,

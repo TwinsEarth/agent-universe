@@ -471,6 +471,27 @@ impl MarketActorHandle {
                 .unwrap_or_default();
             market.restore_reputation_state_from_store(rep_rows, stake_rows);
 
+            // v3.5.3（AU-17）：恢复完成后自动跑一次独立审计（重放流水对账）。
+            // settlement.rs 注释承诺"恢复后做独立审计"但此前从未调用。账本哈希链篡改已由
+            // v3.5.1 fail-closed 拦截（见上）；此处审计用于捕捉"链没断但账实不符/重放不一致"
+            // 的静默漂移。通过则记录一行；不一致打印显著 CRITICAL 并留可观测信号（不再二次拒服，
+            // 避免与已 fail-closed 的链校验重复阻断；运维据 CRITICAL 日志介入）。
+            let audit = market.independent_audit();
+            if audit.passed {
+                println!(
+                    "🔍 启动独立审计通过：重放 {} 条流水，账实一致（deposits={}, slashed={}）",
+                    audit.replayed_records, audit.replayed_deposits, audit.replayed_slashed
+                );
+            } else {
+                eprintln!(
+                    "🚨 CRITICAL: 启动独立审计未通过——重放 {} 条流水，expected={}, actual={}, mismatches={:?}。账本链校验虽通过，但账实不符，请立即介入核查，勿继续放款/结算。",
+                    audit.replayed_records,
+                    audit.expected_total,
+                    audit.actual_total,
+                    audit.mismatches
+                );
+            }
+
             // v2.8.3: 水位 = 成功恢复的逻辑记录数（GAP §3.6，不再用物理 COUNT，
             // 物理行数含损坏行会导致水位超前、账本空洞）。
             let mut ledger_water = restored;

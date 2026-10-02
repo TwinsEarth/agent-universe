@@ -3,6 +3,11 @@
 //! 一个 GSN 节点可作为 MCP Server，将其能力暴露为标准 MCP 接口，
 //! 同时兼容 GSN 自己的扩展字段。
 //!
+//! # ⚠️ 运行图定位（v3.5.3，AU-11）
+//! 线上 MCP 流量实际走 gsn-daemon 的 Market/Sandbox bridge（见 `api::rest` 的
+//! `/api/v1/mcp`），并非由本 `McpServer` 类型直接承载。本类型是库内通用 MCP 服务骨架，
+//! 可被嵌入式场景复用；不要据此认为 daemon 已把本类型接入生产数据面。
+//!
 //! v2.3.5 重构（去除占位）：
 //! - 工具必须绑定执行器（handler）才会真正执行；仅注册定义而无执行器时，
 //!   tools/call 返回明确错误，而不是伪造 "tool executed"。

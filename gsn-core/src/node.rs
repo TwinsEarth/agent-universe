@@ -7,7 +7,7 @@ use crate::api::market_actor::MarketActorHandle;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
-use crate::storage::{PersistentStore, StoredAgent, StoredRelay};
+use crate::storage::{PersistentStore, StoredRelay};
 use crate::NodeMode;
 use libp2p::{Multiaddr, PeerId};
 use std::collections::{HashMap, HashSet};
@@ -1495,7 +1495,6 @@ async fn run_api_server(
     mode: String,
     p2p_port: u16,
     start: Instant,
-    store: Arc<PersistentStore>,
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
@@ -1526,7 +1525,8 @@ async fn run_api_server(
             }
         };
         let mode = mode.clone();
-        let store = store.clone();
+        // v3.5.3（AU-14）：本连接处理不再直接写 store（agent 落盘统一由 market actor 快照负责），
+        // 故不再 clone store 进此闭包。
         let peer_cmd_tx = peer_cmd_tx.clone();
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
@@ -1857,37 +1857,19 @@ async fn run_api_server(
             )
             .await;
 
-            // 注册 agent 落 SQLite + DHT
+            // 注册 agent：DHT 索引（SQLite 落盘由 market actor 快照负责，见下）。
+            // v3.5.3（AU-14）：旧实现这里在 201 后直接 `store.upsert_agent`，与 actor 的
+            // 写后快照（market_actor.rs：dispatch 后对同一 agent_id upsert 完整 MarketAgentCard）
+            // 形成同键双写、last-writer-wins，且此处 reputation 硬编码 0.0，会与 actor 的权威快照
+            // 竞态、可能覆盖 actor 刚写入的真实信誉/状态。现删除冗余直写，以 market actor 为唯一
+            // SQLite 写者（每次写命令后 upsert 完整、权威的 agent 行）；注册后立即读回走内存 market，
+            // 不受此异步快照时序影响。
             if method == "POST"
                 && (path_part == "/api/v1/agents" || path_part == "/agents")
                 && routed.status == 201
             {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                     let agent_id = v.get("agent_id").and_then(|x| x.as_str()).unwrap_or("");
-                    let name = v.get("name").and_then(|x| x.as_str()).unwrap_or("");
-                    let skills = v
-                        .get("skills")
-                        .and_then(|x| x.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str())
-                                .collect::<Vec<_>>()
-                                .join(",")
-                        })
-                        .unwrap_or_default();
-                    let stake = v
-                        .get("stake")
-                        .and_then(|x| x.as_i64().or_else(|| x.as_f64().map(|f| f as i64)))
-                        .unwrap_or(0);
-                    let stored = StoredAgent {
-                        agent_id: agent_id.to_string(),
-                        name: name.to_string(),
-                        skills,
-                        stake,
-                        reputation: 0.0,
-                        created_at: chrono::Utc::now().to_rfc3339(),
-                    };
-                    let _ = store.upsert_agent(&stored);
                     let _ = peer_cmd_tx
                         .send(PeerCommand::DhtPut {
                             key: format!("/aip/agent/{}", agent_id),
@@ -1988,6 +1970,37 @@ fn init_relay_pool(store: &PersistentStore) {
     }
 }
 
+/// v3.5.3（AU-30）：root 启动闸门（纯函数，便于单测）。
+///
+/// euid==0（root）且未显式允许时拒绝启动；非 root 或显式 `GSN_ALLOW_ROOT=1` 放行。
+/// 沙箱/插件子系统无 setuid 降权，以 root 跑一旦逃逸即获得 root，故默认 fail-closed。
+pub fn ensure_not_root(allow_root: bool, euid: u32) -> Result<(), String> {
+    if euid == 0 && !allow_root {
+        return Err(
+            "REFUSAL_RUN_AS_ROOT: daemon 检测到以 root(euid=0) 运行。沙箱/插件子系统无 setuid 降权，\
+             不应以 root 运行；如确需，显式设置 GSN_ALLOW_ROOT=1 后重启。"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// 读取当前进程有效 UID（不引 libc）。Linux 下解析 /proc/self/status 的 `Uid:` 行
+/// （格式：`Uid:\teff\teuid...`，第二列为 euid）；其它平台或读取失败返回 None。
+pub fn current_euid() -> Option<u32> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("Uid:") {
+            let mut parts = rest.split_whitespace();
+            // 列：real effective saved fs。取第二列（effective）。
+            let _real = parts.next()?;
+            let euid = parts.next()?;
+            return euid.parse::<u32>().ok();
+        }
+    }
+    None
+}
+
 /// 启动节点（核心入口，gsn-daemon 与 gsn daemon 共用）
 pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v2.5.4: 初始化 tracing，使 libp2p 内部（relay/identify/autonat/dcutr/swarm）的
@@ -2002,6 +2015,18 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         .try_init();
 
     println!("=== GSN Daemon v{} ===", env!("CARGO_PKG_VERSION"));
+
+    // v3.5.3（AU-30）：沙箱/插件子系统不应以 root 运行（代码无 setuid 降权，一旦逃逸即 root）。
+    // 默认 fail-closed：检测到 euid==0 且未显式设置 GSN_ALLOW_ROOT=1 则拒绝启动。
+    // 不引 libc：Linux 下从 /proc/self/status 的 Uid 行解析 euid；非 Linux / 无法读取则跳过
+    // （无法判定时不臆断 root，保持可启动）。
+    if let Some(euid) = current_euid() {
+        let allow_root = std::env::var("GSN_ALLOW_ROOT").as_deref() == Ok("1");
+        if let Err(e) = ensure_not_root(allow_root, euid) {
+            eprintln!("🚨 CRITICAL: {e}");
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    }
 
     let node_mode = match args.mode.as_str() {
         "archive" => NodeMode::Archive,
@@ -2161,7 +2186,6 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         args.mode.clone(),
         args.port,
         Instant::now(),
-        store,
         peer_cmd_tx,
         market,
         sandbox_mgr,
@@ -2331,5 +2355,18 @@ mod http_security_tests {
         assert_eq!(st, 200, "unblock 应可达: {body}");
         let (_, body) = handle_plugin_api("GET", "/api/v1/plugins/blacklist", "", &mut host);
         assert_eq!(body["blacklist"].as_array().unwrap().len(), 0);
+    }
+
+    // v3.5.3（AU-30）：root 启动闸门纯函数用例。
+    #[test]
+    fn au30_root_gate() {
+        use super::ensure_not_root;
+        // root + 未允许 → 拒绝。
+        assert!(ensure_not_root(false, 0).is_err());
+        // root + 显式允许 → 放行。
+        assert!(ensure_not_root(true, 0).is_ok());
+        // 非 root → 放行（无论 allow 与否）。
+        assert!(ensure_not_root(false, 1000).is_ok());
+        assert!(ensure_not_root(true, 1000).is_ok());
     }
 }

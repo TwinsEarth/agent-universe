@@ -2,6 +2,69 @@
 
 "本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.3] - 2026-10-02
+
+### 补丁：数值健壮性 / JS·Python 客户端一致性 / 测试与文档诚实化（仅缺陷修复，无破坏式重构）
+
+本补丁基于 v3.5.2，修复 AU-33/34/35/36/19/17/14/30/31/27/15/16/39/02/11/12/13/20/29/40/37/38。
+
+**A 组：Rust 数值/正确性硬化**
+- **AU-33（apply_decay 除零）**：`ReputationSystem::apply_decay` 在 `decay_halflife_secs==0`
+  时旧实现 `elapsed / 0` 整数除零 panic；改为 halflife==0 视为"不衰减"并跳过。测试
+  `au33_decay_halflife_zero_no_panic_and_no_decay`（sleep 令 elapsed>0，旧实现必 panic）。
+- **AU-34（非有限 f64）**：`with_supply_demand` 对 NaN 静默落 2.0、`price()` 对 Inf 饱和成
+  u64::MAX；改为入口拒绝非有限 ratio（`PricingError::NonFiniteSupplyDemandRatio`）、price()
+  非有限/溢出显式报错（`NonFiniteOrOverflowPrice`）。测试覆盖 NaN/+Inf/-Inf/0/溢出。
+- **AU-35（round 静默截断）**：MCP/REST 的 `round` 旧用 `as_u64().unwrap_or(0) as u32`
+  （1.5 退 0、5e9 截断）；MCP schema 改 integer，两侧用 `u32::try_from` 严格校验，
+  非整数/负数/越界返 -32602 风格参数错误。
+- **AU-36（get_money 静默 0）**：取不到合法整数金额旧 `unwrap_or(Money::ZERO)`；改为显式工具
+  错误，不再把金额静默写成 0。
+- **AU-19（罚没两阶段顺序）**：`slash_stake_synced` 旧先改质押记录再扣账本，第二步失败留
+  口径不一致；改为先扣账本、再改质押记录，记录步失败则把账本扣额补回（回滚），保证两视图一致。
+- **AU-17（启动自审）**：`spawn_with_store` 恢复完成后自动跑一次 `independent_audit`；
+  通过记日志，账实不符打印显著 CRITICAL 并留可观测信号（账本链篡改已由 v3.5.1 fail-closed 拦截）。
+- **AU-14（双写竞态）**：node.rs POST /agents 后直写 `store.upsert_agent`（reputation 硬编码 0）
+  与 market actor 写后快照同键 last-writer-wins；删除冗余直写，以 actor 为唯一 SQLite 写者
+  （注册后读回走内存 market，不受异步快照时序影响），并移除 run_api_server 未用的 store 参数。
+
+**B 组：沙箱运维诚实化与真实行为测试**
+- **AU-30（非 root）**：run_daemon 早期加 `ensure_not_root(allow_root,euid)`——euid==0 且未设
+  `GSN_ALLOW_ROOT=1` 拒绝启动；不引 libc，Linux 下解析 /proc/self/status 的 Uid 行。纯函数测试
+  root+未允许拒 / root+允许放 / 非 root 放。
+- **AU-31（cpu_time_ms 恒 0）**：`SandboxResult.cpu_time_ms: u64` 恒填 0 易被误读为"测得 0ms"；
+  改 `Option<u64>`，进程后端如实返回 `None`=未测量（不为此新引 libc/unsafe，不填假值）。
+- **AU-27（隔离真实行为测试）**：新增 v353_test 真跑 env 白名单清洗（宿主秘密变量不泄漏）、
+  workdir 与宿主 cwd 隔离、白名单变量透传。内存 OOM/Windows Job Object/网络-FS-quota 因容器/平台
+  不可确定性断言，**不写空洞测试**，在测试模块注释与本节明确列出。
+
+**C 组：JS / Python 客户端一致性（已真实运行）**
+- **AU-15（Bearer 注入）**：js/lib/mcp.js 与 aip-sdk-py mcp_client 增加可选 auth token，设置后发
+  `Authorization: Bearer <token>`，不设置不发该头。两侧各加头断言测试。
+- **AU-16（Python 三端签名钉向量）**：新增 tests/test_cross_lang_vector.py，读取
+  conformance/vectors.json，断言 Python 由固定 seed 派生的公钥/DID/规范载荷签名与 Rust、JS
+  逐字节一致。
+- **AU-39（JS 恒真断言）**：`shardOf('key-0',16)===shardOf('key-0',16)` 恒真，改为"同 key 两次一致
+  且结果落在 [0,16)"的有意义不变量。
+
+**D 组：文档诚实化（只标注，不接线）**
+- **AU-02/11/12/13/20/29/40**：topology 纯算法库、mcp/server.rs McpServer（线上 MCP 走
+  Market/Sandbox bridge）、gossipsub（dormant，发现实际仅 Kademlia）、`gsn mcp --transport stdio`
+  （独立内存市场演练场，无 SQLite/恢复，裸 default 沙箱会 422）、swarm/consensus.rs LightweightConsensus
+  （模块头显著警告"未接线；接入前必须 weight=stake、去重、验签"）、sandbox NetworkGuard/ExecutionToken/
+  SandboxIdentity（设计预留、当前不做短时令牌/网络强制）、official root 不预置且 T3 平台可达性——
+  均在对应 doc 注释如实标注"library-only / dormant / 设计预留"，不再暗示已在 daemon 生产生效。
+- **AU-37/38（README 数字订正）**：本版实测 Rust **618** 测试 / Python **19** / JS **22**；
+  MCP 市场工具实测 **20** 个（含 market_audit、market_reject_task）。README 已从过时的
+  155 Rust / 12 JS / 18 工具订正，并加"随 cargo test 增长、以发布时实测为准"。
+
+**已知限制 / 后续（跨版残留，诚实声明）**
+- v3.5.1 委员会仍可能被 ≥4 个各自足额质押的 Sybil 身份凑齐 Stop；按质押加权的验证人集与
+  slashing 联动留待 minor。
+- v3.5.2 QA nonce 为运行期跨请求去重；跨重启窗口内的重放由既有服务端时间窗约束。
+- 本版未接线的库能力清单（topology/mesh/nat、McpServer、gossipsub 发布消费、LightweightConsensus、
+  NetworkGuard/ExecutionToken/SandboxIdentity）见 D 组；进程后端不测量 CPU 时间（cpu_time_ms=None）。
+
 ## [v3.5.2] - 2026-10-02
 
 ### 补丁：插件 / PMB / 沙箱健壮性与隔离诚实化（仅缺陷/安全/正确性修复，无破坏式重构）

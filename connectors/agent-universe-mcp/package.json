@@ -1,0 +1,42 @@
+{
+  "name": "@twinsearth/agent-universe-mcp",
+  "version": "3.5.0",
+  "description": "Zero-dependency MCP stdio ↔ Streamable-HTTP bridge for the agent-universe gsn-daemon (/api/v1/mcp).",
+  "type": "module",
+  "main": "src/http-forward.js",
+  "exports": {
+    ".": "./src/http-forward.js",
+    "./framing": "./src/framing.js",
+    "./stdio": "./src/stdio.js"
+  },
+  "bin": {
+    "agent-universe-mcp": "src/stdio.js"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "agent-universe",
+    "gsn",
+    "stdio",
+    "streamable-http",
+    "bridge"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/TwinsEarth/agent-universe",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TwinsEarth/agent-universe.git",
+    "directory": "connectors/agent-universe-mcp"
+  },
+  "scripts": {
+    "start": "node src/stdio.js",
+    "test": "node --test test/*.test.js"
+  }
+}

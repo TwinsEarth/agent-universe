@@ -1,0 +1,25 @@
+# Manual alternative: use the OFFICIAL dsh-mcp-client directly (no TwinsEarth bundle).
+#
+# The @twinsearth/agent-universe-harness bundle is only a turnkey wrapper around
+# @deepseek-ai/dsh-mcp-client. If you prefer not to install the bundle, you can
+# register the official MCP client yourself by merging a row like this into your
+# active dsh loader layer ($DSH_HOME/cordis.patch.yml, or --patch file):
+#
+#   dsh start --patch ./connectors/examples/cordis.patch.agent-universe.yml
+#
+# Same-id rows in later layers replace this whole config (not a deep merge), so
+# restate every key you want to keep when overriding url/token.
+
+- insert:
+    - id: agent-universe
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: streamable-http
+        serverName: agent-universe
+        url: http://127.0.0.1:4002/api/v1/mcp
+        headers:
+          Authorization: !!js 'process.env.MCP_BEARER_TOKEN ? `Bearer ${process.env.MCP_BEARER_TOKEN}` : ""'
+        toolCallTimeoutMs: 60000
+        # false = a daemon that is down at startup logs and loads with zero tools;
+        # set true to fail activation instead.
+        failOnStartupError: false

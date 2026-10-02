@@ -2,6 +2,25 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.5.9] - 2026-10-02
+
+### 补丁：能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）
+
+纯文档与模块注释变更，不改变运行时代码与资金/共识语义。
+
+- **新增 `docs/CAPABILITY-STATUS.md`**：随版本维护的状态登记册。逐条给出 DEV-01~05 的
+  当前代码事实与状态——LLM 全 Mock 明确未做；自研应用层 P2P 明确采用 libp2p 不重开；
+  TEE/WASM/fault_tolerance/evolution 为路线项（WASM 类型化拒绝）；HMAC/离线 anchor·bridge/
+  非长驻 outbox 保持 v3.5.0 边界；流式/QA 委员授权门槛/Unix·macOS 隔离由「沉默」补为明确。
+  规则：闭合须标注版本+证据，不得静默删除。
+- **库面模块诚实标注（DOC-05/F-4）**：核实 topology/scheduler/memory/swarm/mesh/nat 六模块
+  公开类型仅被 lib.rs re-export、不在 daemon 启动运行图构造；为 scheduler/memory/swarm/mesh
+  补模块头注释（topology/nat v3.5.3 已标注）；README 加库面/运行面区分；记录待决 D-1
+  「接线 or 收敛删除」，补丁版不接线不删除。
+- **历史勘误（DOC-08）**：v2.4.1「路由恒为 7 跳」加指针到 v2.6.5（真实 LCA）；
+  v2.4.4「LRU」加指针到 v2.6.7（实为 LFU→真 LRU）。原文保留备查。
+- 627 tests / clippy / fmt / no-panics / unsafe / metadata 全绿；npm 3.5.9 ↔ gsn-core 0.3.59。
+
 ## [v3.5.8] - 2026-10-02
 
 ### 补丁：守护进程真实端到端吞吐/延迟基准 + 历史无测量性能小节诚实化（#76 / DOC-07）

@@ -1,4 +1,7 @@
-//! Memory Sharing（v2.4.2+）
+//! Memory Sharing（v2.4.2+）—— **v3.5.9 状态登记（DOC-05 / 自审 F-4）：纯算法库，
+//! 未在 `gsn-daemon` 启动运行图中构造。** 下列三层记忆与飞轮类型仅由 `lib.rs`
+//! re-export 供库使用者/测试引用，生产数据面（市场、P2P、官方插件）不读写它们；
+//! 属待决项（接线启用 or 收敛删除），见 `docs/CAPABILITY-STATUS.md`。
 //!
 //! 三层记忆：
 //! - 个体记忆 `AgentMemory` / `EnhancedMemory`（v2.4.4：检索/评价/压缩遗忘）

@@ -195,7 +195,7 @@ cargo run --release --bin gsn-daemon -- \
 
 > **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 618 个 Rust 测试 + 19 个 Python 测试 + 22 个 JS 测试守护（随版本增长，以发布时 cargo test / pytest / node 实测为准），跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
-### 自动更新（v3.6.1）
+### 自动更新（v3.6.1 引入，v3.6.2 修复联网）
 
 daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-universe` 的完整版本表）
 检查是否最新，检查失败只告警、不影响启动。更新对象同时包含 **daemon 二进制**与 **npm 包**。
@@ -208,7 +208,7 @@ daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-u
 ```bash
 gsn update                 # 按本机通道自动更新 daemon + npm
 gsn update --check         # 只检查，不安装
-gsn update 3.6.1           # 手动更新到指定版本（可跨大版本/降级）
+gsn update 3.6.2           # 手动更新到指定版本（可跨大版本/降级）
 gsn update --track patch   # 本次按 patch 通道
 gsn version --check        # 只查询通道内目标与新大版本提示
 ```
@@ -219,6 +219,9 @@ gsn version --check        # 只查询通道内目标与新大版本提示
 安全：daemon 二进制安装前强制校验随 Release 发布的 `.sha256`（不符即拒绝），同目录原子替换；
 安装后**下次启动生效**，不强制重启。平台支持矩阵与诚实边界（如 macOS 仅 aarch64 有资产、
 Windows exe 占用需先停节点）见 [`releases/v3.6.1.md`](releases/v3.6.1.md)。
+v3.6.2 修复了 v3.6.1 更新器把域名当 IP 字面量解析、导致对所有真实域名连不上的 critical
+缺陷（存量 v3.6.1 节点无法自动自愈，需重装 npm 包或手动覆盖二进制，详见
+[`releases/v3.6.2.md`](releases/v3.6.2.md)）。
 
 ### 三大连接层：CLI · API · MCP（v2.3.5 引入，v2.3.6 深化）
 
@@ -324,7 +327,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.1，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.2，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -412,6 +415,7 @@ npm install @twinsearth/agent-universe
 | v3.5.9 | **Capability Status** | **能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）** |
 | v3.6.0 | **Ops CLI** | **新增运维只读 CLI：`gsn ledger verify`（账本哈希链/坏行/重放守恒离线核验）与 `gsn doctor`（一键诊断）** |
 | v3.6.1 | **Auto Update** | **daemon 自动更新：npm registry 权威源（不盲信 dist-tags）+ 默认 minor/白名单 patch 双通道 + 手动可跨大版本；daemon 二进制 sha256 fail-closed 原子替换 + npm 包同步；release.yml 三平台增原始二进制+.sha256 资产** |
+| v3.6.2 | **Updater DNS Fix** | **修复 v3.6.1 更新器把 `host:port` 当 IP 字面量 parse、对所有真实域名连不上的 critical：改走 `to_socket_addrs` DNS 解析 + 多地址连接，补在旧实现会失败的 DNS 回归测试；存量 v3.6.1 需重装 npm 包/手动覆盖二进制到本版后自动更新才恢复** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

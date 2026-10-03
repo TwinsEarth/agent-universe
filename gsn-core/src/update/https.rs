@@ -11,7 +11,7 @@
 //! 本模块不保留任何连接池、不接受明文 http 跳转、不做任何凭据透传。
 
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +39,43 @@ fn build_tls_config() -> Result<ClientConfig, UpdateError> {
             .with_root_certificates(roots)
             .with_no_client_auth(),
     )
+}
+
+/// 把主机名解析为候选套接字地址。
+///
+/// 关键：**必须走 DNS 解析器**（`to_socket_addrs`），不能用
+/// `"host:port".parse::<SocketAddr>()`——后者只接受 IP 字面量，对任何域名
+/// （registry.npmjs.org / github.com）都会失败。v3.6.1 曾因此让更新器对域名完全不可用。
+fn resolve_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, UpdateError> {
+    let addrs: Vec<_> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| UpdateError::Http(format!("DNS 解析 {host} 失败: {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(UpdateError::Http(format!("DNS 解析 {host} 未返回任何地址")));
+    }
+    Ok(addrs)
+}
+
+/// 依次尝试解析到的所有地址（IPv4/IPv6 多记录、Happy Eyeballs 的简化版），
+/// 返回第一个连通的 TCP 流；全部失败时报最后一个错误。
+fn connect_addrs(
+    addrs: &[std::net::SocketAddr],
+    timeout: Duration,
+) -> Result<TcpStream, UpdateError> {
+    let mut last_err: Option<std::io::Error> = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(addr, timeout) {
+            Ok(tcp) => return Ok(tcp),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(UpdateError::Http(format!(
+        "所有候选地址均不可达: {}",
+        last_err
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "无可用地址".to_string())
+    )))
 }
 
 /// 解析 `https://host[:port]/path?query`，返回 (host, port, authority-path)。
@@ -72,14 +109,9 @@ fn get_once(
     max_bytes: usize,
 ) -> Result<HttpResponse, UpdateError> {
     let (host, port, path) = split_url(url)?;
-    let addr = format!("{host}:{port}");
-    let tcp = TcpStream::connect_timeout(
-        &addr
-            .parse()
-            .map_err(|_| UpdateError::Http(format!("无法解析地址 {addr}")))?,
-        timeout,
-    )
-    .map_err(|e| UpdateError::Http(format!("连接 {addr} 失败: {e}")))?;
+    // 先 DNS 解析（支持域名），再逐个候选地址连接。绝不把 "host:port" 当 IP 字面量 parse。
+    let addrs = resolve_addrs(&host, port)?;
+    let tcp = connect_addrs(&addrs, timeout)?;
     let _ = tcp.set_read_timeout(Some(timeout));
     let _ = tcp.set_write_timeout(Some(timeout));
 
@@ -244,5 +276,22 @@ mod tests {
         let r = decode_response(raw).unwrap();
         assert_eq!(r.status, 302);
         assert_eq!(r.location.as_deref(), Some("https://x/y"));
+    }
+
+    /// 回归（v3.6.1 域名不可用缺陷）：主机名必须经 DNS 解析得到地址，
+    /// 而不是当作 IP 字面量 parse。旧实现 `"localhost:1".parse::<SocketAddr>()`
+    /// 在一般平台返回错误，本测试在旧实现上会失败。
+    ///
+    /// 只做解析、不发起连接，因此不依赖外网（localhost 由本机解析器提供）。
+    #[test]
+    fn resolves_hostname_via_dns_not_ip_literal_parse() {
+        // 旧实现等价写法，必须对域名失败——以此锚定缺陷确实存在。
+        assert!("localhost:1".parse::<std::net::SocketAddr>().is_err());
+        // 新实现：localhost 至少能解析出一个环回地址。
+        let addrs = resolve_addrs("localhost", 1).expect("localhost 应可解析");
+        assert!(!addrs.is_empty());
+        assert!(addrs.iter().any(|a| a.ip().is_loopback()));
+        // IP 字面量也仍然可解析。
+        assert!(!resolve_addrs("127.0.0.1", 443).unwrap().is_empty());
     }
 }

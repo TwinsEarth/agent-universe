@@ -208,7 +208,7 @@ daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-u
 ```bash
 gsn update                 # 按本机通道自动更新 daemon + npm
 gsn update --check         # 只检查，不安装
-gsn update 3.6.3           # 手动更新到指定版本（可跨大版本/降级）
+gsn update 3.6.4           # 手动更新到指定版本（可跨大版本/降级）
 gsn update --track patch   # 本次按 patch 通道
 gsn version --check        # 只查询通道内目标与新大版本提示
 ```
@@ -220,9 +220,11 @@ gsn version --check        # 只查询通道内目标与新大版本提示
 经 http 正向代理 `CONNECT` 隧道做端到端 TLS；命中 `NO_PROXY`/`no_proxy`（支持 `*.domain`）则直连；
 代理配置非法会显式报错而非静默绕过。
 
-Linux 资产（v3.6.3 起）：gnu 二进制构建基线降到 **ubuntu-22.04 / glibc 2.35**（老发行版可直接跑），
-并额外提供 **`x86_64-unknown-linux-musl` 静态二进制**（无 glibc 依赖，适用 Alpine 等）；更新器按
-自身编译时 libc 自动选择。存量无法自愈的节点可用 `sh scripts/recover-update.sh` 一键带外恢复。
+Linux 资产（v3.6.3 起）：额外提供 **`x86_64-unknown-linux-musl` 静态二进制**（无 glibc 依赖，适用 Alpine 等）；
+gnu 二进制以 **glibc 2.35** 为目标（老发行版 Ubuntu 22.04 / Debian 12 等可直接跑），v3.6.4 起因
+ubuntu-22.04 hosted runner 退役，改为在 ubuntu-latest 上用 **cargo-zigbuild（`...-gnu.2.35`）**定位
+glibc 版本，不再依赖老镜像。更新器按自身编译时 libc 自动选择。存量无法自愈的节点可用
+`sh scripts/recover-update.sh` 一键带外恢复。
 
 安全：daemon 二进制安装前强制校验随 Release 发布的 `.sha256`（不符即拒绝），同目录原子替换；
 安装后**下次启动生效**，不强制重启。平台支持矩阵与诚实边界（如 macOS 仅 aarch64 有资产、
@@ -335,7 +337,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.3，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.4，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -425,6 +427,7 @@ npm install @twinsearth/agent-universe
 | v3.6.1 | **Auto Update** | **daemon 自动更新：npm registry 权威源（不盲信 dist-tags）+ 默认 minor/白名单 patch 双通道 + 手动可跨大版本；daemon 二进制 sha256 fail-closed 原子替换 + npm 包同步；release.yml 三平台增原始二进制+.sha256 资产** |
 | v3.6.2 | **Updater DNS Fix** | **修复 v3.6.1 更新器把 `host:port` 当 IP 字面量 parse、对所有真实域名连不上的 critical：改走 `to_socket_addrs` DNS 解析 + 多地址连接，补在旧实现会失败的 DNS 回归测试；存量 v3.6.1 需重装 npm 包/手动覆盖二进制到本版后自动更新才恢复** |
 | v3.6.3 | **Updater Proxy + Linux Compat** | **更新器支持 `HTTPS_PROXY`/`NO_PROXY`（http 正向代理 CONNECT 隧道，TLS 端到端，代理认证，非法配置显式报错），直连与强制代理双路径真实联网验证；CI Linux gnu 基线降到 ubuntu-22.04/glibc 2.35 并新增 x86_64 musl 静态二进制，更新器按自身 libc 选资产；新增 `scripts/recover-update.sh` 存量带外一键恢复** |
+| v3.6.4 | **gnu via zigbuild** | **修复 v3.6.3 gnu 资产缺失（根因：ubuntu-22.04 hosted runner 退役、无法分配，非代码问题）：gnu 构建改在 ubuntu-latest 上用 cargo-zigbuild 以 `x86_64-unknown-linux-gnu.2.35` 定位 glibc 2.35，不再依赖老镜像；musl/mac/Win 保持已验证路径不变；纯 CI 补丁，无运行时代码改动** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

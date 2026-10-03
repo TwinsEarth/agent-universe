@@ -60,9 +60,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # gnu 目标刻意钉在 ubuntu-22.04（glibc 2.35）而非 ubuntu-latest(24.04/glibc 2.39)：
-          # 让官方 gnu 二进制在更老的主流发行版（Ubuntu 22.04 / Debian 12 等）上可直接运行。
-          - os: ubuntu-22.04
+          # gnu 在 ubuntu-latest 上用 cargo-zigbuild 以 glibc 2.35 为目标交叉编译，而不是再钉
+          # ubuntu-22.04 runner：该镜像 2026-10 已在退役、hosted runner 多次无法分配（v3.6.3 的
+          # gnu job 等满 15 分钟后被判定 "job was not acquired by hosted runner"）。zigbuild 产出
+          # 仍是动态链接、glibc 依赖 <= 2.35 的 gnu 二进制，老发行版可直接运行，且输出仍落在标准
+          # target/x86_64-unknown-linux-gnu/ 目录。
+          - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
           # 额外提供 musl 静态二进制：无 glibc 依赖，覆盖 Alpine/无 glibc 环境；
@@ -92,6 +95,24 @@ jobs:
           sudo apt-get install -y musl-tools
           musl-gcc --version | head -1
 
+      - name: Install cargo-zigbuild + zig (gnu -> glibc 2.35)
+        if: contains(matrix.target, '-linux-gnu')
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          pip3 install --user cargo-zigbuild ziglang
+          mkdir -p "$HOME/.local/bin"
+          # ziglang 通常装好即提供 ~/.local/bin/zig；个别版本无 console_script，则从包目录取二进制做软链。
+          if ! command -v zig >/dev/null 2>&1; then
+            ZIGPY="$(python3 -c 'import ziglang,os;print(os.path.join(os.path.dirname(ziglang.__file__),"zig"))')"
+            test -x "$ZIGPY"
+            ln -sf "$ZIGPY" "$HOME/.local/bin/zig"
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          command -v cargo-zigbuild && cargo-zigbuild --version
+          command -v zig && zig version
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -101,9 +122,18 @@ jobs:
             gsn-core/target
           key: ${{ runner.os }}-release-cargo-${{ matrix.target }}-${{ hashFiles('gsn-core/Cargo.toml') }}
 
-      - name: Build
+      - name: Build (gnu, zigbuild targeting glibc 2.35)
+        if: contains(matrix.target, '-linux-gnu')
+        run: |
+          set -euo pipefail
+          cd gsn-core
+          # cargo-zigbuild 以 glibc 2.35 为目标；产物仍输出到 target/x86_64-unknown-linux-gnu/。
+          cargo zigbuild --release --target "x86_64-unknown-linux-gnu.2.35" --bin gsn-daemon
+
+      - name: Build (musl / macOS / Windows)
+        if: ${{ !contains(matrix.target, '-linux-gnu') }}
         env:
-          # ring 在 musl 目标下通过 musl-gcc 链接其 C/汇编；gnu 目标忽略此变量。
+          # ring 在 musl 目标下通过 musl-gcc 链接其 C/汇编；mac/win 忽略此变量。
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cd gsn-core && cargo build --release --target ${{ matrix.target }} --bin gsn-daemon
 

@@ -1,6 +1,6 @@
 # Agent Universe Desktop Client (Tauri 2)
 
-v3.6.3 轻桌面客户端，内嵌 `@twinsearth/agent-universe@3.6.3` SDK，演示智能体市场端到端结算链路。
+v3.6.4 轻桌面客户端，内嵌 `@twinsearth/agent-universe@3.6.4` SDK，演示智能体市场端到端结算链路。
 
 ## 架构
 

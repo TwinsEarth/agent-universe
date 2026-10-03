@@ -7,7 +7,7 @@
 #
 # 两种方式（默认二进制；可用 --npm 走 npm 全局安装）：
 #   sh scripts/recover-update.sh                 # 二进制方式，恢复到脚本内置目标版本
-#   sh scripts/recover-update.sh --version 3.6.3
+#   sh scripts/recover-update.sh --version 3.6.4
 #   sh scripts/recover-update.sh --npm [--version X.Y.Z]
 #
 # 环境：尊重 HTTPS_PROXY/https_proxy（curl 自带支持）；需要 curl 与 sha256sum
@@ -22,7 +22,7 @@ REPO="TwinsEarth/agent-universe"
 BASE="https://github.com/${REPO}/releases/download"
 PKG="@twinsearth/agent-universe"
 # 内置恢复目标：第一个“更新器可联网自愈”的稳定线版本。
-DEFAULT_TARGET="3.6.3"
+DEFAULT_TARGET="3.6.4"
 
 TARGET=""
 USE_NPM=0

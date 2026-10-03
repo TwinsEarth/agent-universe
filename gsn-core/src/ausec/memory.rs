@@ -76,6 +76,8 @@ pub enum MemoryError {
         physical: u64,
         ratio_permille: u64,
     },
+    #[error("空闲回收观测里沙盒 id 重复：{0}")]
+    DuplicateIdleObservation(String),
 }
 
 /// 超卖比（nominal / physical 上限），千分点；1000=1×，50000=50×。
@@ -371,6 +373,168 @@ pub struct PoolStatus {
     pub distinct_shared_contents: u64,
 }
 
+// ───────────────────────── v3.7.5：等待期保内存 + 空闲优先回收 ─────────────────────────
+
+/// 沙盒活动状态：等待模型生成期间为 [`ActivityState::Waiting`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ActivityState {
+    /// 正在执行动作（CPU 活跃路径上）。
+    Running,
+    /// 动作已完成、正在等待模型生成下一步；文件/进程状态必须保住，但 CPU 空闲。
+    Waiting,
+}
+
+/// 时延等级（回收排序的次级键；CPU 两级优先级在 v3.7.7 正式建模）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum LatencyClass {
+    /// 时延敏感：同等条件下最后回收它的空闲页。
+    Sensitive,
+    /// 时延容忍：同等条件下优先回收它的空闲页。
+    Tolerant,
+}
+
+/// 一个沙盒在某时刻的空闲内存观测（纯输入，由调用方给出，本模块不读 OS 计数）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SandboxIdleObservation {
+    pub sandbox_id: String,
+    pub state: ActivityState,
+    /// 距上次活动的毫秒数（注入时钟口径，越大越空闲）。
+    pub idle_ms: u64,
+    pub latency: LatencyClass,
+    /// **等待期必须保住**的状态内存（匿名/进程/文件状态）；回收规划器永不触碰。
+    pub reserved_bytes: u64,
+    /// 当前可被安全丢弃的空闲/干净页字节（可经缺页重新取回），是唯一可回收来源。
+    pub reclaimable_idle_bytes: u64,
+}
+
+/// 一条回收步骤：从某个沙盒回收多少空闲页，以及选中理由（确定性、可审计）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReclaimStep {
+    pub sandbox_id: String,
+    pub bytes: u64,
+    /// 例如 `waiting/tolerant/idle=12000ms`，说明排序依据。
+    pub reason: String,
+}
+
+/// 一次空闲回收的确定性计划（纯建议，不释放沙盒、不改配额账）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReclaimPlan {
+    pub target_bytes: u64,
+    /// 计划回收总量 = min(target, 全部可回收之和)。
+    pub reclaimed_bytes: u64,
+    /// 仍缺口（target − reclaimed）；>0 表示空闲页不够，调用方须另做准入/balloon 决策。
+    pub shortfall_bytes: u64,
+    /// 是否足额。
+    pub sufficient: bool,
+    /// 按回收先后排序的步骤。
+    pub steps: Vec<ReclaimStep>,
+}
+
+/// 空闲优先回收规划器（无状态纯函数）。
+pub struct IdleReclaimer;
+
+impl IdleReclaimer {
+    /// 依据「等待期保内存 + 空闲优先回收」产出确定性计划。
+    ///
+    /// 规则：
+    /// 1. **保内存**：只从各沙盒申报的 `reclaimable_idle_bytes` 取，永不触碰
+    ///    `reserved_bytes`，也绝不释放任何沙盒（Waiting 沙盒的状态槽位始终保留）。
+    ///    即使 target 超过全部可回收量，缺口记为 `shortfall_bytes`，绝不向保留内存伸手。
+    /// 2. **空闲优先排序**（键从先到后）：Waiting 早于 Running；同为 Tolerant 早于
+    ///    Sensitive；`idle_ms` 大者优先；仍并列则按 sandbox_id 字典序，保证确定性。
+    /// 3. 贪心取 `min(剩余缺口, 该沙盒可回收)`，达到 target 即停（不多收）。
+    pub fn plan(
+        observations: &[SandboxIdleObservation],
+        target_bytes: u64,
+    ) -> Result<ReclaimPlan, MemoryError> {
+        let mut seen = std::collections::HashSet::new();
+        for o in observations {
+            if o.sandbox_id.is_empty() {
+                return Err(MemoryError::EmptySandboxId);
+            }
+            if !seen.insert(o.sandbox_id.clone()) {
+                return Err(MemoryError::DuplicateIdleObservation(o.sandbox_id.clone()));
+            }
+        }
+
+        // target=0 是合法空操作；无任何回收动作。
+        if target_bytes == 0 {
+            return Ok(ReclaimPlan {
+                target_bytes: 0,
+                reclaimed_bytes: 0,
+                shortfall_bytes: 0,
+                sufficient: true,
+                steps: Vec::new(),
+            });
+        }
+
+        // 仅保留确实有空闲页可回收的候选，并排序。
+        let mut order: Vec<&SandboxIdleObservation> = observations
+            .iter()
+            .filter(|o| o.reclaimable_idle_bytes > 0)
+            .collect();
+        order.sort_by(|a, b| {
+            let state_rank = |s: ActivityState| match s {
+                ActivityState::Waiting => 0u8,
+                ActivityState::Running => 1,
+            };
+            let lat_rank = |l: LatencyClass| match l {
+                LatencyClass::Tolerant => 0u8,
+                LatencyClass::Sensitive => 1,
+            };
+            state_rank(a.state)
+                .cmp(&state_rank(b.state))
+                .then(lat_rank(a.latency).cmp(&lat_rank(b.latency)))
+                .then(b.idle_ms.cmp(&a.idle_ms)) // 空闲更久者排前（降序）
+                .then(a.sandbox_id.cmp(&b.sandbox_id))
+        });
+
+        let mut remaining = target_bytes;
+        let mut steps: Vec<ReclaimStep> = Vec::new();
+        for o in order {
+            if remaining == 0 {
+                break;
+            }
+            let take = o.reclaimable_idle_bytes.min(remaining);
+            if take == 0 {
+                continue;
+            }
+            let state = if o.state == ActivityState::Waiting {
+                "waiting"
+            } else {
+                "running"
+            };
+            let lat = if o.latency == LatencyClass::Tolerant {
+                "tolerant"
+            } else {
+                "sensitive"
+            };
+            steps.push(ReclaimStep {
+                sandbox_id: o.sandbox_id.clone(),
+                bytes: take,
+                reason: format!("{state}/{lat}/idle={}ms", o.idle_ms),
+            });
+            remaining -= take;
+        }
+
+        let reclaimed = target_bytes - remaining;
+        let available: u128 = observations
+            .iter()
+            .map(|o| o.reclaimable_idle_bytes as u128)
+            .sum();
+        let total_available = saturating_u64(available);
+        let reclaimed = reclaimed.min(total_available);
+        let shortfall = target_bytes.saturating_sub(reclaimed);
+        Ok(ReclaimPlan {
+            target_bytes,
+            reclaimed_bytes: reclaimed,
+            shortfall_bytes: shortfall,
+            sufficient: shortfall == 0,
+            steps,
+        })
+    }
+}
+
 fn saturating_u64(v: u128) -> u64 {
     if v > u64::MAX as u128 {
         u64::MAX
@@ -394,6 +558,24 @@ mod tests {
                     bytes: *b,
                 })
                 .collect(),
+        }
+    }
+
+    fn obs(
+        id: &str,
+        state: ActivityState,
+        idle_ms: u64,
+        lat: LatencyClass,
+        reserved: u64,
+        reclaimable: u64,
+    ) -> SandboxIdleObservation {
+        SandboxIdleObservation {
+            sandbox_id: id.to_string(),
+            state,
+            idle_ms,
+            latency: lat,
+            reserved_bytes: reserved,
+            reclaimable_idle_bytes: reclaimable,
         }
     }
 
@@ -551,5 +733,196 @@ mod tests {
         assert_eq!(s.committed_bytes, 0);
         assert_eq!(s.observed_overcommit_permille, 1000);
         assert_eq!(s.nominal_ceiling, 50000);
+    }
+
+    // ── v3.7.5：等待期保内存 + 空闲优先回收 ──
+
+    #[test]
+    fn reclaim_waiting_idle_before_running_busy() {
+        // 一个 Running/Sensitive/刚活动 的沙盒有空闲页；
+        // 一个 Waiting/Tolerant/空闲很久 的沙盒也有。空闲优先：先取后者。
+        let os = vec![
+            obs(
+                "run",
+                ActivityState::Running,
+                10,
+                LatencyClass::Sensitive,
+                1000,
+                100,
+            ),
+            obs(
+                "wait",
+                ActivityState::Waiting,
+                12_000,
+                LatencyClass::Tolerant,
+                1000,
+                100,
+            ),
+        ];
+        let plan = IdleReclaimer::plan(&os, 100).unwrap();
+        assert!(plan.sufficient);
+        assert_eq!(plan.reclaimed_bytes, 100);
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].sandbox_id, "wait");
+        assert!(plan.steps[0].reason.contains("waiting"));
+    }
+
+    #[test]
+    fn reclaim_does_not_touch_reserved_and_reports_shortfall() {
+        // 等待沙盒保留 5000 状态内存，但空闲页只有 30；target=100。
+        // 必须：只回收 30，绝不向 5000 保留内存伸手，缺口=70，不足额。
+        let os = vec![obs(
+            "w",
+            ActivityState::Waiting,
+            9000,
+            LatencyClass::Tolerant,
+            5000,
+            30,
+        )];
+        let plan = IdleReclaimer::plan(&os, 100).unwrap();
+        assert!(!plan.sufficient);
+        assert_eq!(plan.reclaimed_bytes, 30);
+        assert_eq!(plan.shortfall_bytes, 70);
+        assert_eq!(plan.steps[0].bytes, 30);
+        // 回收永不超过申报可回收量。
+        assert!(plan.reclaimed_bytes <= 30);
+    }
+
+    #[test]
+    fn reclaim_never_over_reclaims_and_stops_at_target() {
+        // 两个各可回收 100；target=150 → 取 100 + 50，不多收。
+        let os = vec![
+            obs(
+                "a",
+                ActivityState::Waiting,
+                100,
+                LatencyClass::Tolerant,
+                10,
+                100,
+            ),
+            obs(
+                "b",
+                ActivityState::Waiting,
+                50,
+                LatencyClass::Tolerant,
+                10,
+                100,
+            ),
+        ];
+        let plan = IdleReclaimer::plan(&os, 150).unwrap();
+        assert_eq!(plan.reclaimed_bytes, 150);
+        assert_eq!(plan.shortfall_bytes, 0);
+        assert_eq!(plan.steps[0].sandbox_id, "a"); // idle 100 > 50
+        assert_eq!(plan.steps[0].bytes, 100);
+        assert_eq!(plan.steps[1].sandbox_id, "b");
+        assert_eq!(plan.steps[1].bytes, 50);
+    }
+
+    #[test]
+    fn reclaim_deterministic_tie_break_by_id() {
+        // 同状态/同类/同 idle → 字典序；同样输入两次计划逐字节一致。
+        let os = vec![
+            obs(
+                "zeta",
+                ActivityState::Waiting,
+                100,
+                LatencyClass::Tolerant,
+                0,
+                10,
+            ),
+            obs(
+                "alpha",
+                ActivityState::Waiting,
+                100,
+                LatencyClass::Tolerant,
+                0,
+                10,
+            ),
+        ];
+        let p1 = IdleReclaimer::plan(&os, 20).unwrap();
+        let p2 = IdleReclaimer::plan(&os, 20).unwrap();
+        assert_eq!(p1, p2);
+        assert_eq!(p1.steps[0].sandbox_id, "alpha");
+        assert_eq!(p1.steps[1].sandbox_id, "zeta");
+    }
+
+    #[test]
+    fn reclaim_skips_zero_idle_and_target_zero_is_noop() {
+        let os = vec![
+            obs(
+                "busy",
+                ActivityState::Running,
+                0,
+                LatencyClass::Sensitive,
+                500,
+                0,
+            ),
+            obs(
+                "w",
+                ActivityState::Waiting,
+                5,
+                LatencyClass::Tolerant,
+                500,
+                0,
+            ),
+        ];
+        // 无可回收：target=50 → 0 回收、缺口 50。
+        let plan = IdleReclaimer::plan(&os, 50).unwrap();
+        assert!(!plan.sufficient);
+        assert_eq!(plan.reclaimed_bytes, 0);
+        assert!(plan.steps.is_empty());
+        // target=0 合法空操作。
+        let nop = IdleReclaimer::plan(&os, 0).unwrap();
+        assert!(nop.sufficient && nop.steps.is_empty());
+    }
+
+    #[test]
+    fn reclaim_tolerant_before_sensitive_same_state() {
+        let os = vec![
+            obs(
+                "sens",
+                ActivityState::Waiting,
+                1000,
+                LatencyClass::Sensitive,
+                0,
+                40,
+            ),
+            obs(
+                "tol",
+                ActivityState::Waiting,
+                1000,
+                LatencyClass::Tolerant,
+                0,
+                40,
+            ),
+        ];
+        let plan = IdleReclaimer::plan(&os, 40).unwrap();
+        assert_eq!(plan.steps[0].sandbox_id, "tol");
+    }
+
+    #[test]
+    fn reclaim_validates_observations() {
+        assert!(matches!(
+            IdleReclaimer::plan(
+                &[obs(
+                    "",
+                    ActivityState::Waiting,
+                    1,
+                    LatencyClass::Tolerant,
+                    0,
+                    1
+                )],
+                10
+            ),
+            Err(MemoryError::EmptySandboxId)
+        ));
+        let dup = vec![
+            obs("x", ActivityState::Waiting, 1, LatencyClass::Tolerant, 0, 1),
+            obs("x", ActivityState::Waiting, 2, LatencyClass::Tolerant, 0, 1),
+        ];
+        assert!(matches!(
+            IdleReclaimer::plan(&dup, 10),
+            Err(MemoryError::DuplicateIdleObservation(_))
+        ));
     }
 }

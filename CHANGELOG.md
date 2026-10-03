@@ -1,3 +1,16 @@
+## [v3.7.5] - 2026-10-04
+
+### 修订版：AUSec 内存共享（2/3）——等待期保内存 + 空闲优先回收规划（#102/#108，patch）
+
+- 新增等待期保内存/空闲优先回收**纯决策**：`ActivityState{Running,Waiting}`、`LatencyClass{Sensitive,Tolerant}`、`SandboxIdleObservation{reserved_bytes,reclaimable_idle_bytes,...}`、`ReclaimPlan`/`ReclaimStep`、无状态 `IdleReclaimer::plan`。
+- 排序键（全确定性）：Waiting→Running、Tolerant→Sensitive、idle_ms 久者优先、并列按 sandbox_id 字典序；贪心取 min(缺口,申报空闲页)，达 target 即停；target=0 合法空操作。
+- **保内存不变量**：只从 `reclaimable_idle_bytes` 取，永不触碰 `reserved_bytes`、永不释放 Waiting 沙盒槽位；空闲页不足只报 `shortfall_bytes`。
+- `MemoryError` 新增 `DuplicateIdleObservation(String)`，空 id 复用 `EmptySandboxId`；无裸 panic。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读纯建议 PMB 方法 `idle_reclaim_plan`（target_bytes 必需、observations 缺省空数组；空观测返回不足额+全额缺口，缺 target fail-closed）。
+- 新增 8 个「旧实现会失败」回归（memory 7 + PM 桥 1）；ausec 63/0、全量 33 组 0 failed（lib 415）、fmt/clippy -D warnings/check-no-panics/unsafe-containment/metadata --locked 全绿。
+- 版本 npm 3.7.5 ↔ gsn-core 0.3.75。
+- 诚实边界：纯回收顺序/额度建议，非真实页回收；不调 DAMON/balloon/virtio-mem/madvise/cgroup（v3.7.6 声明、无原语平台具名拒绝）；「保内存」是决策不变量而非本版真正 pin 物理页；90%/21.2%/50× 等为外部 DSEC 报道非本仓复测。
+
 ## [v3.7.4] - 2026-10-04
 
 ### 修订版：AUSec 内存共享（1/3）——配额池共享额度记账 + 两级超卖准入（#102/#107，patch）

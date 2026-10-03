@@ -49,8 +49,9 @@ pub use image::{
     build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,
 };
 pub use memory::{
-    Admission, MemoryError, MemoryPool, MemorySandboxRequest, OvercommitRatio, PoolStatus,
-    SharedRef,
+    ActivityState, Admission, IdleReclaimer, LatencyClass, MemoryError, MemoryPool,
+    MemorySandboxRequest, OvercommitRatio, PoolStatus, ReclaimPlan, ReclaimStep,
+    SandboxIdleObservation, SharedRef,
 };
 pub use seed::{
     chunk_attestation_message, sign_chunk, sign_chunk_with_keypair, verify_chunk_attestation,
@@ -79,6 +80,8 @@ pub const METHOD_CHUNK_ATTESTATION_VERIFY: &str = "chunk_attestation_verify";
 pub const METHOD_MEMORY_STATUS: &str = "memory_status";
 /// PMB 方法：v3.7.4 给定现有沙盒集合，对候选申请做两级准入纯决策（不持久化）。
 pub const METHOD_MEMORY_ADMIT: &str = "memory_admit";
+/// PMB 方法：v3.7.5 等待期保内存 + 空闲优先回收的确定性回收计划（纯建议、无副作用）。
+pub const METHOD_IDLE_RECLAIM: &str = "idle_reclaim_plan";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -401,6 +404,25 @@ fn memory_admit(input: serde_json::Value) -> Result<serde_json::Value, String> {
     }))
 }
 
+/// `idle_reclaim_plan` 入参：`{target_bytes, observations:[SandboxIdleObservation]}`。
+/// 返回确定性回收计划（只从各沙盒申报的 reclaimable_idle_bytes 取，永不触碰
+/// reserved_bytes、永不释放沙盒）；空闲页不足时 `sufficient=false` 并给出缺口。
+/// 纯建议，不修改任何配额账或真实内存。
+fn idle_reclaim_plan(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let target = input
+        .get("target_bytes")
+        .and_then(|v| v.as_u64())
+        .ok_or("缺少 target_bytes（u64 字节）")?;
+    let obs_val = input
+        .get("observations")
+        .cloned()
+        .unwrap_or(serde_json::json!([]));
+    let observations: Vec<SandboxIdleObservation> = serde_json::from_value(obs_val)
+        .map_err(|e| format!("observations 不是合法 SandboxIdleObservation 数组: {e}"))?;
+    let plan = IdleReclaimer::plan(&observations, target).map_err(|e| e.to_string())?;
+    serde_json::to_value(&plan).map_err(|e| format!("ReclaimPlan 序列化失败: {e}"))
+}
+
 /// 字节桥：`memory_status`。
 fn handle_memory_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
     let input: serde_json::Value = serde_json::from_slice(payload)
@@ -419,11 +441,22 @@ fn handle_memory_admit(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
         .map_err(|e| PluginError::Runtime(format!("AUSec memory_admit 序列化失败: {e}")))
 }
 
+/// 字节桥：`idle_reclaim_plan`（v3.7.5 纯建议）。
+fn handle_idle_reclaim(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("idle_reclaim_plan 负载非合法 JSON: {e}")))?;
+    let out = idle_reclaim_plan(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec idle_reclaim_plan 序列化失败: {e}")))
+}
+
 /// 向 T0 进程内运行时注册 AUSec 系统插件的处理器（由系统插件装配流程调用）。
 pub fn register(rt: &mut NativeRuntime) {
     // memory_status / memory_admit：v3.7.4 内存共享额度记账 + 两级超卖准入（只读决策）。
     rt.register_handler(AUSEC_PLUGIN, METHOD_MEMORY_STATUS, handle_memory_status);
     rt.register_handler(AUSEC_PLUGIN, METHOD_MEMORY_ADMIT, handle_memory_admit);
+    // idle_reclaim_plan：v3.7.5 等待期保内存 + 空闲优先回收（只读纯建议）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_IDLE_RECLAIM, handle_idle_reclaim);
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -682,5 +715,49 @@ mod tests {
         assert_eq!(ok["committed_bytes"], 900);
         assert_eq!(ok["nominal_bytes"], 1800);
         assert_eq!(ok["shared_dedup_saving"], 900);
+    }
+
+    #[test]
+    fn pm_idle_reclaim_plan_waits_preserves_and_shortfall() {
+        // 空闲优先：Waiting/Tolerant/空闲久的先收；保留内存不动；缺口如实返回。
+        let out = idle_reclaim_plan(serde_json::json!({
+            "target_bytes": 120,
+            "observations": [
+                {"sandbox_id": "run", "state": "Running", "idle_ms": 5,
+                 "latency": "Sensitive", "reserved_bytes": 900, "reclaimable_idle_bytes": 100},
+                {"sandbox_id": "wait", "state": "Waiting", "idle_ms": 9000,
+                 "latency": "Tolerant", "reserved_bytes": 5000, "reclaimable_idle_bytes": 30},
+            ],
+        }))
+        .unwrap();
+        // 先收 wait 的 30，仍缺 90；不向 run 之外伸手——run 还有 100，所以应继续收 run 90 足额。
+        assert_eq!(out["reclaimed_bytes"], 120);
+        assert_eq!(out["sufficient"], true);
+        assert_eq!(out["shortfall_bytes"], 0);
+        assert_eq!(out["steps"][0]["sandbox_id"], "wait");
+        assert_eq!(out["steps"][0]["bytes"], 30);
+        assert_eq!(out["steps"][1]["sandbox_id"], "run");
+        assert_eq!(out["steps"][1]["bytes"], 90);
+
+        // 保留内存不被回收：只有 wait（保留 5000、空闲 30），target=100 → 回收 30、缺口 70。
+        let short = idle_reclaim_plan(serde_json::json!({
+            "target_bytes": 100,
+            "observations": [
+                {"sandbox_id": "wait", "state": "Waiting", "idle_ms": 9000,
+                 "latency": "Tolerant", "reserved_bytes": 5000, "reclaimable_idle_bytes": 30},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(short["reclaimed_bytes"], 30);
+        assert_eq!(short["shortfall_bytes"], 70);
+        assert_eq!(short["sufficient"], false);
+
+        // 无观测（缺省空数组）：不报错，返回不足额 + 全额缺口（无沙盒可回收）。
+        let none = idle_reclaim_plan(serde_json::json!({"target_bytes": 10})).unwrap();
+        assert_eq!(none["sufficient"], false);
+        assert_eq!(none["reclaimed_bytes"], 0);
+        assert_eq!(none["shortfall_bytes"], 10);
+        // 缺 target_bytes 才 fail-closed。
+        assert!(idle_reclaim_plan(serde_json::json!({})).is_err());
     }
 }

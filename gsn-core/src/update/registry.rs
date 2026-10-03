@@ -33,12 +33,22 @@ pub fn fetch_packument(timeout: Duration, max_bytes: usize) -> Result<Value, Upd
 
 /// 当前平台 daemon **原始可执行文件**的资产名。
 ///
-/// 与 `.github/workflows/release.yml` 中 v3.6.1 起额外上传的逐平台原始二进制一一对应
+/// 与 `.github/workflows/release.yml` 中逐平台上传的原始二进制一一对应
 /// （保留原 tar.gz/zip 供人工下载；自动更新走原始二进制以免引入解包依赖）。
-/// 只覆盖发布矩阵真实存在的三个目标；其余平台明确报不支持，绝不猜测资产名。
+/// 只覆盖发布矩阵真实存在的目标；其余平台明确报不支持，绝不猜测资产名。
+///
+/// Linux x86_64 同时发布 gnu（钉 ubuntu-22.04/glibc 2.35）与 musl（静态、无 glibc 依赖）。
+/// 选用哪个由**更新器自身编译时的 libc** 决定（`target_env`），而非运行时探测：
+/// gnu 构建下 gnu 资产，musl 构建（如 Alpine 包）下 musl 资产，二者 ABI 不能混用。
 pub fn platform_asset_name() -> Result<&'static str, UpdateError> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => Ok("gsn-daemon-x86_64-unknown-linux-gnu"),
+        ("linux", "x86_64") => {
+            if cfg!(target_env = "musl") {
+                Ok("gsn-daemon-x86_64-unknown-linux-musl")
+            } else {
+                Ok("gsn-daemon-x86_64-unknown-linux-gnu")
+            }
+        }
         ("macos", "aarch64") => Ok("gsn-daemon-aarch64-apple-darwin"),
         ("windows", "x86_64") => Ok("gsn-daemon-x86_64-pc-windows-msvc.exe"),
         (os, arch) => Err(UpdateError::UnsupportedTarget(format!("{os}/{arch}"))),

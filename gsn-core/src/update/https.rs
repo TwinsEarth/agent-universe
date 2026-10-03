@@ -78,6 +78,224 @@ fn connect_addrs(
     )))
 }
 
+/// 解析后的正向代理。
+///
+/// 仅支持 **http 正向代理承载 `CONNECT` 隧道**（企业网络最常见形态：
+/// `http://[user:pass@]proxy.host:3128`）。建立到目标的隧道后，TLS 仍在隧道内
+/// 端到端进行，代理只看到 SNI/目标主机名，看不到明文内容。
+/// 不支持把 https:// 代理（到代理本身先 TLS）作为本版目标——那种部署极少见，
+/// 遇到时显式报错而非静默直连（避免在用户以为走代理时绕过代理）。
+#[derive(Debug, PartialEq, Eq)]
+struct Proxy {
+    host: String,
+    port: u16,
+    /// 已做 base64 的 `user:pass`，用于 `Proxy-Authorization: Basic`。
+    basic_auth: Option<String>,
+}
+
+/// 标准 Base64 编码（RFC 4648）。代理凭据极短，手写以免为此引入新依赖。
+fn base64_encode(input: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
+        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[((triple >> 18) & 0x3f) as usize] as char);
+        out.push(T[((triple >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(T[((triple >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(T[(triple & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// 解析 `http://[user:pass@]host:port` 形态的代理地址。端口必填；非法形态显式报错。
+fn parse_proxy_url(raw: &str) -> Result<Proxy, UpdateError> {
+    let rest = raw
+        .strip_prefix("http://")
+        .ok_or_else(|| UpdateError::Http(format!("仅支持 http 正向代理(CONNECT)，拒绝: {raw}")))?;
+    // 去掉 path/query，只留 [userinfo@]host:port。
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let (userinfo, hostport) = match authority.rsplit_once('@') {
+        Some((u, hp)) => (Some(u), hp),
+        None => (None, authority),
+    };
+    let (host, port) = hostport
+        .rsplit_once(':')
+        .ok_or_else(|| UpdateError::Http(format!("代理地址缺少端口: {raw}")))?;
+    let port: u16 = port
+        .parse()
+        .map_err(|_| UpdateError::Http(format!("代理端口非法: {raw}")))?;
+    if host.is_empty() {
+        return Err(UpdateError::Http(format!("代理主机名为空: {raw}")));
+    }
+    let basic_auth = match userinfo {
+        Some(u) if !u.is_empty() => {
+            if !u.is_ascii() {
+                return Err(UpdateError::Http("代理凭据仅支持 ASCII".to_string()));
+            }
+            Some(base64_encode(u.as_bytes()))
+        }
+        _ => None,
+    };
+    Ok(Proxy {
+        host: host.to_string(),
+        port,
+        basic_auth,
+    })
+}
+
+/// 判断目标主机是否命中 `NO_PROXY`（逗号分隔；支持精确、域后缀、前导点、`*`）。
+fn no_proxy_matches(host: &str, no_proxy: &str) -> bool {
+    let h = host.trim().to_ascii_lowercase();
+    for rule in no_proxy.split(',') {
+        let mut r = rule.trim().to_ascii_lowercase();
+        if r.is_empty() {
+            continue;
+        }
+        if r == "*" {
+            return true;
+        }
+        // 归一化前导 "*." 与 "."：`*.corp.example` / `.corp.example` 都按域后缀 `corp.example`。
+        if let Some(rest) = r.strip_prefix("*.") {
+            r = rest.to_string();
+        }
+        r = r.trim_start_matches('.').to_string();
+        if r.is_empty() {
+            continue;
+        }
+        if h == r || h.ends_with(&format!(".{r}")) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 依据标准环境变量决定本次连接是否走代理。
+///
+/// 读取 `HTTPS_PROXY`/`https_proxy`（退而求其次 `HTTP_PROXY`/`http_proxy`），
+/// 命中 `NO_PROXY`/`no_proxy` 则直连。代理变量存在但形态非法时**报错**而非直连，
+/// 避免在用户明确要求走代理时被悄悄绕过。
+fn proxy_from_env(target_host: &str) -> Result<Option<Proxy>, UpdateError> {
+    let no_proxy = std::env::var("NO_PROXY")
+        .or_else(|_| std::env::var("no_proxy"))
+        .unwrap_or_default();
+    if no_proxy_matches(target_host, &no_proxy) {
+        return Ok(None);
+    }
+    let raw = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .find_map(|k| std::env::var(k).ok())
+        .map(|v| v.trim().to_string());
+    match raw {
+        None => Ok(None),
+        Some(v) if v.is_empty() => Ok(None),
+        Some(v) => parse_proxy_url(&v).map(Some),
+    }
+}
+
+/// 读取 CONNECT 隧道响应，仅在 2xx 时放行。
+fn parse_connect_ok(raw: &[u8]) -> Result<(), UpdateError> {
+    let end = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| UpdateError::Http("代理 CONNECT 响应缺少头部结束标记".to_string()))?;
+    let header = std::str::from_utf8(&raw[..end])
+        .map_err(|_| UpdateError::Http("代理 CONNECT 响应非 UTF-8".to_string()))?;
+    let status_line = header
+        .lines()
+        .next()
+        .ok_or_else(|| UpdateError::Http("代理 CONNECT 响应为空".to_string()))?;
+    let code: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| UpdateError::Http(format!("代理 CONNECT 状态行非法: {status_line}")))?;
+    if (200..300).contains(&code) {
+        Ok(())
+    } else if code == 407 {
+        Err(UpdateError::Http(
+            "代理要求认证或凭据被拒(407 Proxy Authentication Required)".to_string(),
+        ))
+    } else {
+        Err(UpdateError::Http(format!(
+            "代理 CONNECT 被拒: {status_line}"
+        )))
+    }
+}
+
+/// 经正向代理建立到 `host:port` 的 CONNECT 隧道，返回隧道上的明文 TCP 流
+/// （调用方随后在其上做端到端 TLS）。
+fn connect_via_proxy(
+    px: &Proxy,
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> Result<TcpStream, UpdateError> {
+    let addrs = resolve_addrs(&px.host, px.port)?;
+    let mut tcp = connect_addrs(&addrs, timeout)?;
+    let _ = tcp.set_read_timeout(Some(timeout));
+    let _ = tcp.set_write_timeout(Some(timeout));
+
+    let mut req = format!(
+        "CONNECT {host}:{port} HTTP/1.1\r\n\
+         Host: {host}:{port}\r\n\
+         Proxy-Connection: keep-alive\r\n"
+    );
+    if let Some(a) = &px.basic_auth {
+        req.push_str(&format!("Proxy-Authorization: Basic {a}\r\n"));
+    }
+    req.push_str("\r\n");
+    tcp.write_all(req.as_bytes())
+        .map_err(|e| UpdateError::Http(format!("写代理 CONNECT 失败: {e}")))?;
+    tcp.flush()
+        .map_err(|e| UpdateError::Http(format!("flush 代理 CONNECT 失败: {e}")))?;
+
+    // 读到头部结束即止（CONNECT 成功后代理开始透明转发，不应吞掉后续 TLS 字节）。
+    let mut buf = [0u8; 1024];
+    let mut raw = Vec::new();
+    loop {
+        let n = tcp
+            .read(&mut buf)
+            .map_err(|e| UpdateError::Http(format!("读代理 CONNECT 响应失败: {e}")))?;
+        if n == 0 {
+            return Err(UpdateError::Http(
+                "代理在 CONNECT 后直接关闭连接".to_string(),
+            ));
+        }
+        raw.extend_from_slice(&buf[..n]);
+        if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        if raw.len() > 8192 {
+            return Err(UpdateError::Http("代理 CONNECT 响应头过大".to_string()));
+        }
+    }
+    parse_connect_ok(&raw)?;
+    // 进入隧道：读超时仍由后续 TLS 读阶段设置。
+    Ok(tcp)
+}
+
+/// 建立到目标的明文连接：按环境变量决定直连或经代理 CONNECT。
+fn dial(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, UpdateError> {
+    match proxy_from_env(host)? {
+        Some(px) => connect_via_proxy(&px, host, port, timeout),
+        None => {
+            let addrs = resolve_addrs(host, port)?;
+            connect_addrs(&addrs, timeout)
+        }
+    }
+}
+
 /// 解析 `https://host[:port]/path?query`，返回 (host, port, authority-path)。
 fn split_url(url: &str) -> Result<(String, u16, String), UpdateError> {
     let rest = url
@@ -109,9 +327,9 @@ fn get_once(
     max_bytes: usize,
 ) -> Result<HttpResponse, UpdateError> {
     let (host, port, path) = split_url(url)?;
-    // 先 DNS 解析（支持域名），再逐个候选地址连接。绝不把 "host:port" 当 IP 字面量 parse。
-    let addrs = resolve_addrs(&host, port)?;
-    let tcp = connect_addrs(&addrs, timeout)?;
+    // 建立明文连接：命中 HTTPS_PROXY 走 CONNECT 隧道，否则 DNS 解析后直连。
+    // TLS 在其上端到端进行；绝不把 "host:port" 当 IP 字面量 parse。
+    let tcp = dial(&host, port, timeout)?;
     let _ = tcp.set_read_timeout(Some(timeout));
     let _ = tcp.set_write_timeout(Some(timeout));
 
@@ -293,5 +511,61 @@ mod tests {
         assert!(addrs.iter().any(|a| a.ip().is_loopback()));
         // IP 字面量也仍然可解析。
         assert!(!resolve_addrs("127.0.0.1", 443).unwrap().is_empty());
+    }
+
+    #[test]
+    fn base64_encodes_rfc4648_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"user:pass"), "dXNlcjpwYXNz");
+    }
+
+    #[test]
+    fn parses_proxy_urls_and_rejects_bad_forms() {
+        let p = parse_proxy_url("http://proxy.corp:3128").unwrap();
+        assert_eq!(
+            p,
+            Proxy {
+                host: "proxy.corp".into(),
+                port: 3128,
+                basic_auth: None
+            }
+        );
+        let with_auth = parse_proxy_url("http://agent:secret@10.0.0.1:8080").unwrap();
+        assert_eq!(with_auth.host, "10.0.0.1");
+        assert_eq!(with_auth.port, 8080);
+        assert_eq!(with_auth.basic_auth.as_deref(), Some("YWdlbnQ6c2VjcmV0"));
+        // 去 path/query。
+        assert_eq!(parse_proxy_url("http://p:1/").unwrap().host, "p");
+        // 拒绝 https 代理、无端口、空主机（非法配置必须报错，不能静默直连）。
+        assert!(parse_proxy_url("https://p:3128").is_err());
+        assert!(parse_proxy_url("http://proxy.corp").is_err());
+        assert!(parse_proxy_url("http://:3128").is_err());
+    }
+
+    #[test]
+    fn evaluates_no_proxy_rules() {
+        let rules = "localhost, .corp.example, 10.0.0.1, *.internal";
+        assert!(no_proxy_matches("localhost", rules));
+        assert!(no_proxy_matches("api.corp.example", rules));
+        assert!(no_proxy_matches("corp.example", rules));
+        assert!(no_proxy_matches("10.0.0.1", rules));
+        assert!(no_proxy_matches("anything.internal", rules));
+        assert!(!no_proxy_matches("registry.npmjs.org", rules));
+        assert!(!no_proxy_matches("notcorp.example", rules));
+        // 大小写不敏感。
+        assert!(no_proxy_matches("API.CORP.EXAMPLE", rules));
+    }
+
+    #[test]
+    fn accepts_only_2xx_connect_response() {
+        assert!(parse_connect_ok(b"HTTP/1.1 200 Connection established\r\n\r\n").is_ok());
+        assert!(parse_connect_ok(b"HTTP/1.1 200 OK\r\nProxy-A: x\r\n\r\n").is_ok());
+        let auth = parse_connect_ok(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n");
+        assert!(auth.is_err());
+        assert!(parse_connect_ok(b"HTTP/1.1 502 Bad Gateway\r\n\r\n").is_err());
+        assert!(parse_connect_ok(b"garbage without headers").is_err());
     }
 }

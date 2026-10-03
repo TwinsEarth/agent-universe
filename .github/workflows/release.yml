@@ -60,8 +60,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # gnu 目标刻意钉在 ubuntu-22.04（glibc 2.35）而非 ubuntu-latest(24.04/glibc 2.39)：
+          # 让官方 gnu 二进制在更老的主流发行版（Ubuntu 22.04 / Debian 12 等）上可直接运行。
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          # 额外提供 musl 静态二进制：无 glibc 依赖，覆盖 Alpine/无 glibc 环境；
+          # 更新器仅在自身为 musl 编译(target_env=musl)时选择该资产。
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
             archive: tar.gz
           - os: macos-latest
             target: aarch64-apple-darwin
@@ -78,6 +85,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install musl toolchain
+        if: contains(matrix.target, '-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          musl-gcc --version | head -1
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -88,6 +102,9 @@ jobs:
           key: ${{ runner.os }}-release-cargo-${{ matrix.target }}-${{ hashFiles('gsn-core/Cargo.toml') }}
 
       - name: Build
+        env:
+          # ring 在 musl 目标下通过 musl-gcc 链接其 C/汇编；gnu 目标忽略此变量。
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cd gsn-core && cargo build --release --target ${{ matrix.target }} --bin gsn-daemon
 
       - name: Package (tar.gz)

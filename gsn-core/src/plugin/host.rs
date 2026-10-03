@@ -587,7 +587,8 @@ mod tests {
     fn boot_system_starts_all_system_plugins() {
         let mut host = PluginHost::new("3.0.0", None);
         let started = host.boot_system(&system::SystemHandles::default()).unwrap();
-        assert_eq!(started.len(), 4);
+        // 与 system_ids() 数量绑定，新增/删除系统插件时自动跟随，避免断言漂移。
+        assert_eq!(started.len(), system::system_ids().len());
         let routes = host.route_table();
         for id in system::system_ids() {
             assert_eq!(routes.get(id), Some(&PluginState::Running));

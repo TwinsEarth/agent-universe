@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v3.6.4
+//! Agent Universe gsn-core v3.7.0
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -10,6 +10,7 @@
 pub mod aca;
 pub mod agent;
 pub mod api;
+pub mod ausec;
 pub mod chain;
 pub mod collaboration;
 pub mod crdt;

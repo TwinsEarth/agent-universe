@@ -1,3 +1,15 @@
+## [v3.7.3] - 2026-10-04
+
+### 修订版：AUSec P2P 种子健康度确定性计算 + 每块 Ed25519 发布者锚定（#101/#106，patch）
+
+- 新增 `gsn-core/src/ausec/seed.rs`：`ChunkSeedHealth`（副本数×100：0→0%、1→100%、10→1000%）与 `ImageSeedHealth`（按最弱块 min 副本决定整镜像健康度、availability 千分点、缺记按 0、空镜像良定义）；`ReplicaLedger` 按 sha256 记观测副本。
+- 每块 Ed25519 发布者锚定：规范化消息绑定 image/index/offset/length/sha256（域前缀 + 长度自描述），防槽位迁移；复用 identity `Keypair`/`Ed25519Signer`；`TrustedPublishers` 空集合 fail-closed。
+- 真实生产接线 `AttestedSeedSource`（实现 `BlockSource`）：旁路 `<sha256>.sig` 64B，缺证明/坏签名/不受信全部 fail-closed；`BlockStoreError` 新增 `BadAttestation{index}`/`UntrustedPublisher{index}`，get_chunk 立即 return 不降级。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读 PMB 方法 `seed_health`、`chunk_attestation_verify`。
+- 新增 13 个「旧实现会失败」回归（seed 11 + PM 桥 2）；ausec 41/0、全量 33 组 0 failed、clippy/fmt/check-no-panics/unsafe-containment/metadata --locked 全绿。
+- 版本 npm 3.7.3 ↔ gsn-core 0.3.73。
+- 诚实边界：不实现 P2P 传输（UDOS 仍具名拒绝）、不伪造对端；1000% 等数字为外部 DSEC 报道非本仓复测；信任根本地化，不做链上锚定/吊销分发。
+
 ## [v3.7.2] - 2026-10-04
 
 ### 修订版：AUSec BlockStore 本地元数据+按需取块+只读共享（#101，patch）

@@ -51,6 +51,10 @@ pub enum BlockFetchError {
     Io(String),
     /// 远端传输在本版本尚未实现（具名拒绝，不伪造跨网拉取）。
     RemoteNotImplemented(String),
+    /// 块缺少/带有无效的发布者证明（签名错、槽位/镜像/摘要不匹配）——v3.7.3 fail-closed。
+    Attestation(String),
+    /// 块的发布者不在本地信任集合中——v3.7.3 fail-closed。
+    UntrustedPublisher,
 }
 
 /// 块源契约：给定清单条目，返回该块的原始字节（**不负责校验**，校验由 BlockStore 统一做）。
@@ -148,6 +152,10 @@ pub enum BlockStoreError {
     SourceIo(String),
     #[error("UDOS 远端块传输 v3.7.2 尚未实现（具名拒绝，不伪造跨网传输）：endpoint={0}")]
     RemoteNotImplemented(String),
+    #[error("块 {index} 的发布者证明无效（fail-closed）：{reason}")]
+    BadAttestation { index: usize, reason: String },
+    #[error("块 {index} 的发布者不在信任集合中（fail-closed）")]
+    UntrustedPublisher { index: usize },
     #[error(transparent)]
     Manifest(#[from] ManifestError),
 }
@@ -307,6 +315,16 @@ impl BlockStore {
                 Err(BlockFetchError::RemoteNotImplemented(ep)) => {
                     attempts.push(format!("{}=远端未实现", source.name()));
                     hard_error = Some(BlockStoreError::RemoteNotImplemented(ep));
+                }
+                // v3.7.3：证明无效 / 发布者不受信是**安全**硬错误，立即 fail-closed，
+                // 不再降级到其它源（避免用另一个源的“成功”掩盖一次被篡改的投递）。
+                Err(BlockFetchError::Attestation(reason)) => {
+                    attempts.push(format!("{}=证明无效", source.name()));
+                    return Err(BlockStoreError::BadAttestation { index, reason });
+                }
+                Err(BlockFetchError::UntrustedPublisher) => {
+                    attempts.push(format!("{}=发布者不受信", source.name()));
+                    return Err(BlockStoreError::UntrustedPublisher { index });
                 }
             }
         }

@@ -21,13 +21,20 @@
 //! `BlockSource` 外做真实生产 fail-closed 校验（缺证明/坏签名/不受信一律拒绝）。
 //! 经 PMB `seed_health` / `chunk_attestation_verify` 暴露只读查询。
 //!
-//! 后续小版本：3.7.4–3.7.6 内存共享记账、
+//! v3.7.4 新增 [`memory`]：内存配额池 + **共享额度记账**（同一内容寻址只读块跨沙盒
+//! 只计一次并集）+ 两级超卖准入（committed 物理硬闸、nominal 超卖比上限闸）。纯
+//! 确定性记账，跨平台可测；virtio-pmem/DAX/DAMON/balloon 等 Linux-MicroVM 专有原语
+//! 按设计在 v3.7.6 声明、无原语平台具名拒绝。经 PMB `memory_status` /
+//! `memory_admit` 暴露只读查询。
+//!
+//! 后续小版本：3.7.5 等待期保内存+空闲优先回收、3.7.6 回收统计+OS 原语具名拒绝、
 //! 3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 + pack_diff/轨迹分叉；3.9.x
 //! Agent 安全组织。
 
 pub mod backend;
 pub mod blockstore;
 pub mod image;
+pub mod memory;
 pub mod seed;
 
 pub use backend::{
@@ -40,6 +47,10 @@ pub use blockstore::{
 };
 pub use image::{
     build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,
+};
+pub use memory::{
+    Admission, MemoryError, MemoryPool, MemorySandboxRequest, OvercommitRatio, PoolStatus,
+    SharedRef,
 };
 pub use seed::{
     chunk_attestation_message, sign_chunk, sign_chunk_with_keypair, verify_chunk_attestation,
@@ -64,6 +75,10 @@ pub const METHOD_MANIFEST_VALIDATE: &str = "manifest_validate";
 pub const METHOD_SEED_HEALTH: &str = "seed_health";
 /// PMB 方法：v3.7.3 单块发布者锚定签名 + 信任集合只读校验。
 pub const METHOD_CHUNK_ATTESTATION_VERIFY: &str = "chunk_attestation_verify";
+/// PMB 方法：v3.7.4 内存配额池状态（committed/nominal/共享去重/超卖口径）只读查询。
+pub const METHOD_MEMORY_STATUS: &str = "memory_status";
+/// PMB 方法：v3.7.4 给定现有沙盒集合，对候选申请做两级准入纯决策（不持久化）。
+pub const METHOD_MEMORY_ADMIT: &str = "memory_admit";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -312,8 +327,103 @@ fn handle_chunk_attestation_verify(_method: &str, payload: &[u8]) -> PluginResul
     })
 }
 
+/// 从 JSON 描述构造并装配内存池：`{physical_bytes, overcommit_times?|overcommit_permille?,
+/// sandboxes?: [MemorySandboxRequest...]}`。重复准入/校验错误照常返回（fail-closed）。
+fn pool_from_input(input: &serde_json::Value) -> Result<MemoryPool, String> {
+    let physical = input
+        .get("physical_bytes")
+        .and_then(|v| v.as_u64())
+        .ok_or("缺少 physical_bytes（正整数，字节）")?;
+    // 超卖比：默认 1×；优先用精确千分点，否则用「倍」。
+    let ratio = if let Some(p) = input.get("overcommit_permille").and_then(|v| v.as_u64()) {
+        OvercommitRatio::from_permille(p).map_err(|e| e.to_string())?
+    } else {
+        let times = input
+            .get("overcommit_times")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1);
+        OvercommitRatio::from_permille(times * 1000).map_err(|e| e.to_string())?
+    };
+    let mut pool = MemoryPool::new(physical, ratio).map_err(|e| e.to_string())?;
+    if let Some(arr) = input.get("sandboxes").and_then(|v| v.as_array()) {
+        for (i, v) in arr.iter().enumerate() {
+            let req: MemorySandboxRequest = serde_json::from_value(v.clone())
+                .map_err(|e| format!("sandboxes[{i}] 不是合法 MemorySandboxRequest: {e}"))?;
+            // 现有集合必须全部成立，否则输入自相矛盾（fail-closed）。
+            pool.admit(req)
+                .map_err(|e| format!("sandboxes[{i}] 无法准入: {e}"))?;
+        }
+    }
+    Ok(pool)
+}
+
+/// `memory_status` 入参：`{physical_bytes, overcommit_times?|overcommit_permille?,
+/// sandboxes?: [...]}`，返回当前池的 committed/nominal/去重节省/超卖口径快照。
+/// 纯确定性：只按调用方给出的沙盒申请重算，不读真实 OS 计数。
+fn memory_status(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let s = pool_from_input(&input)?.status();
+    Ok(serde_json::json!({
+        "physical_bytes": s.physical_bytes,
+        "max_overcommit_permille": s.max_overcommit_permille,
+        "sandbox_count": s.sandbox_count,
+        "committed_bytes": s.committed_bytes,
+        "nominal_bytes": s.nominal_bytes,
+        "shared_dedup_saving": s.shared_dedup_saving,
+        "nominal_ceiling": s.nominal_ceiling,
+        "committed_utilization_permille": s.committed_utilization_permille,
+        "observed_overcommit_permille": s.observed_overcommit_permille,
+        "distinct_shared_contents": s.distinct_shared_contents,
+        "note": "确定性记账：committed=独占之和+只读共享并集(同一内容全机计一次)；virtio-pmem/DAX/DAMON/balloon 为 Linux 专有原语, 3.7.6 具名拒绝, 此处非 OS 实测",
+    }))
+}
+
+/// `memory_admit` 入参：同 `memory_status`，另加 `candidate: MemorySandboxRequest`。
+/// 返回候选准入后的投影 `Admission`；被物理硬闸或超卖闸拒绝则返回错误字符串
+/// （纯决策，不持久化任何全局状态）。
+fn memory_admit(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let cand_val = input
+        .get("candidate")
+        .cloned()
+        .ok_or("缺少 candidate（MemorySandboxRequest 对象）")?;
+    let candidate: MemorySandboxRequest = serde_json::from_value(cand_val)
+        .map_err(|e| format!("candidate 不是合法 MemorySandboxRequest: {e}"))?;
+    let a = pool_from_input(&input)?
+        .project(&candidate)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "admitted": a.admitted,
+        "committed_bytes": a.committed_bytes,
+        "nominal_bytes": a.nominal_bytes,
+        "shared_dedup_saving": a.shared_dedup_saving,
+        "committed_utilization_permille": a.committed_utilization_permille,
+        "observed_overcommit_permille": a.observed_overcommit_permille,
+        "nominal_ceiling": a.nominal_ceiling,
+    }))
+}
+
+/// 字节桥：`memory_status`。
+fn handle_memory_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("memory_status 负载非合法 JSON: {e}")))?;
+    let out = memory_status(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec memory_status 序列化失败: {e}")))
+}
+
+/// 字节桥：`memory_admit`。
+fn handle_memory_admit(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("memory_admit 负载非合法 JSON: {e}")))?;
+    let out = memory_admit(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec memory_admit 序列化失败: {e}")))
+}
+
 /// 向 T0 进程内运行时注册 AUSec 系统插件的处理器（由系统插件装配流程调用）。
 pub fn register(rt: &mut NativeRuntime) {
+    // memory_status / memory_admit：v3.7.4 内存共享额度记账 + 两级超卖准入（只读决策）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_MEMORY_STATUS, handle_memory_status);
+    rt.register_handler(AUSEC_PLUGIN, METHOD_MEMORY_ADMIT, handle_memory_admit);
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -503,5 +613,74 @@ mod tests {
             "trusted_publishers": [other],
         }))
         .is_err());
+    }
+
+    #[test]
+    fn pm_memory_status_dedup_and_oversubscription() {
+        // 物理 1000、50×：两沙盒各独占 100、映射同一只读块 60。
+        let out = memory_status(serde_json::json!({
+            "physical_bytes": 1000,
+            "overcommit_times": 50,
+            "sandboxes": [
+                {"sandbox_id": "a", "private_bytes": 100, "shared": [{"id": "x", "bytes": 60}]},
+                {"sandbox_id": "b", "private_bytes": 100, "shared": [{"id": "x", "bytes": 60}]},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(out["sandbox_count"], 2);
+        assert_eq!(out["committed_bytes"], 260); // 200 独占 + 60 并集
+        assert_eq!(out["nominal_bytes"], 320); // 共享重复计
+        assert_eq!(out["shared_dedup_saving"], 60);
+        assert_eq!(out["committed_utilization_permille"], 260);
+        assert_eq!(out["observed_overcommit_permille"], 1230); // 320/260*1000
+        assert_eq!(out["nominal_ceiling"], 50000);
+        assert_eq!(out["distinct_shared_contents"], 1);
+    }
+
+    #[test]
+    fn pm_memory_admit_gates_fail_closed() {
+        // 物理闸：只放 a（committed 160），候选 b(100+x) 把 committed 推到 260 > 250。
+        let err_phys = memory_admit(serde_json::json!({
+            "physical_bytes": 250,
+            "overcommit_times": 50,
+            "sandboxes": [
+                {"sandbox_id": "a", "private_bytes": 100, "shared": [{"id": "x", "bytes": 60}]},
+            ],
+            "candidate": {"sandbox_id": "b", "private_bytes": 100,
+                          "shared": [{"id": "x", "bytes": 60}]},
+        }))
+        .unwrap_err();
+        assert!(err_phys.contains("物理内存硬闸"), "got: {err_phys}");
+
+        // 名义超卖闸：同一大块被 3 个沙盒映射，2× 超卖；第 3 个名义 2700 > 2000，
+        // 但 committed 仅 900（未触物理闸），因此必须精确命中超卖闸。
+        let err_oc = memory_admit(serde_json::json!({
+            "physical_bytes": 1000,
+            "overcommit_times": 2,
+            "sandboxes": [
+                {"sandbox_id": "a", "private_bytes": 0, "shared": [{"id": "big", "bytes": 900}]},
+                {"sandbox_id": "b", "private_bytes": 0, "shared": [{"id": "big", "bytes": 900}]},
+            ],
+            "candidate": {"sandbox_id": "c", "private_bytes": 0,
+                          "shared": [{"id": "big", "bytes": 900}]},
+        }))
+        .unwrap_err();
+        assert!(err_oc.contains("超卖上限闸"), "got: {err_oc}");
+
+        // 准入通过时返回完整投影。
+        let ok = memory_admit(serde_json::json!({
+            "physical_bytes": 1000,
+            "overcommit_times": 2,
+            "sandboxes": [
+                {"sandbox_id": "a", "private_bytes": 0, "shared": [{"id": "big", "bytes": 900}]},
+            ],
+            "candidate": {"sandbox_id": "b", "private_bytes": 0,
+                          "shared": [{"id": "big", "bytes": 900}]},
+        }))
+        .unwrap();
+        assert_eq!(ok["admitted"], true);
+        assert_eq!(ok["committed_bytes"], 900);
+        assert_eq!(ok["nominal_bytes"], 1800);
+        assert_eq!(ok["shared_dedup_saving"], 900);
     }
 }

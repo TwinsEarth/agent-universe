@@ -1,3 +1,15 @@
+## [v3.7.4] - 2026-10-04
+
+### 修订版：AUSec 内存共享（1/3）——配额池共享额度记账 + 两级超卖准入（#102/#107，patch）
+
+- 新增 `gsn-core/src/ausec/memory.rs`：`MemoryPool` 跨平台纯确定性内存配额池。committed（宿主必保）= 各沙盒 private 之和 + 全机只读共享内容**并集**（同 sha256 id 只计一次、不一致取 max）；nominal（名义申请）共享按沙盒重复计；`shared_dedup_saving=nominal-committed`。
+- 两级准入：物理硬闸 `projected_committed<=physical`（否则 `RejectCommittedExceedsPhysical`）+ 超卖上限闸 `projected_nominal<=physical*ratio/1000`（`OvercommitRatio` 千分点，<1× 报错；否则 `RejectOvercommitCeiling`）。比例全程 u128 无浮点；被拒池不变；release 自动重算并集。
+- 全类型化 `MemoryError`，无裸 panic；输出 `Admission`/`PoolStatus`（利用率/观测超卖千分点）。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读纯决策 PMB 方法 `memory_status`、`memory_admit`（无副作用、不持久化）。
+- 新增 11 个「旧实现会失败」回归（memory 9 + PM 桥 2）；ausec 55/0、全量 33 组 0 failed（lib 407）、fmt/clippy -D warnings/check-no-panics/unsafe-containment/metadata --locked 全绿。
+- 版本 npm 3.7.4 ↔ gsn-core 0.3.74。
+- 诚实边界：本版只是记账/准入纯模型，非跨 MicroVM 真实页共享；virtio-pmem/DAX/DAMON/balloon 等 Linux 专有原语在 v3.7.6 声明、无原语平台具名拒绝；40.2%/21.2%/50× 等为外部 DSEC 报道非本仓复测；memory_admit 不代表内核已真正分配内存。
+
 ## [v3.7.3] - 2026-10-04
 
 ### 修订版：AUSec P2P 种子健康度确定性计算 + 每块 Ed25519 发布者锚定（#101/#106，patch）

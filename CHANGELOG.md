@@ -1,3 +1,12 @@
+## [v3.7.2] - 2026-10-04
+
+### 修订版：AUSec BlockStore 本地元数据+按需取块+只读共享（#101，patch）
+
+- 新增 `gsn-core/src/ausec/blockstore.rs`：BlockStore 懒加载（构造零取块）、缺块即取、命中复用；BlockSource 契约含真实本地种子源与具名但不伪造传输的 UDOS 远端；SharedChunkCache 按 sha256 跨镜像只读共享；取回块强制过 v3.7.1 verify_chunk，坏块不入缓存。
+- 新增 9 个首次失败回归测试；ausec 32/0、全量 0 failed、clippy/fmt/check-no-panics 全绿。
+- 版本 npm 3.7.2 ↔ gsn-core 0.3.72。
+- 诚实边界：不跨网传块、不验发布者签名（3.7.3）；共享仅本机进程内只读去重。
+
 # Changelog
 
 本文件记录 Agent Universe 各版本的重要变更。

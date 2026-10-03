@@ -11,16 +11,25 @@
 //! 结构完整性基线与按需取块后的内容校验；经 PMB `manifest_validate` 作为块清单
 //! 入场闸。
 //!
-//! 后续小版本：3.7.2 BlockStore 按需取块、3.7.3 P2P 种子健康 + 每块 Ed25519 锚定、
-//! 3.7.4–3.7.6 内存共享记账、3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 +
-//! pack_diff/轨迹分叉；3.9.x Agent 安全组织。
+//! v3.7.2 新增 [`blockstore`]：`BlockStore` 本地仅存元数据 + 按需取块（缺块即取、
+//! 命中复用、按内容地址只读共享），`BlockSource` 契约含真实本地种子源与具名但不
+//! 伪造传输的 UDOS 远端源。
+//!
+//! 后续小版本：3.7.3 P2P 种子健康 + 每块 Ed25519 锚定、3.7.4–3.7.6 内存共享记账、
+//! 3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 + pack_diff/轨迹分叉；3.9.x
+//! Agent 安全组织。
 
 pub mod backend;
+pub mod blockstore;
 pub mod image;
 
 pub use backend::{
     backend_for_tier, detect_features, primitive_availability, readiness, ExecutionBackend,
     OsIsolation, Platform, PlatformFeatures, PrimitiveAvailability, Readiness, RiskGrade,
+};
+pub use blockstore::{
+    BlockFetchError, BlockSource, BlockSourceKind, BlockStats, BlockStore, BlockStoreError,
+    LocalDirBlockSource, SharedChunkCache, UdosRemoteBlockSource,
 };
 pub use image::{
     build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,

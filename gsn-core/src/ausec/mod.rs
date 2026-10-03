@@ -7,15 +7,23 @@
 //! - 系统插件 [`AUSEC_PLUGIN`]：经 PMB/宿主 `call` 暴露 `status` 与
 //!   `select_backend` 两个只读查询。
 //!
-//! 后续小版本：3.7.1–3.7.3 镜像按需加载/块签名、3.7.4–3.7.6 内存共享记账、
-//! 3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 + pack_diff/轨迹分叉；
-//! 3.9.x Agent 安全组织。
+//! v3.7.1 新增 [`image`]：内容寻址镜像块清单（偏移/长度/sha256/顺序）的构建、
+//! 结构完整性基线与按需取块后的内容校验；经 PMB `manifest_validate` 作为块清单
+//! 入场闸。
+//!
+//! 后续小版本：3.7.2 BlockStore 按需取块、3.7.3 P2P 种子健康 + 每块 Ed25519 锚定、
+//! 3.7.4–3.7.6 内存共享记账、3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 +
+//! pack_diff/轨迹分叉；3.9.x Agent 安全组织。
 
 pub mod backend;
+pub mod image;
 
 pub use backend::{
     backend_for_tier, detect_features, primitive_availability, readiness, ExecutionBackend,
     OsIsolation, Platform, PlatformFeatures, PrimitiveAvailability, Readiness, RiskGrade,
+};
+pub use image::{
+    build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,
 };
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -29,6 +37,8 @@ pub const AUSEC_PLUGIN: &str = "com.twinsearth.sys.ausec";
 pub const METHOD_STATUS: &str = "status";
 /// PMB 方法：按插件分级/风险选择默认后端，并给出当前平台就绪度。
 pub const METHOD_SELECT_BACKEND: &str = "select_backend";
+/// PMB 方法：v3.7.1 内容寻址镜像块清单入场校验（结构完整性基线）。
+pub const METHOD_MANIFEST_VALIDATE: &str = "manifest_validate";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -126,6 +136,36 @@ fn handle_status(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
         .map_err(|e| PluginError::Runtime(format!("AUSec status 序列化失败: {e}")))
 }
 
+/// PMB `manifest_validate` 入参解析与校验：入参 `{manifest: <ChunkManifest>}`。
+///
+/// 这是 v3.7.1 块清单的唯一入场闸：v3.7.2 BlockStore 在接受任何远端/本地清单前
+/// 都经此路径，结构不合法（空洞/重叠/乱序/长度/摘要形状/总长不符）具名拒绝。
+fn manifest_validate(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let manifest_val = input
+        .get("manifest")
+        .cloned()
+        .ok_or("缺少 manifest（ChunkManifest 对象）")?;
+    let raw =
+        serde_json::to_vec(&manifest_val).map_err(|e| format!("manifest 重新序列化失败: {e}"))?;
+    let manifest = ChunkManifest::parse_and_validate(&raw).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "valid": true,
+        "image": manifest.image,
+        "chunk_size": manifest.chunk_size,
+        "chunks": manifest.chunks.len(),
+        "total_length": manifest.total_length,
+    }))
+}
+
+/// 字节桥：`manifest_validate`，入参 JSON `{manifest: <ChunkManifest>}`。
+fn handle_manifest_validate(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("manifest_validate 负载非合法 JSON: {e}")))?;
+    let out = manifest_validate(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec manifest_validate 序列化失败: {e}")))
+}
+
 /// 字节桥：`select_backend`，入参 JSON `{plugin_id, risk?}`。
 fn handle_select(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
     let input: serde_json::Value = serde_json::from_slice(payload)
@@ -141,6 +181,12 @@ pub fn register(rt: &mut NativeRuntime) {
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
     rt.register_handler(AUSEC_PLUGIN, METHOD_SELECT_BACKEND, handle_select);
+    // manifest_validate：v3.7.1 镜像块清单入场校验。
+    rt.register_handler(
+        AUSEC_PLUGIN,
+        METHOD_MANIFEST_VALIDATE,
+        handle_manifest_validate,
+    );
 }
 
 #[cfg(test)]
@@ -193,5 +239,25 @@ mod tests {
         // 缺参/非法 risk 报错。
         assert!(select_backend(serde_json::json!({})).is_err());
         assert!(select_backend(serde_json::json!({"plugin_id":"x","risk":"crazy"})).is_err());
+    }
+
+    #[test]
+    fn manifest_validate_admits_good_and_rejects_gap() {
+        let data: Vec<u8> = (0..37u32).map(|i| (i % 251) as u8).collect();
+        let m = build_manifest("img/pm", &data, 16).unwrap();
+
+        // 合法清单经 PM 入口准入。
+        let ok = manifest_validate(serde_json::json!({"manifest": m.clone()})).unwrap();
+        assert_eq!(ok["valid"], true);
+        assert_eq!(ok["chunks"], 3);
+        assert_eq!(ok["total_length"], 37);
+
+        // 缺 manifest 字段。
+        assert!(manifest_validate(serde_json::json!({})).is_err());
+
+        // 结构非法（偏移空洞）必须被 PM 入口拒绝。
+        let mut bad = m;
+        bad.chunks[1].offset += 1;
+        assert!(manifest_validate(serde_json::json!({"manifest": bad})).is_err());
     }
 }

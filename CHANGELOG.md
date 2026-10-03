@@ -2,6 +2,25 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.7.1] - 2026-10-04
+
+### 修订版：AUSec 镜像按需加载（1/9）——内容寻址镜像块清单 + 完整性基线（#101，patch）
+
+- 新增 `gsn-core/src/ausec/image.rs`：`ChunkManifest`/`ChunkEntry`（index/offset/length/sha256）
+  严格连续布局的定长块清单；`build_manifest` 按定长切块并计算每块 SHA-256 内容地址。
+- 结构完整性基线 `ChunkManifest::validate`：块序号必须从 0 等于位置、偏移从 0 严格连续
+  （无空洞/无重叠）、非末块恰为 `chunk_size`、末块不超长、长度 >0、摘要为 64 位小写
+  十六进制、`total_length` 与布局一致；空镜像为零块合法空清单；块大小上限 64 MiB 防巨量分配。
+- 按需取块校验 `verify_chunk`/`verify_image`：对**实际取到的字节**重算 sha256，错长/越界/
+  篡改/总长不符一律具名拒绝（`ManifestError` 全类型化，无 panic 路径）。
+- 系统插件 `com.twinsearth.sys.ausec` 新增 PMB 只读准入方法 `manifest_validate`
+  （入参 `{manifest}`），作为 v3.7.2 BlockStore 接受清单前的唯一入场闸。
+- 测试：新增 9 个（image 8 + mod PM 桥 1），均为「在旧实现会失败」的完整性断言
+  （空洞/重叠/乱序/错长/零长/摘要形状/总长/篡改/越界）；`cargo test --lib ausec` 23/0，
+  全量关卡、clippy `-D warnings`、fmt、check-no-panics（生产 panic=0）通过。
+- 诚实边界：本版不联网拉块、不实现 BlockStore（v3.7.2）、不做块 Ed25519 发布者签名
+  锚定（v3.7.3）；只保证清单自洽与字节—声明一致，不保证块来自可信发布者。
+
 ## [v3.7.0] - 2026-10-03
 
 ### 次版本：AUSec 弹性计算基础设施基座——四执行后端模型 + `sys.ausec` 系统插件 + 8 个 `sandbox:*` 能力（#100，minor）

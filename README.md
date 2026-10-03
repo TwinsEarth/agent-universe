@@ -195,6 +195,31 @@ cargo run --release --bin gsn-daemon -- \
 
 > **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 618 个 Rust 测试 + 19 个 Python 测试 + 22 个 JS 测试守护（随版本增长，以发布时 cargo test / pytest / node 实测为准），跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
+### 自动更新（v3.6.1）
+
+daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-universe` 的完整版本表）
+检查是否最新，检查失败只告警、不影响启动。更新对象同时包含 **daemon 二进制**与 **npm 包**。
+
+- **默认 Minor 通道**：只自动跟进同一大版本最新「中版本基线」`x.Y.0`，不追补丁，**绝不跨大版本**。
+- **Patch 通道（先锋队员/贡献者白名单）**：自动跟进最新「小版本」`x.Y.Z`。名单为仓库内置、
+  编译期嵌入的 [`config/pioneers.txt`](config/pioneers.txt)，可用 `GSN_PIONEERS_FILE` 追加。
+- **手动更新任意版本（含跨大版本）**：
+
+```bash
+gsn update                 # 按本机通道自动更新 daemon + npm
+gsn update --check         # 只检查，不安装
+gsn update 3.6.1           # 手动更新到指定版本（可跨大版本/降级）
+gsn update --track patch   # 本次按 patch 通道
+gsn version --check        # 只查询通道内目标与新大版本提示
+```
+
+环境变量：`GSN_AUTO_UPDATE=0`（只检查不自动安装）、`GSN_NO_UPDATE_CHECK=1`（关闭联网检查）、
+`GSN_UPDATE_TRACK=minor|patch`、`GSN_UPDATE_NPM=0`（不更新 npm 包）。
+
+安全：daemon 二进制安装前强制校验随 Release 发布的 `.sha256`（不符即拒绝），同目录原子替换；
+安装后**下次启动生效**，不强制重启。平台支持矩阵与诚实边界（如 macOS 仅 aarch64 有资产、
+Windows exe 占用需先停节点）见 [`releases/v3.6.1.md`](releases/v3.6.1.md)。
+
 ### 三大连接层：CLI · API · MCP（v2.3.5 引入，v2.3.6 深化）
 
 v2.3.5 重新梳理并补全三种连接方式，v2.3.6 进一步把 MCP 真实化、把 ACA 身份与签名补全，并让 Rust/Python/JS 三端在身份与协议层跨语言对齐。三者分别服务于不同场景：
@@ -299,7 +324,7 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.1，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
 
 ## 版本谱系
 
@@ -369,6 +394,24 @@ npm install @twinsearth/agent-universe
 | v2.9.1 | **Sandbox Capability** | **沙箱能力声明闸门：边界要么强制执行、要么显式 waiver（带理由），否则拒绝；默认不执行（NullExecutor/后端禁用）；`trusted_local` 平台感知 waiver（Linux 网络/FS/磁盘，macOS 额外内存）；内存/CPU 跨平台（Linux ulimit -v、macOS 无 RLIMIT_AS 诚实标 unenforced、Node --max-old-space-size 全平台）；生产代码 panic 归零（静态关卡验证，v2.9.2 接入 CI）；快照持久化错误改为告警；cargo fmt 关卡** |
 | v2.9.2 | **CI Engineering** | **rust-test 矩阵接入 Windows（fmt/build/test/clippy，winjob 等专属代码首次有 CI）；新增 static-gates job：check-no-panics（生产 panic 站点必为 0）+ check-unsafe-containment（每个 unsafe 有 SAFETY 理由）；两个静态检查脚本正式入库** |
 | v3.0.0 | **Plugin Kernel（大版本）** | **一切插件化架构重构：插件内核（注册中心/插件总线 PMB/权限仲裁/生命周期/能力模型/黑名单）、热更新·热插拔·热兼容（原子切换+失败回滚+ABI 协商）、五级插件体系（系统/官方/认证/第三方/黑名单）、T1/T2/T3 独立进程隔离 + 能力闸门、T0 系统插件真实运行、`/api/v1/plugins` REST API；crate 版本映射规则升级（0.X.YZ，3.0.0→0.3.0）；WASM 为可选 feature（当前类型化拒绝）。详见 [PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md)** |
+| v3.1.0 | **Business Plugins** | **业务插件化：官方插件真正承载业务逻辑（entry 模块 + 随内核自动装配）** |
+| v3.2.0 | **More Business Plugins** | **业务插件化深化：再 3 个核心官方插件（shard/bridge/crdt 等）承载真实业务 entry** |
+| v3.2.1 | **PMB Security** | **PMB 安全通信：消息 HMAC 签名 + nonce 防重放 + 总线端到端接线** |
+| v3.2.2 | **Swarm Detect** | **业务化 swarm-emergence：群体智能涌现检测（detect）** |
+| v3.2.3 | **Skill Discover** | **业务化 agent-skill：按技能发现智能体（discover）** |
+| v3.3.0 | **Chain Anchor** | **业务化 chain-anchor：离线锚定构造与双校验（anchor/verify）** |
+| v3.4.0 | **Chain Bridge** | **业务化 chain-bridge：跨链信誉桥接与中位数共识（9/9 官方插件全业务化）** |
+| v3.4.2 | **Plugin Audit** | **全局审核版本：补齐插件生命周期/信任/黑名单接线 + 架构合规关卡** |
+| v3.4.5 | **Grounding** | **A 类接地修复 + B1 主数据面编排接管 + B3 系统插件接线** |
+| v3.5.0 | **Plugin Outbox** | **B2：进程插件 outbox 主动通信（新能力）；Mac/Windows 实机部署与跨平台验证** |
+| v3.5.4 | **Persist Fidelity** | **重启持久化全字段保真（W-04 任务规格 / W-05 智能体卡片）** |
+| v3.5.5 | **CLI Hardening** | **gsn CLI 鉴权/金额/仲裁契约加固（W-03）与 daemon 版本开关（W-02）** |
+| v3.5.6 | **Audit Persist** | **中继池遥测落盘失败显式化 + 市场层结算独立审计/防重复结算回归（#74）** |
+| v3.5.7 | **MSRV Honesty** | **MSRV 诚实化：显式声明并实测最低工具链 1.88.0（#75 / W-01）** |
+| v3.5.8 | **Real Benchmark** | **守护进程真实端到端吞吐/延迟基准 + 历史无测量性能小节诚实化（#76 / DOC-07）** |
+| v3.5.9 | **Capability Status** | **能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）** |
+| v3.6.0 | **Ops CLI** | **新增运维只读 CLI：`gsn ledger verify`（账本哈希链/坏行/重放守恒离线核验）与 `gsn doctor`（一键诊断）** |
+| v3.6.1 | **Auto Update** | **daemon 自动更新：npm registry 权威源（不盲信 dist-tags）+ 默认 minor/白名单 patch 双通道 + 手动可跨大版本；daemon 二进制 sha256 fail-closed 原子替换 + npm 包同步；release.yml 三平台增原始二进制+.sha256 资产** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 

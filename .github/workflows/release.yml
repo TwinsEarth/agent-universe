@@ -108,18 +108,58 @@ jobs:
           Compress-Archive -Path $src -DestinationPath $dst
           Get-Item $dst | Select-Object FullName, Length
 
+      # v3.6.1 自动更新：除压缩包外，额外产出"原始可执行文件 + .sha256 摘要"。
+      # 更新器直下原始二进制→校验 sha256→原子替换，免在目标机解包（依赖树无 tar/zip 解包库）。
+      # 资产名必须与 gsn-core/src/update/registry.rs::platform_asset_name 完全一致。
+      - name: Stage raw binary + sha256 (unix)
+        if: matrix.archive == 'tar.gz'
+        run: |
+          set -euo pipefail
+          REL="gsn-core/target/${{ matrix.target }}/release"
+          RAW="gsn-daemon-${{ matrix.target }}"
+          cp "$REL/gsn-daemon" "gsn-core/$RAW"
+          chmod 0755 "gsn-core/$RAW"
+          ( cd gsn-core && sha256sum "$RAW" > "$RAW.sha256" )
+          ls -lh "gsn-core/$RAW" "gsn-core/$RAW.sha256"
+          cat "gsn-core/$RAW.sha256"
+
+      - name: Stage raw binary + sha256 (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $src = "gsn-core/target/${{ matrix.target }}/release/gsn-daemon.exe"
+          $raw = "gsn-daemon-${{ matrix.target }}.exe"
+          Copy-Item $src "gsn-core/$raw" -Force
+          $hash = (Get-FileHash "gsn-core/$raw" -Algorithm SHA256).Hash.ToLower()
+          # sha256sum 风格："<hash>  <filename>"，更新器取首个空白前字段。
+          "$hash  $raw" | Set-Content -NoNewline "gsn-core/$raw.sha256" -Encoding ascii
+          Get-Item "gsn-core/$raw", "gsn-core/$raw.sha256" | Select-Object FullName, Length
+          Get-Content "gsn-core/$raw.sha256"
+
       - name: Upload to Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET: ${{ matrix.target }}
+          ARCHIVE: ${{ matrix.archive }}
         run: |
-          shopt -s nullglob
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            files=( gsn-core/gsn-daemon-*.zip )
+          set -euo pipefail
+          if [ "$ARCHIVE" = "zip" ]; then
+            files=(
+              "gsn-core/gsn-daemon-$TARGET.zip"
+              "gsn-core/gsn-daemon-$TARGET.exe"
+              "gsn-core/gsn-daemon-$TARGET.exe.sha256"
+            )
           else
-            files=( gsn-core/gsn-daemon-*.tar.gz )
+            files=(
+              "gsn-core/gsn-daemon-$TARGET.tar.gz"
+              "gsn-core/gsn-daemon-$TARGET"
+              "gsn-core/gsn-daemon-$TARGET.sha256"
+            )
           fi
-          if [ ${#files[@]} -eq 0 ]; then echo "::error::no artifact found for ${{ matrix.target }}"; exit 1; fi
+          for f in "${files[@]}"; do
+            if [ ! -f "$f" ]; then echo "::error::missing artifact: $f"; exit 1; fi
+          done
           echo "Uploading: ${files[*]}"
           gh release upload ${{ github.ref_name }} "${files[@]}" --clobber
 

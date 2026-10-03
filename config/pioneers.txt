@@ -1,0 +1,18 @@
+# TwinsEarth / agent-universe — 先锋队员 & 贡献者白名单
+#
+# 用途（v3.6.1 自动更新）：
+#   列于本文件的本地身份（libp2p Peer ID，base58）使用「Patch 通道」——
+#   daemon 启动时自动跟进同一大版本内最新「小版本(x.Y.Z)」；
+#   其余节点默认使用「Minor 通道」，只自动跟进最新「中版本基线(x.Y.0)」。
+#   任何节点都可随时用 `gsn update` 手动升级到任意版本（含跨大版本）。
+#
+# 规则：
+#   - 每行一个 Peer ID（与 `gsn identity` / daemon 启动横幅打印的 Peer ID 一致）；
+#   - 空行与以 # 开头的行会被忽略；行内不支持尾随注释；
+#   - 本文件随版本发布、编译期嵌入（include_str!），离线可判定，更新走 Pull Request；
+#   - 操作员可另用环境变量 GSN_PIONEERS_FILE 指向额外名单（追加生效，不替换本文件）；
+#   - 也可用 GSN_UPDATE_TRACK=patch|minor 显式指定本机通道（仅影响本机更新激进度）。
+#
+# 维护：新增/移除走 PR，由维护者审核贡献者身份后合并；合并后下一版本生效。
+#
+# ── 核心维护者（占位：发布前替换为真实 Peer ID）──

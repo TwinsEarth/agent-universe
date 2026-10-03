@@ -1,4 +1,4 @@
-//! Agent Universe gsn-core v3.6.0
+//! Agent Universe gsn-core v3.6.1
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -38,6 +38,7 @@ pub mod security;
 pub mod storage;
 pub mod swarm;
 pub mod topology;
+pub mod update;
 pub mod verifier;
 
 pub use agent::{AgentCard, Task, TaskStatus};

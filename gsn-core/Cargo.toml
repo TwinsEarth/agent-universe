@@ -1,12 +1,12 @@
 [package]
 name = "gsn-core"
-version = "0.3.60"
+version = "0.3.61"
 edition = "2021"
 # MSRV（W-01，v3.5.7）：锁定依赖中最高的 rust-version 是 time 0.3.x 家族要求的 1.88；
 # 已用 rustc 1.88.0 实测 `cargo check --bins --locked` 通过。CI 有对应 MSRV 关卡。
 # 仅约束库与二进制；测试/clippy 仍以 stable 运行。
 rust-version = "1.88"
-description = "Agent Universe 核心库 v3.6.0: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+description = "Agent Universe 核心库 v3.6.1: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
 repository = "https://github.com/TwinsEarth/agent-universe"
 homepage = "https://github.com/TwinsEarth/agent-universe"
@@ -67,6 +67,18 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reed-solomon-erasure = "6.0.0"
+
+# v3.6.1 自动更新：最小 HTTPS 能力（rustls + ring + webpki 根证书，无 native-tls/OpenSSL）。
+# rustls 已由 libp2p(wss) 传递进依赖树并锁定同版本，直接声明为正式依赖不扩大依赖图。
+# 注意：rustls 0.23 用的是 rustls-pki-types 1.x 的 TrustAnchor，因此根证书必须用
+# webpki-roots 1.x（0.25 的自有 TrustAnchor 类型与 rustls 0.23 不兼容）。
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+    "tls12",
+    "logging",
+] }
+webpki-roots = "1"
 
 # v2.8.7：Windows Job Object（内存/进程数上限 + 整棵进程树随句柄关闭）
 [target.'cfg(windows)'.dependencies]

@@ -2061,6 +2061,23 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
 
     println!("=== GSN Daemon v{} ===", env!("CARGO_PKG_VERSION"));
 
+    // v3.6.1 自动更新：每次启动后台联网到 npm registry 检查版本（非阻塞、带超时、
+    // 失败只告警不影响启动）。默认 minor 通道；白名单先锋/贡献者走 patch 通道。
+    // GSN_NO_UPDATE_CHECK=1 完全关闭；GSN_AUTO_UPDATE=0 只检查不自动安装。
+    if !crate::update::check_disabled() {
+        tokio::task::spawn_blocking(|| {
+            let cfg = crate::update::AutoUpdateConfig::default();
+            let outcome = crate::update::run_startup_check(&cfg);
+            let line = crate::update::summarize(&outcome);
+            if matches!(outcome, crate::update::CheckOutcome::Failed(_)) {
+                tracing::warn!("{line}");
+            } else {
+                println!("📦 {line}");
+                tracing::info!("{line}");
+            }
+        });
+    }
+
     // v3.5.3（AU-30）：沙箱/插件子系统不应以 root 运行（代码无 setuid 降权，一旦逃逸即 root）。
     // 默认 fail-closed：检测到 euid==0 且未显式设置 GSN_ALLOW_ROOT=1 则拒绝启动。
     // 不引 libc：Linux 下从 /proc/self/status 的 Uid 行解析 euid；非 Linux / 无法读取则跳过

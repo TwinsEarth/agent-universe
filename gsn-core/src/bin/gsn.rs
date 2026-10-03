@@ -29,13 +29,18 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.6.0");
-            0
+            println!("agent-universe v3.6.1");
+            if argv.iter().any(|a| a == "--check") {
+                run_version_check(&argv[1..]).await
+            } else {
+                0
+            }
         }
         "help" | "--help" | "-h" => {
             print_top_help();
             0
         }
+        "update" => run_update(&argv[1..]).await,
         "daemon" => {
             let args = node::parse_daemon_args(&argv[1..]);
             match node::run_daemon(args).await {
@@ -71,12 +76,196 @@ fn print_top_help() {
     println!("  ledger verify        离线校验账本哈希链与重放守恒（只读）");
     println!("  doctor               环境/账本/daemon 连通性诊断（只读）");
     println!("  identity            生成 Ed25519 本地身份");
-    println!("  version             显示版本");
+    println!("  update [版本]        检查/更新 daemon 与 npm 包（见 `gsn update --help`）");
+    println!("  version             显示版本（加 --check 只联网检查更新，不安装）");
     println!("  help                显示本帮助\n");
     println!("market 操作: deposit/register/search/discover/publish/bid/");
     println!("             match/result/verify/settle/dispute/arbitrate/");
     println!("             balance/conservation/leaderboard/stats");
     println!("             （用 --api <url> 或 GSN_API 指定节点，默认 127.0.0.1:4002）");
+}
+
+// ───────────────────────── update ─────────────────────────
+
+/// `gsn update` / `gsn version --check` 解析出的选项。
+struct UpdateOpts {
+    /// 显式目标版本（手动，可跨大版本）；None 表示按通道自动选目标。
+    target: Option<String>,
+    track: Option<gsn_core::update::Track>,
+    check_only: bool,
+    no_npm: bool,
+}
+
+fn print_update_help() {
+    println!("用法:");
+    println!("  gsn update                 按本机通道检查并自动更新（默认 minor）");
+    println!("  gsn update --check         只检查是否有新版本，不安装");
+    println!("  gsn update <X.Y.Z>         手动更新到指定版本（允许跨大版本/降级）");
+    println!("  gsn update --track minor   自动跟最新中版本基线 x.Y.0（不追补丁）");
+    println!("  gsn update --track patch   自动跟最新小版本 x.Y.Z（先锋/贡献者通道）");
+    println!("  gsn update --no-npm        只更新 daemon 二进制，不更新 npm JS 包");
+    println!("  gsn version --check        同 --check，只查询不安装");
+    println!("\n环境变量:");
+    println!("  GSN_AUTO_UPDATE=0          daemon 启动只检查不自动安装");
+    println!("  GSN_NO_UPDATE_CHECK=1      完全关闭启动联网检查");
+    println!("  GSN_UPDATE_TRACK=minor|patch  显式指定本机通道");
+    println!("  GSN_PIONEERS_FILE=<path>   追加一份先锋/贡献者 Peer ID 名单");
+    println!("\n说明: 自动更新绝不跨大版本；daemon 更新后下次启动生效。");
+}
+
+fn parse_update_opts(args: &[String]) -> Result<UpdateOpts, String> {
+    let mut target = None;
+    let mut track = None;
+    let mut check_only = false;
+    let mut no_npm = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--check" => check_only = true,
+            "--no-npm" => no_npm = true,
+            "--track" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--track 需要值 minor|patch".to_string())?;
+                track = Some(match v.as_str() {
+                    "minor" => gsn_core::update::Track::Minor,
+                    "patch" => gsn_core::update::Track::Patch,
+                    other => return Err(format!("未知通道 '{other}'（有效值: minor/patch）")),
+                });
+                i += 1;
+            }
+            "--help" | "-h" => {
+                print_update_help();
+                std::process::exit(0);
+            }
+            other if !other.starts_with('-') => {
+                if target.is_none() {
+                    target = Some(other.to_string());
+                } else {
+                    return Err(format!("多余的位置参数 '{other}'"));
+                }
+            }
+            other => return Err(format!("未知选项 '{other}'（见 gsn update --help）")),
+        }
+        i += 1;
+    }
+    Ok(UpdateOpts {
+        target,
+        track,
+        check_only,
+        no_npm,
+    })
+}
+
+/// `gsn version --check`：只查询，不安装。
+async fn run_version_check(args: &[String]) -> i32 {
+    let track = match parse_update_opts(args) {
+        Ok(o) => o.track,
+        Err(e) => {
+            eprintln!("错误: {e}");
+            return 2;
+        }
+    };
+    match tokio::task::spawn_blocking(move || gsn_core::update::check(track)).await {
+        Ok(Ok((current, decision, resolved))) => {
+            println!("当前版本: v{current}（通道: {:?}）", resolved);
+            match decision.target {
+                Some(t) => println!("可更新: v{t}（未安装；用 `gsn update {t}` 安装）"),
+                None => println!("已是本大版本通道内最新。"),
+            }
+            if let Some(m) = decision.newer_major {
+                println!("另有新大版本 v{m}（不自动跨版本；用 `gsn update {m}` 手动升级）");
+            }
+            0
+        }
+        Ok(Err(e)) => {
+            eprintln!("检查失败（不影响本地使用）: {e}");
+            1
+        }
+        Err(e) => {
+            eprintln!("检查任务异常: {e}");
+            1
+        }
+    }
+}
+
+async fn run_update(args: &[String]) -> i32 {
+    let opts = match parse_update_opts(args) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("错误: {e}");
+            return 2;
+        }
+    };
+
+    // ── 只检查 ──
+    if opts.check_only {
+        return run_version_check(args).await;
+    }
+
+    let timeout = gsn_core::update::AutoUpdateConfig::default().timeout;
+    let do_npm = !opts.no_npm;
+
+    // ── 确定目标版本 ──
+    let target = match opts.target {
+        Some(raw) => match gsn_core::update::SemVer::parse(&raw) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("错误: {e}");
+                return 2;
+            }
+        },
+        None => {
+            let track = opts.track;
+            let decision =
+                tokio::task::spawn_blocking(move || gsn_core::update::check(track)).await;
+            match decision {
+                Ok(Ok((current, d, _))) => match d.target {
+                    Some(t) => t,
+                    None => {
+                        println!("当前 v{current} 已是本大版本通道内最新。");
+                        if let Some(m) = d.newer_major {
+                            println!("另有新大版本 v{m}（用 `gsn update {m}` 手动升级）");
+                        }
+                        return 0;
+                    }
+                },
+                Ok(Err(e)) => {
+                    eprintln!("检查失败: {e}");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("检查任务异常: {e}");
+                    return 1;
+                }
+            }
+        }
+    };
+
+    // ── 下载→校验→原子替换→npm 更新 ──
+    println!("正在更新到 v{target} …");
+    let target_for_task = target.clone();
+    match tokio::task::spawn_blocking(move || {
+        gsn_core::update::perform_update(&target_for_task, do_npm, timeout)
+    })
+    .await
+    {
+        Ok(Ok(npm)) => {
+            println!("✅ daemon 已更新到 v{target}（重启 daemon 后生效）。");
+            if let Some(n) = npm {
+                println!("   {n}");
+            }
+            0
+        }
+        Ok(Err(e)) => {
+            eprintln!("❌ 更新失败: {e}");
+            1
+        }
+        Err(e) => {
+            eprintln!("更新任务异常: {e}");
+            1
+        }
+    }
 }
 
 // ───────────────────────── MCP ─────────────────────────

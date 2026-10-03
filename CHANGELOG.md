@@ -2,6 +2,30 @@
 
 本文件记录 Agent Universe 各版本的重要变更。
 
+## [v3.7.0] - 2026-10-03
+
+### 次版本：AUSec 弹性计算基础设施基座——四执行后端模型 + `sys.ausec` 系统插件 + 8 个 `sandbox:*` 能力（#100，minor）
+
+在 v3.0.0 一切插件化内核之上新增弹性沙盒基础设施的**类型层/选择层/权限层**，不改资金/共识/持久化语义。
+
+- 新增 crate 模块 `gsn-core/src/ausec/`：`ExecutionBackend{FnCall,Container,MicroVm,FullVm}`、
+  分级×风险→后端映射（System→FnCall、Official→Container、Certified→MicroVM、
+  ThirdParty 标准→MicroVM/高风险→FullVM、**Blacklist→None 不可调度**）。
+- 就绪模型严格区分「平台原语可行」(`PrimitiveAvailability`) 与「执行器已接线」
+  (`executor_wired`)：v3.7.0 仅 FnCall 接线，Container/MicroVM/FullVM 即使原语齐备也返回
+  `ExecutorNotWired`/`can_run_now=false`，杜绝「探测到 docker 即声称可安全执行」；
+  MicroVM 非 Linux 一律 Unsupported。`detect_features()` fail-closed。
+- 新增第 5 个 T0 系统插件 `com.twinsearth.sys.ausec`，经真实装配→spawn→call 暴露只读
+  `status` / `select_backend`（字节桥、类型化错误、零 panic）；系统插件数量断言改为与
+  `system_ids().len()` 绑定。
+- `plugin/capability.rs` 新增 8 个 `sandbox:*` 能力：治理类（configure/policy:apply/
+  blacklist:sync）与 kernel 同级仅 System 可持；可委托类（lifecycle/message/create/
+  snapshot/restore）OFF/CERT 声明式、ThirdParty 拒绝。
+- 新增 13 个测试（含黑名单→None、未接线不得 Ready、FnCall 无隔离等在旧实现会失败的断言）；
+  674 tests / clippy / fmt / no-panics(0) / unsafe-containment 全绿；npm 3.7.0 ↔ gsn-core 0.3.70。
+- 诚实边界：本版不交付真实容器/VM 执行器；启动量级与外部性能数字均标注为设计目标/外部资料、
+  非本仓基准。方案见 `docs/ausec/AUSEC-DESIGN.md`，发布说明见 `releases/v3.7.0.md`。
+
 ## [v3.6.0] - 2026-10-02
 
 ### 次版本：新增只读运维 CLI `gsn ledger verify` 与 `gsn doctor`（#78，minor）

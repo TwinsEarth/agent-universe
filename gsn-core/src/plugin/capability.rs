@@ -76,6 +76,33 @@ pub enum Capability {
     /// 配置隔离（内核，仅 T0）。
     #[serde(rename = "kernel:isolation:configure")]
     IsolationConfigure,
+
+    // ── AUSec 弹性计算（v3.7.0 起），见 docs/ausec/AUSEC-DESIGN.md §4 ──
+    // create/configure 分离：能创建沙盒 ≠ 能改隔离参数（后者是提权路径，仅 System）。
+    /// 驱动沙盒生命周期。
+    #[serde(rename = "sandbox:lifecycle")]
+    SandboxLifecycle,
+    /// 经 PMB 驱动沙盒动作。
+    #[serde(rename = "sandbox:message")]
+    SandboxMessage,
+    /// 创建沙盒。
+    #[serde(rename = "sandbox:create")]
+    SandboxCreate,
+    /// 生成 pack_diff 增量快照。
+    #[serde(rename = "sandbox:snapshot")]
+    SandboxSnapshot,
+    /// 从快照恢复 / 轨迹分叉。
+    #[serde(rename = "sandbox:restore")]
+    SandboxRestore,
+    /// 配置隔离参数（需额外审批，仅 T0）。
+    #[serde(rename = "sandbox:configure")]
+    SandboxConfigure,
+    /// 下发 AppArmor/eBPF/安全策略（仅 T0）。
+    #[serde(rename = "sandbox:policy:apply")]
+    SandboxPolicyApply,
+    /// 安全黑名单同步 / 紧急广播（仅 T0）。
+    #[serde(rename = "sandbox:blacklist:sync")]
+    SandboxBlacklistSync,
 }
 
 impl Capability {
@@ -97,6 +124,14 @@ impl Capability {
         Capability::PluginManage,
         Capability::PolicyWrite,
         Capability::IsolationConfigure,
+        Capability::SandboxLifecycle,
+        Capability::SandboxMessage,
+        Capability::SandboxCreate,
+        Capability::SandboxSnapshot,
+        Capability::SandboxRestore,
+        Capability::SandboxConfigure,
+        Capability::SandboxPolicyApply,
+        Capability::SandboxBlacklistSync,
     ];
 
     /// 能力的规范字符串形式。
@@ -118,6 +153,14 @@ impl Capability {
             Capability::PluginManage => "kernel:plugin:manage",
             Capability::PolicyWrite => "kernel:policy:write",
             Capability::IsolationConfigure => "kernel:isolation:configure",
+            Capability::SandboxLifecycle => "sandbox:lifecycle",
+            Capability::SandboxMessage => "sandbox:message",
+            Capability::SandboxCreate => "sandbox:create",
+            Capability::SandboxSnapshot => "sandbox:snapshot",
+            Capability::SandboxRestore => "sandbox:restore",
+            Capability::SandboxConfigure => "sandbox:configure",
+            Capability::SandboxPolicyApply => "sandbox:policy:apply",
+            Capability::SandboxBlacklistSync => "sandbox:blacklist:sync",
         }
     }
 
@@ -139,6 +182,32 @@ impl Capability {
         matches!(
             self,
             Capability::LifecycleRead | Capability::MessageSend | Capability::StorageOwn
+        )
+    }
+
+    /// 是否为 AUSec **治理类**能力（配置隔离 / 下发策略 / 黑名单同步）：
+    /// 仅 T0 系统插件可拥有，其它级别一律拒绝（即使声明也不行）。
+    /// 见 docs/ausec/AUSEC-DESIGN.md §4。
+    pub fn is_sandbox_governance(self) -> bool {
+        matches!(
+            self,
+            Capability::SandboxConfigure
+                | Capability::SandboxPolicyApply
+                | Capability::SandboxBlacklistSync
+        )
+    }
+
+    /// 是否为 AUSec **可委托类**能力（生命周期/消息/创建/快照/恢复）：
+    /// T0 默认授予，T1/T2 可声明并经审批，T3 拒绝。
+    /// `sandbox:snapshot/restore` 即官方插件 agent-council（v3.8.0）所需。
+    pub fn is_sandbox_delegable(self) -> bool {
+        matches!(
+            self,
+            Capability::SandboxLifecycle
+                | Capability::SandboxMessage
+                | Capability::SandboxCreate
+                | Capability::SandboxSnapshot
+                | Capability::SandboxRestore
         )
     }
 }
@@ -166,14 +235,14 @@ pub fn grant_for(tier: Tier, cap: Capability) -> Grant {
     if cap.is_basic() {
         return Grant::Granted;
     }
-    if cap.is_kernel() {
+    if cap.is_kernel() || cap.is_sandbox_governance() {
         return if tier == Tier::System {
             Grant::Granted
         } else {
             Grant::Denied
         };
     }
-    // 网络 / 链 / 经济 / 智能体能力。
+    // 网络 / 链 / 经济 / 智能体能力，以及 AUSec 可委托类沙盒能力。
     match tier {
         Tier::System => Grant::Granted,
         Tier::Official | Tier::Certified => Grant::Declarable,
@@ -268,5 +337,39 @@ mod tests {
             assert_eq!(Capability::parse(cap.as_str()), Some(*cap));
         }
         assert_eq!(Capability::parse("not:a:cap"), None);
+    }
+
+    // ── AUSec（v3.7.0）能力矩阵，见 docs/ausec/AUSEC-DESIGN.md §4 ──
+    #[test]
+    fn ausec_governance_is_system_only() {
+        // configure / policy:apply / blacklist:sync 是提权敏感能力：仅 T0。
+        for gov in [
+            Capability::SandboxConfigure,
+            Capability::SandboxPolicyApply,
+            Capability::SandboxBlacklistSync,
+        ] {
+            assert!(gov.is_sandbox_governance());
+            assert_eq!(grant_for(Tier::System, gov), Grant::Granted);
+            for t in [Tier::Official, Tier::Certified, Tier::ThirdParty] {
+                assert_eq!(grant_for(t, gov), Grant::Denied, "{gov:?} for {t:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ausec_delegable_offcert_declarable_thirdparty_denied() {
+        for cap in [
+            Capability::SandboxLifecycle,
+            Capability::SandboxMessage,
+            Capability::SandboxCreate,
+            Capability::SandboxSnapshot,
+            Capability::SandboxRestore,
+        ] {
+            assert!(cap.is_sandbox_delegable());
+            assert_eq!(grant_for(Tier::System, cap), Grant::Granted);
+            assert_eq!(grant_for(Tier::Official, cap), Grant::Declarable);
+            assert_eq!(grant_for(Tier::Certified, cap), Grant::Declarable);
+            assert_eq!(grant_for(Tier::ThirdParty, cap), Grant::Denied);
+        }
     }
 }

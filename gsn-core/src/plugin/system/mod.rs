@@ -8,6 +8,7 @@
 //! | [`SYS_NET`] | 网络传输（libp2p 宿主装配） |
 //! | [`SYS_STORAGE`] | 存储（账本/CRDT/纠删码） |
 //! | [`SYS_CHAIN`] | 链上锚定 / EVM |
+//! | [`SYS_AUSEC`] | AUSec 弹性计算：执行后端选择/就绪（v3.7.0 起） |
 //!
 //! T0 以 [`crate::plugin::runtime::native::NativeRuntime`] 进程内承载，
 //! 处理器是内核的真实函数，不经过隔离。
@@ -53,10 +54,12 @@ pub const SYS_NET: &str = "com.twinsearth.sys.net";
 pub const SYS_STORAGE: &str = "com.twinsearth.sys.storage";
 /// 系统插件：链。
 pub const SYS_CHAIN: &str = "com.twinsearth.sys.chain";
+/// 系统插件：AUSec 弹性计算（v3.7.0 起）。
+pub const SYS_AUSEC: &str = crate::ausec::AUSEC_PLUGIN;
 
 /// 全部系统插件 id（构建/装配顺序）。
 pub fn system_ids() -> Vec<&'static str> {
-    vec![SYS_IDENTITY, SYS_NET, SYS_STORAGE, SYS_CHAIN]
+    vec![SYS_IDENTITY, SYS_NET, SYS_STORAGE, SYS_CHAIN, SYS_AUSEC]
 }
 
 /// 构造一个 T0 系统插件清单（随内核，无外部签名）。
@@ -319,6 +322,10 @@ pub fn register_handlers(rt: &mut NativeRuntime, handles: &SystemHandles) {
                 .map_err(rt_err)
         });
     }
+
+    // ===== SYS_AUSEC：弹性计算后端选择/就绪（无外部句柄依赖，恒注册） =====
+    // 处理器本身是只读选择/查询；真实执行后端未接线时由 readiness 诚实拒绝。
+    crate::ausec::register(rt);
 }
 
 #[cfg(test)]
@@ -329,10 +336,33 @@ mod tests {
     #[test]
     fn bundled_manifests_are_system_tier() {
         let ms = bundled_manifests("3.0.0");
-        assert_eq!(ms.len(), 4);
+        assert_eq!(ms.len(), system_ids().len());
         for m in &ms {
             assert!(m.plugin.name.starts_with("com.twinsearth.sys."));
         }
+        // AUSec 必须在系统插件装配集中（v3.7.0 起）。
+        assert!(system_ids().contains(&SYS_AUSEC));
+    }
+
+    #[test]
+    fn ausec_system_plugin_status_and_select() {
+        // 经系统插件真实装配 → spawn → call 路径验证 AUSec 处理器（不是孤立单测）。
+        let mut rt = NativeRuntime::new();
+        register_handlers(&mut rt, &SystemHandles::default());
+        let mut inst = rt.spawn(&system_manifest(SYS_AUSEC, "3.0.0")).unwrap();
+
+        let st: serde_json::Value =
+            serde_json::from_slice(&inst.call("status", b"{}").unwrap()).unwrap();
+        assert_eq!(st["plugin"], SYS_AUSEC);
+        assert_eq!(st["backends"].as_array().unwrap().len(), 4);
+
+        let sel = serde_json::to_vec(&serde_json::json!({
+            "plugin_id": "com.twinsearth.sys.identity"
+        }))
+        .unwrap();
+        let out: serde_json::Value =
+            serde_json::from_slice(&inst.call("select_backend", &sel).unwrap()).unwrap();
+        assert_eq!(out["backend"], "fncall");
     }
 
     #[test]

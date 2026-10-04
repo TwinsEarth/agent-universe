@@ -26,6 +26,11 @@
 //!   持有期取消 release；一次 hold 恰好一次 release，跨账守恒
 //!   `capacity.held == Σ 已 hold 未终态订单成交量`，副作用失败不改写（fail-closed）。
 //!   仍是内存确定性编排，不动资金、不连链、不持久化、不新增对外写能力。
+//! - **v3.8.4 准入质押**：[`StakeLedger`] 独立资金账本，把容量注册里仅登记的
+//!   `stake_micro` 申报额落成可记账的四桶资金（available/frozen/slashed/withdrawn），
+//!   恒有 `deposited == available+frozen+slashed+withdrawn`；deposit/freeze/unfreeze/
+//!   slash/withdraw 全 checked、越界 fail-closed 不改写。**罚没只能来自己冻结保证金**
+//!   （决策/资金分离，账本不判违规），且**不改动**容量账本语义、不与订单/链接线。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -43,11 +48,13 @@ pub mod capacity;
 pub mod catalog;
 pub mod matching;
 pub mod metering;
+pub mod stake;
 
 pub use capacity::{CapacityRegistration, CapacityRegistry};
 pub use catalog::{catalog_entries, default_units};
 pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
+pub use stake::{StakeAccount, StakeLedger};
 
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::runtime::native::NativeRuntime;
@@ -204,6 +211,14 @@ pub enum ResourceError {
     OrderNotFound,
     /// 订单 id 已存在（v3.8.3，同一 id 不可重复提交成交）。
     DuplicateOrder { order_id: String },
+    /// 质押账户不存在（v3.8.4，未开户主体不得冻结/解冻/罚没/提取）。
+    StakeAccountNotFound,
+    /// 可用保证金不足（v3.8.4，冻结/提取超过 available，fail-closed）。
+    InsufficientFreeStake { requested: u128, available: u128 },
+    /// 解冻超过冻结额（v3.8.4，违反 frozen 守恒，疑似记账篡改）。
+    UnfreezeExceedsFrozen { attempted: u128, frozen: u128 },
+    /// 罚没超过冻结额（v3.8.4；罚没只能来自己冻结保证金，不能动可用余额）。
+    SlashExceedsFrozen { attempted: u128, frozen: u128 },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -319,6 +334,21 @@ impl std::fmt::Display for ResourceError {
             ResourceError::DuplicateOrder { order_id } => {
                 write!(f, "RESOURCE_DUPLICATE_ORDER: 订单 id 已存在: {order_id}")
             }
+            ResourceError::StakeAccountNotFound => {
+                write!(f, "RESOURCE_STAKE_ACCOUNT_NOT_FOUND: 质押账户不存在（未开户不得冻结/解冻/罚没/提取）")
+            }
+            ResourceError::InsufficientFreeStake { requested, available } => write!(
+                f,
+                "RESOURCE_INSUFFICIENT_FREE_STAKE: 请求 {requested} 超过可用保证金 {available}"
+            ),
+            ResourceError::UnfreezeExceedsFrozen { attempted, frozen } => write!(
+                f,
+                "RESOURCE_UNFREEZE_EXCEEDS_FROZEN: 解冻 {attempted} 超过冻结额 {frozen}（违反 frozen 守恒）"
+            ),
+            ResourceError::SlashExceedsFrozen { attempted, frozen } => write!(
+                f,
+                "RESOURCE_SLASH_EXCEEDS_FROZEN: 罚没 {attempted} 超过冻结额 {frozen}（只能罚没已冻结保证金）"
+            ),
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
             }
@@ -672,6 +702,7 @@ pub fn status_payload() -> serde_json::Value {
             "capacity_registration": true,
             "metering_ledger": true,
             "matching_orchestration": true,
+            "stake_ledger": true,
             "escrow_settlement": false,
             "stake_slash": false,
             "onchain_payment": false
@@ -682,9 +713,10 @@ pub fn status_payload() -> serde_json::Value {
             "offer_ask_submit": false,
             "capacity_registry_persistence": false,
             "metering_ledger_persistence": false,
-            "matching_engine_persistence": false
+            "matching_engine_persistence": false,
+            "stake_ledger_persistence": false
         },
-        "note": "v3.8.3：在类型/状态机/注册容量/计量账本之上，新增确定性撮合编排器 MatchingEngine——挂单容量闸门、Matched→CapacityHeld 按成交量 hold、执行/计量期开计量线与正计量、结算/判罚/持有期取消 release，一次 hold 恰好一次 release，跨账守恒 capacity.held=Σ在持订单成交量；副作用失败 fail-closed 不改写。仍为内存编排面，不持久化、不经 PMB 受理外部写单、不动资金、不连链；托管分账/质押罚没/链上结算在后续小版本。"
+        "note": "v3.8.4：新增独立准入质押账本 StakeLedger——deposit/freeze/unfreeze/slash/withdraw 四桶资金（available/frozen/slashed/withdrawn）守恒 deposited=四桶之和，全 checked、越界 fail-closed 不改写；罚没只能来自己冻结保证金（决策/资金分离，账本不判违规），不改动容量账本、不与订单/PMB/链接线、不持久化。stake_ledger 内核已就绪可单测，但质押按订单自动冻结、QA/审判驱动罚没、托管分账与链上结算仍在后续小版本（stake_slash/escrow_settlement/onchain_payment 暂 false）。"
     })
 }
 

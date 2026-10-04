@@ -1,3 +1,15 @@
+## [v3.8.8] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（9/10）——BFT-lite QA 抽样验证（n≥3f+1、2f+1 诚实超多数、equivocation 整轮作废）（#121，patch）
+
+- 新增 `gsn-core/src/economy/resource/qa.rs`：纯确定性内存态 BFT-lite 质量门 `QaRound` + `QaVote`/`QaVerdict`，零浮点/零 syscall/零 unsafe/无 panic；验证者总数须 `n≥3f+1`（required_validators），确认与否决均需 `2f+1`（approval_threshold），阈值 checked、致溢出的 f fail-closed。
+- 验证者提交本地重算结果摘要投票，observed==claimed 计赞成否则异议；同验证者同摘要重复幂等只计一票，为不同结果背书即 equivocation（保序去重）、整轮作废且后续投票不改变；空轮 id/空摘要/空验证者 fail-closed 不计票。
+- `adjudicate` 五态：EquivocationVoid（整轮丢弃，不结算不记信誉，留 equivocator 证据）/Pending（n<3f+1，全赞成也不确认）/Verified（赞成≥2f+1）/Rejected（异议≥2f+1）/NoSupermajority；`invariant_holds` 独立复核验证者唯一、赞成+异议==n、equivocator 去重、裁决与独立重算路径一致。
+- ResourceError 新增 4 变体（EmptyQaRoundId/EmptyQaDigest/EmptyQaValidator/QaFaultToleranceOverflow{f}）并复用既有 ArithmeticOverflow，补齐 RESOURCE_* Display（修 2 编译错：QaVote::new 参数名、Display 中 f 与 formatter 同名遮蔽）；`resource_market_status` 诚实位 bft_lite_qa=true、qa_round_persistence=false，stake_slash/onchain_payment 仍 false（同步系统插件 status 快照测试）。
+- 新增 8 回归（f=1 诚实超多数 Verified/样本不足 Pending/恰 2:2 NoSupermajority/equivocation 整轮作废/同票幂等/异议超多数 Rejected/f=0 单验证者与空轮/空字段拒绝+阈值逐点核对+溢出 fail-closed）；全量 gsn-core lib **526/0**（较 518 增 8）、fmt --check、clippy --all-targets -D warnings、check-no-panics(prod=0)、unsafe-containment（qa.rs 零 unsafe，仍仅 winjob.rs 3/3）、metadata --locked（bump 前后）、js test(22) 全绿。
+- 版本 npm 3.8.8 ↔ gsn-core 0.3.88。
+- 诚实边界：仅确定性裁决内核，不选验证者/不抽样/不发起重算/不接 PMB（投票是入参），防刷分女巫合谋只是规则面；不自动罚没、不联动 v3.8.4 质押（EquivocationVoid 仅出证据名单）；不自动驱动 Escrow/Reputation；内存态不持久化/不上链/无 TEE·zkML 验证器；f 由调用方提供、不校验验证者与信誉质押绑定。动态定价/聚合/冷启动开关在 3.8.9，真实 BTC/ETH/稳定币结算与私钥隔离在 v3.9.x。
+
 ## [v3.8.7] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（8/10）——四维信誉账本（quality/speed/honesty/availability，不可转让、整数评分、归一权重复合分）（#120，patch）

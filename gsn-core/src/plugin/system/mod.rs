@@ -402,6 +402,7 @@ mod tests {
         // 罚没与链上支付仍未强制。
         assert_eq!(st["enforceable"]["escrow_settlement"], true);
         assert_eq!(st["enforceable"]["snapshot_royalty"], true);
+        assert_eq!(st["enforceable"]["reputation_scoring"], true);
         assert_eq!(st["enforceable"]["stake_slash"], false);
         assert_eq!(st["enforceable"]["onchain_payment"], false);
 

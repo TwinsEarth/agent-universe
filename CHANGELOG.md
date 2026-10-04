@@ -1,3 +1,15 @@
+## [v3.8.7] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（8/10）——四维信誉账本（quality/speed/honesty/availability，不可转让、整数评分、归一权重复合分）（#120，patch）
+
+- 新增 `gsn-core/src/economy/resource/reputation.rs`：纯确定性内存态四维信誉账本 `ReputationLedger` + `ReputationFeedback`/`ReputationDimension`/`DimensionWeights`，零浮点/零 syscall/零 unsafe/无 panic；评分整数 0..=100，均值整数千分位（PERMILLE=1000，100000=100.0，sum×1000/count 确定性向下取整），复合分用四维和恰 1000‰ 的归一整数权重（默认等权 250，非归一 `ReputationWeightsNotNormalized` fail-closed）。
+- 单一不可变反馈日志、查询时确定性 fold（不另存漂移累加器）；`record` 空 feedback_id/空主体/任一维分>100/重复 feedback_id 全 fail-closed 且不落账；查询 dimension_sum/dimension_average_permille/composite_permille/feedback_count_for/subjects，未知主体返回 0 不报错。
+- `invariant_holds`：权重归一 + 全表计数==Σ主体计数 + 各维均值∈[0,100000] + 复合分两条独立路径（逐维度均值加权 / 逐反馈复合后取均值）恒等。信誉**绑定身份不可转让**：无任何转账过户 API，主体分数只随自身反馈变化。
+- ResourceError 新增 5 变体（EmptyFeedbackId/EmptyReputationSubject/ReputationRatingOutOfRange{dimension,value}/DuplicateReputationFeedback{feedback_id}/ReputationWeightsNotNormalized{sum}）并复用既有 ArithmeticOverflow，补齐 RESOURCE_* Display；`resource_market_status` 诚实位 reputation_scoring=true、reputation_ledger_persistence=false，stake_slash/onchain_payment 仍 false（同步系统插件 status 快照测试）。
+- 新增 7 回归（单条四维与等权复合/多反馈整数取整/越界拒绝不污染边界0与100合法/重复id空字段拒绝/未知主体0不报错/自定义归一票复合与权重校验/多主体独立不可转让）；全量 gsn-core lib **518/0**（较 511 增 7）、fmt --check、clippy --all-targets -D warnings（修 3 lint：派生 Default/!matches!/checked_div）、check-no-panics(prod=0)、unsafe-containment（reputation.rs 零 unsafe，仍仅 winjob.rs 3/3）、metadata --locked、js test(22) 全绿。
+- 版本 npm 3.8.7 ↔ gsn-core 0.3.87。
+- 诚实边界：信誉仅内存记账，不持久化/不上链/不跨节点/不自动采集信号/不做 BFT 验证/不自动驱动撮合定价/不经 PMB 外部写/不新增能力令牌；评分是入参、账本不担保其真实（防刷分/女巫靠 v3.8.8 BFT-lite QA 与质押罚没）；不可转让指无转移 API、非链上不可转让（ERC-8004 在 v3.9.4），不做衰减/申诉/自适应权重；动态定价与信誉溢价在 3.8.9，真实 BTC/ETH/稳定币结算与私钥隔离在 v3.9.x。
+
 ## [v3.8.6] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（7/10）——快照商品化版税账本（pack_diff 快照注册为商品，按次/复用版税三维累计，与托管 royalty 桶逐单对账）（#119，patch）

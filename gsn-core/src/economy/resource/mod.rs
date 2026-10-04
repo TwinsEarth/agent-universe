@@ -44,6 +44,11 @@
 //!   费率算给创建者的钱（取整口径同 v3.8.5，余数留供给方），不符或「扣了版税却无快照
 //!   受款」fail-closed 不落账；恒有全表版税=Σ快照=Σ创建者。仍是内存确定性记账，不真实
 //!   派发版税、不持久化、不连链。
+//! - **v3.8.7 四维信誉**：[`ReputationLedger`] 把每笔已结算订单的事后反馈按四个相互
+//!   独立维度累计——quality/speed/honesty/availability；评分整数 0..=100，均值整数
+//!   千分位（100000=100.0），复合分用和为 1000‰ 的归一整数权重加权（默认等权）。
+//!   信誉**绑定身份、不可转让**（只有记反馈/读聚合，无转账过户接口），为撮合优先级与
+//!   后续定价权提供确定性输入；仍是内存态、不持久化、不上链、不自动驱动撮合/定价。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -62,6 +67,7 @@ pub mod catalog;
 pub mod escrow;
 pub mod matching;
 pub mod metering;
+pub mod reputation;
 pub mod royalty;
 pub mod stake;
 
@@ -72,6 +78,7 @@ pub use escrow::{
 };
 pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
+pub use reputation::{DimensionWeights, ReputationDimension, ReputationFeedback, ReputationLedger};
 pub use royalty::{RoyaltyAccrual, RoyaltyLedger, SnapshotAsset, SnapshotRegistry};
 pub use stake::{StakeAccount, StakeLedger};
 
@@ -268,6 +275,16 @@ pub enum ResourceError {
         escrow_royalty: u128,
         accrued_royalty: u128,
     },
+    /// 信誉反馈/订单 id 为空（v3.8.7）。
+    EmptyFeedbackId,
+    /// 被评信誉主体 DID 为空（v3.8.7）。
+    EmptyReputationSubject,
+    /// 某信誉维度评分越界（>100）（v3.8.7）。
+    ReputationRatingOutOfRange { dimension: String, value: u32 },
+    /// 同一 feedback_id 重复记账（v3.8.7，一笔订单只能评一次）。
+    DuplicateReputationFeedback { feedback_id: String },
+    /// 四维信誉权重之和不等于 1000‰（v3.8.7）。
+    ReputationWeightsNotNormalized { sum: u32 },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -449,6 +466,21 @@ impl std::fmt::Display for ResourceError {
                 f,
                 "RESOURCE_ROYALTY_ESCROW_MISMATCH: 订单 {order_id} 托管版税 {escrow_royalty} 与快照应计版税 {accrued_royalty} 不符"
             ),
+            ResourceError::EmptyFeedbackId => {
+                write!(f, "RESOURCE_EMPTY_FEEDBACK_ID: 信誉反馈 id 为空")
+            }
+            ResourceError::EmptyReputationSubject => {
+                write!(f, "RESOURCE_EMPTY_REPUTATION_SUBJECT: 被评信誉主体为空")
+            }
+            ResourceError::ReputationRatingOutOfRange { dimension, value } => {
+                write!(f, "RESOURCE_REPUTATION_RATING_OUT_OF_RANGE: 维度 {dimension} 评分 {value} 超出 0..=100")
+            }
+            ResourceError::DuplicateReputationFeedback { feedback_id } => {
+                write!(f, "RESOURCE_DUPLICATE_REPUTATION_FEEDBACK: 反馈 {feedback_id} 已记过")
+            }
+            ResourceError::ReputationWeightsNotNormalized { sum } => {
+                write!(f, "RESOURCE_REPUTATION_WEIGHTS_NOT_NORMALIZED: 四维权重之和 {sum}‰ 不等于 1000‰")
+            }
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
             }
@@ -805,6 +837,7 @@ pub fn status_payload() -> serde_json::Value {
             "stake_ledger": true,
             "escrow_settlement": true,
             "snapshot_royalty": true,
+            "reputation_scoring": true,
             "stake_slash": false,
             "onchain_payment": false
         },
@@ -817,9 +850,10 @@ pub fn status_payload() -> serde_json::Value {
             "matching_engine_persistence": false,
             "stake_ledger_persistence": false,
             "escrow_ledger_persistence": false,
-            "snapshot_royalty_persistence": false
+            "snapshot_royalty_persistence": false,
+            "reputation_ledger_persistence": false
         },
-        "note": "v3.8.6：新增快照商品化版税 RoyaltyLedger+SnapshotRegistry——pack_diff 增量快照注册为商品（snapshot_ref→创建者 DID+版税千分点），每笔已结算订单按恢复快照记一次版税（一单一次），按快照/创建者/全表三维累计，恒有全表版税=Σ快照=Σ创建者，并与 v3.8.5 EscrowSplit 的 royalty 桶逐单对账（取整口径同 v3.8.5、余数留供给方；扣了版税却无快照受款或金额不符 fail-closed 不落账）。纯内存确定性记账，不真实派发版税/不持久化/不连 UDOS/不连链/不经 PMB 受理外部写/不新增能力令牌；真实版税划转、pack_diff 存储与 BTC/ETH/稳定币结算仍在后续（onchain_payment 暂 false）。v3.8.5：托管五桶守恒（payout_provider/royalty/governance_fee/refund_buyer/slashed，locked=五桶之和），费率整数千分点、罚没只出供给方候选应得、不罚消费者退款、结算边界再守恒，污染视图 fail-closed。"
+        "note": "v3.8.7：新增四维信誉账本 ReputationLedger——每笔已结算订单事后反馈按 quality/speed/honesty/availability 四维独立累计，评分整数 0..=100，均值整数千分位（100000=100.0、确定性向下取整），复合分用和为 1000‰ 的归一整数权重（默认等权，非归一 fail-closed），单一不可变反馈日志、查询时确定性 fold，复合分经逐维度/逐反馈两独立路径守恒复核。信誉绑定身份、不可转让（无转账过户接口），为撮合优先级与后续定价权提供确定性输入；纯内存态、不持久化/不上链/不经 PMB 受理外部写/不新增能力令牌/不自动驱动撮合定价，链上 ERC-8004 信誉锚定在 v3.9.x。v3.8.6：快照商品化版税 RoyaltyLedger+SnapshotRegistry，pack_diff 快照注册为商品、一单一次版税、全表=Σ快照=Σ创建者并与 royalty 桶逐单对账，不符 fail-closed 不落账，不真实派发/不连 UDOS/链。v3.8.5：托管五桶守恒，整数千分点、罚没只出供给方候选应得、不罚消费者退款、结算边界再守恒。"
     })
 }
 

@@ -14,6 +14,9 @@
 //! - 内部记账单位 [`Credits`]：`u128` 微单位（1 credit = 10^6 micro），**不挂法币、
 //!   不挂链**，链上结算（BTC/ETH/稳定币）是 v3.9.x 的事，本版本只做守恒记账；
 //! - 系统插件 [`RESOURCE_MARKET_PLUGIN`]：经 PMB 暴露只读 `resource_market_status`。
+//! - **v3.8.1 注册容量**：[`CapacityRegistry`] 内存账本（register/hold/release/
+//!   deregister）+ 挂单容量闸门 [`CapacityRegistry::check_offer`]，fail-closed，
+//!   守恒不变量 `held <= capacity`；只登记准入质押，不冻结/罚没。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -27,8 +30,10 @@
 //! 3.8.5 托管结算守恒、3.8.6 快照商品化版税、3.8.7 四维信誉、3.8.8 BFT-lite QA、
 //! 3.8.9 动态定价/聚合/冷启动开关。
 
+pub mod capacity;
 pub mod catalog;
 
+pub use capacity::{CapacityRegistration, CapacityRegistry};
 pub use catalog::{catalog_entries, default_units};
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -141,6 +146,32 @@ pub enum ResourceError {
     },
     /// 求购数量超过供给可售数量。
     AskExceedsOfferQuantity { ask: u128, available: u128 },
+    /// 供给方 DID 为空（注册/挂单必须有可追责主体）。
+    EmptyProviderDid,
+    /// 注册的计量维度不属于该资源形态的目录（v3.8.1，见 [`crate::economy::resource::catalog::default_units`]）。
+    UnitNotInCatalog { kind: ResourceKind, unit: MeterUnit },
+    /// 同一 (供给方, 资源形态, 计量单位) 容量已注册，不可重复注册（需先注销再改）。
+    DuplicateRegistration {
+        provider_did: String,
+        kind: ResourceKind,
+        unit: MeterUnit,
+    },
+    /// 容量注册不存在（未注册容量不得挂单/预留/释放）。
+    RegistrationNotFound,
+    /// 预留超出当前可售容量（held + 本次 > capacity）。
+    CapacityExceeded {
+        hold_requested: u128,
+        available: u128,
+    },
+    /// 释放量超过已预留量（违反 held 守恒，疑似重复释放/记账篡改）。
+    OverRelease { attempted: u128, held: u128 },
+    /// 仍有预留容量时禁止注销（防止带着未结订单卷走供给）。
+    CapacityStillHeld { held: u128 },
+    /// 挂单数量超过该供给方注册的当前可售容量。
+    OfferExceedsRegisteredCapacity {
+        offer_quantity: u128,
+        available: u128,
+    },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -182,6 +213,50 @@ impl std::fmt::Display for ResourceError {
             ResourceError::AskExceedsOfferQuantity { ask, available } => write!(
                 f,
                 "RESOURCE_QTY_EXCEEDS: 求购数量 {ask} 超过可售 {available}"
+            ),
+            ResourceError::EmptyProviderDid => {
+                write!(f, "RESOURCE_EMPTY_PROVIDER_DID: 供给方 DID 不能为空")
+            }
+            ResourceError::UnitNotInCatalog { kind, unit } => write!(
+                f,
+                "RESOURCE_UNIT_NOT_IN_CATALOG: 计量维度 {} 不属于资源形态 {} 的目录",
+                unit.as_str(),
+                kind.as_str()
+            ),
+            ResourceError::DuplicateRegistration {
+                provider_did,
+                kind,
+                unit,
+            } => write!(
+                f,
+                "RESOURCE_DUPLICATE_REGISTRATION: 容量已注册: provider={provider_did} kind={} unit={}",
+                kind.as_str(),
+                unit.as_str()
+            ),
+            ResourceError::RegistrationNotFound => {
+                write!(f, "RESOURCE_REGISTRATION_NOT_FOUND: 容量注册不存在")
+            }
+            ResourceError::CapacityExceeded {
+                hold_requested,
+                available,
+            } => write!(
+                f,
+                "RESOURCE_CAPACITY_EXCEEDED: 预留 {hold_requested} 超过当前可售容量 {available}"
+            ),
+            ResourceError::OverRelease { attempted, held } => write!(
+                f,
+                "RESOURCE_OVER_RELEASE: 释放 {attempted} 超过已预留 {held}（违反 held 守恒）"
+            ),
+            ResourceError::CapacityStillHeld { held } => write!(
+                f,
+                "RESOURCE_CAPACITY_STILL_HELD: 仍有 {held} 预留容量，禁止注销"
+            ),
+            ResourceError::OfferExceedsRegisteredCapacity {
+                offer_quantity,
+                available,
+            } => write!(
+                f,
+                "RESOURCE_OFFER_EXCEEDS_CAPACITY: 挂单数量 {offer_quantity} 超过注册可售 {available}"
             ),
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
@@ -533,6 +608,7 @@ pub fn status_payload() -> serde_json::Value {
         "enforceable": {
             "state_machine": true,
             "matching_kernel": true,
+            "capacity_registration": true,
             "metering_ledger": false,
             "escrow_settlement": false,
             "stake_slash": false,
@@ -541,9 +617,10 @@ pub fn status_payload() -> serde_json::Value {
         "provided": {
             "resource_market_status": true,
             "order_lifecycle_advance": false,
-            "offer_ask_submit": false
+            "offer_ask_submit": false,
+            "capacity_registry_persistence": false
         },
-        "note": "v3.8.0 基座：类型+状态机+内部记账单位；撮合/计量/托管/质押在后续小版本。"
+        "note": "v3.8.1：类型+状态机+内部记账单位+注册容量内存账本（register/hold/release/挂单容量闸门，fail-closed）；计量/托管/质押/链上结算在后续小版本。容量账本为确定性内存记账面，不持久化、非全局单例。"
     })
 }
 

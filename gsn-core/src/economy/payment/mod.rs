@@ -33,10 +33,15 @@
 //! 外部报道的各项数字（x402 交易量、BlackRock 模型储蓄占比、ERC-8004 采用量、
 //! A402 性能等）均为**第三方报道口径，非本仓复测**；本内核不内置这些数字作为事实。
 
+pub mod l402;
 pub mod router;
 pub mod signer;
 pub mod x402;
 
+pub use l402::{
+    parse_bolt11_amount_msat, verify_settlement as l402_verify_settlement, L402Challenge,
+    L402Credential, L402Error, PaymentHash, Preimage, L402_SCHEME,
+};
 pub use router::{
     PaymentRouter, PaymentTrack, RouteDecision, RouteReason, RoutingInput, RoutingPolicy,
     SettlementUrgency, TrackAvailability,
@@ -77,6 +82,15 @@ pub const METHOD_X402_SETTLEMENT_VERIFY: &str = "x402_settlement_verify";
 
 /// PMB 方法：x402 EVM 链上签发（本版无 secp256k1 后端，一律具名 fail-closed，不伪造）。
 pub const METHOD_X402_SIGN: &str = "x402_sign";
+
+/// PMB 方法：L402 闪电挑战解析（`WWW-Authenticate` 头 -> macaroon/invoice/金额 msat，只读）。
+pub const METHOD_L402_PARSE_CHALLENGE: &str = "l402_parse_challenge";
+
+/// PMB 方法：L402 凭证校验（macaroon 一致 + SHA256(preimage)==payment_hash + 精确金额）。
+pub const METHOD_L402_VERIFY: &str = "l402_verify";
+
+/// PMB 方法：L402 闪电支付/开票（本版不连闪电节点，一律具名 fail-closed，不伪造 HTLC）。
+pub const METHOD_L402_PAY: &str = "l402_pay";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,6 +205,7 @@ pub fn status_payload() -> serde_json::Value {
         "introduced_in": "v3.9.0",
         "signing_introduced_in": "v3.9.1",
         "x402_introduced_in": "v3.9.2",
+        "l402_introduced_in": "v3.9.3",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -211,11 +226,12 @@ pub fn status_payload() -> serde_json::Value {
             "instant_cap": RoutingPolicy::default().instant_cap_micro,
             "large_floor": RoutingPolicy::default().large_floor_micro
         },
-        // v3.9.1 只读选路 + 宿主受限签名；v3.9.2 增 x402 协议只读构造/校验。执行/链上写仍在后续版本。
+        // v3.9.1 只读选路 + 宿主受限签名；v3.9.2 增 x402 协议只读构造/校验；v3.9.3 增闪电 L402 只读协议。执行/链上写仍在后续版本。
         "capabilities_declared": [
             "pay:route:read",
             "wallet:sign:host-restricted",
-            "x402:protocol:read"
+            "x402:protocol:read",
+            "l402:protocol:read"
         ],
         "capabilities_reserved_later": [
             "pay:execute",
@@ -260,6 +276,29 @@ pub fn status_payload() -> serde_json::Value {
             "live_settlement": false,
             "note": "只校验 402 challenge、构造 EIP-3009 授权与 EIP-712 待签 digest、按精确金额守恒校验 facilitator 回执；不持 secp256k1 私钥、不产出链上签名、不连 RPC、不广播不划转。过期判定 now 由调用方传入。"
         },
+        "l402": {
+            "introduced_in": "v3.9.3",
+            "track": "lightning_l402",
+            "amount_unit": "msat (integer satoshis*1000)",
+            "methods": [
+                "l402_parse_challenge",
+                "l402_verify",
+                "l402_pay"
+            ],
+            "invoice_networks_supported": ["lnbc", "lntb", "lnbcrt"],
+            "invoice_amount_multipliers": ["", "m", "u", "n", "p"],
+            "payment_hash_algorithm": "BOLT: payment_hash = SHA256(preimage) (standard sha2, not keccak)",
+            "bolt11_bech32_data_decoded": false,
+            "macaroon_signature_verified": false,
+            "l402_pay_fail_closed": true,
+            "exact_settlement_conservation": true,
+            "fabricated_preimage_on_failure": false,
+            "clock_read_in_kernel": false,
+            "lightning_node_connection": false,
+            "htlc_creation_or_settlement": false,
+            "live_settlement": false,
+            "note": "只解析 402 挑战头与 BOLT11 人类可读金额前缀（整数 msat）、校验凭证 macaroon 一致性与 SHA256(preimage)==payment_hash、按精确金额守恒；不解码 bech32 数据段/节点签名、不校验 macaroon 签名（需服务端 root key）、不连闪电节点、不创建或结算 HTLC、不持私钥。payment_hash 须由受信任发票解码服务取得后传入；本地哈希关系通过不代表 HTLC 路由层最终确认。"
+        },
         "enforceable": {
             "deterministic_route_decision": true,
             "integer_thresholds": true,
@@ -269,6 +308,8 @@ pub fn status_payload() -> serde_json::Value {
             "host_only_signing_private_key_isolation": true,
             "sandbox_direct_transaction_signing": false,
             "x402_exact_amount_conservation": true,
+            "l402_exact_amount_conservation": true,
+            "fail_closed_when_lightning_not_configured": true,
             "fund_movement": false,
             "key_holding_in_sandbox": false,
             "transaction_signing": false,
@@ -284,12 +325,15 @@ pub fn status_payload() -> serde_json::Value {
             "x402_authorize_preview": true,
             "x402_settlement_verify": true,
             "x402_sign_when_evm_signer_configured": true,
+            "l402_parse_challenge": true,
+            "l402_verify": true,
+            "l402_pay_when_lightning_configured": true,
             "router_persistence": false,
             "lightning_node_connection": false,
             "evm_rpc_connection": false,
             "btc_rgb_connection": false
         },
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。闪电 L402 v3.9.3、ERC-8004 v3.9.4、Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。ERC-8004 v3.9.4、Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
     })
 }
 
@@ -417,6 +461,70 @@ fn handle_x402_sign(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
     ))
 }
 
+/// 字节桥：`l402_parse_challenge`（只读解析 402 挑战头 + BOLT11 金额，不连节点）。
+fn handle_l402_parse_challenge(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        www_authenticate: String,
+    }
+    let req: Req = parse_json("l402_parse_challenge", payload)?;
+    let challenge = L402Challenge::parse_www_authenticate(&req.www_authenticate)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let amount_msat = challenge
+        .invoice_amount_msat()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "scheme": L402_SCHEME,
+        "macaroon": challenge.macaroon,
+        "invoice": challenge.invoice,
+        "amount_msat": amount_msat,
+    }))
+    .map_err(|e| PluginError::Runtime(format!("l402_parse_challenge 序列化失败: {e}")))
+}
+
+/// 字节桥：`l402_verify`（凭证 macaroon 一致 + SHA256(preimage)==payment_hash + 精确金额）。
+///
+/// `payment_hash_hex` 由调用方从**受信任**发票解码服务取得后传入；内核不自行 bech32 解码。
+fn handle_l402_verify(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        www_authenticate: String,
+        payment_hash_hex: String,
+        preimage_hex: String,
+        paid_msat: u64,
+    }
+    let req: Req = parse_json("l402_verify", payload)?;
+    let challenge = L402Challenge::parse_www_authenticate(&req.www_authenticate)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let expected = PaymentHash::from_hex(&req.payment_hash_hex)
+        .ok_or_else(|| PluginError::Runtime("L402_INVALID_PAYMENT_HASH".to_string()))?;
+    let cred = L402Credential::new(&challenge, &req.preimage_hex)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    cred.verify(&challenge, &expected, req.paid_msat)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let required_msat = challenge
+        .invoice_amount_msat()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "settled": true,
+        "required_msat": required_msat,
+        "paid_msat": req.paid_msat,
+        "payment_hash_hex": expected.to_hex(),
+        "authorization_header": cred.to_authorization_header(),
+    }))
+    .map_err(|e| PluginError::Runtime(format!("l402_verify 序列化失败: {e}")))
+}
+
+/// 字节桥：`l402_pay`（闪电真实支付/开票）。
+///
+/// 本版**不连接任何闪电节点**、不持私钥、不创建或结算 HTLC：对任何请求一律具名
+/// [`L402Error`] 风格 fail-closed，绝不伪造发票或原像。
+fn handle_l402_pay(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
+    Err(PluginError::Runtime(
+        "L402_LIGHTNING_NOT_CONFIGURED".to_string(),
+    ))
+}
+
 fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
     if payload.is_empty() {
         return Err(PluginError::Runtime(format!(
@@ -465,6 +573,17 @@ pub fn register(rt: &mut NativeRuntime) {
         handle_x402_settlement_verify,
     );
     rt.register_handler(PAYMENT_ROUTER_PLUGIN, METHOD_X402_SIGN, handle_x402_sign);
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_L402_PARSE_CHALLENGE,
+        handle_l402_parse_challenge,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_L402_VERIFY,
+        handle_l402_verify,
+    );
+    rt.register_handler(PAYMENT_ROUTER_PLUGIN, METHOD_L402_PAY, handle_l402_pay);
 }
 
 #[cfg(test)]
@@ -521,18 +640,30 @@ mod tests {
         assert_eq!(s["provided"]["x402_challenge_validate"], true);
         assert_eq!(s["provided"]["x402_authorize_preview"], true);
         assert_eq!(s["provided"]["x402_settlement_verify"], true);
+        assert_eq!(s["provided"]["l402_parse_challenge"], true);
+        assert_eq!(s["provided"]["l402_verify"], true);
+        assert_eq!(s["provided"]["l402_pay_when_lightning_configured"], true);
         assert_eq!(s["provided"]["lightning_node_connection"], false);
         assert_eq!(s["tracks"].as_array().unwrap().len(), 3);
-        // v3.9.1 两个 + v3.9.2 x402 只读协议能力。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 3);
+        // v3.9.1 两个 + v3.9.2 x402 只读协议 + v3.9.3 l402 只读协议能力。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 4);
         assert_eq!(
             s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
             true
         );
         assert_eq!(s["enforceable"]["x402_exact_amount_conservation"], true);
+        assert_eq!(s["enforceable"]["l402_exact_amount_conservation"], true);
+        assert_eq!(
+            s["enforceable"]["fail_closed_when_lightning_not_configured"],
+            true
+        );
         assert_eq!(s["x402"]["introduced_in"], "v3.9.2");
         assert_eq!(s["x402"]["produces_onchain_signature"], false);
         assert_eq!(s["x402"]["live_settlement"], false);
+        assert_eq!(s["l402"]["introduced_in"], "v3.9.3");
+        assert_eq!(s["l402"]["live_settlement"], false);
+        assert_eq!(s["l402"]["lightning_node_connection"], false);
+        assert_eq!(s["l402"]["l402_pay_fail_closed"], true);
         assert_eq!(s["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(s["signing"]["seed_enters_sandbox"], false);
         assert_eq!(
@@ -582,5 +713,66 @@ mod tests {
 
         // 空负载拒绝。
         assert!(handle_wallet_sign(METHOD_WALLET_SIGN, &[]).is_err());
+    }
+
+    #[test]
+    fn l402_handlers_parse_verify_and_pay_fail_closed() {
+        use sha2::{Digest, Sha256};
+        let pre = [9u8; 32];
+        let hash_hex = hex::encode(Sha256::digest(pre));
+        let pre_hex = hex::encode(pre);
+        let header = r#"L402 macaroon="MAC9", invoice="lnbc100n1p""#; // 10_000 msat
+
+        // parse_challenge。
+        let p = serde_json::to_vec(&serde_json::json!({ "www_authenticate": header })).unwrap();
+        let out: serde_json::Value = serde_json::from_slice(
+            &handle_l402_parse_challenge(METHOD_L402_PARSE_CHALLENGE, &p).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(out["amount_msat"], 10_000);
+        assert_eq!(out["macaroon"], "MAC9");
+
+        // verify 成功：正确 hash + 精确金额。
+        let v = serde_json::to_vec(&serde_json::json!({
+            "www_authenticate": header,
+            "payment_hash_hex": hash_hex,
+            "preimage_hex": pre_hex,
+            "paid_msat": 10_000u64,
+        }))
+        .unwrap();
+        let ok: serde_json::Value =
+            serde_json::from_slice(&handle_l402_verify(METHOD_L402_VERIFY, &v).unwrap()).unwrap();
+        assert_eq!(ok["settled"], true);
+        assert_eq!(ok["authorization_header"], format!("L402 MAC9:{pre_hex}"));
+
+        // 金额不守恒拒绝。
+        let mut bad = serde_json::from_slice::<serde_json::Value>(&v).unwrap();
+        bad["paid_msat"] = 9_999.into();
+        let badp = serde_json::to_vec(&bad).unwrap();
+        assert!(handle_l402_verify(METHOD_L402_VERIFY, &badp).is_err());
+
+        // 伪造原像（hash 不符）拒绝。
+        let mut wrong_pre = [0u8; 32];
+        wrong_pre[0] = 1;
+        let mut bad2 = serde_json::from_slice::<serde_json::Value>(&v).unwrap();
+        bad2["preimage_hex"] = hex::encode(wrong_pre).into();
+        let bad2p = serde_json::to_vec(&bad2).unwrap();
+        assert!(handle_l402_verify(METHOD_L402_VERIFY, &bad2p).is_err());
+
+        // 非法 payment_hash 拒绝。
+        let mut bad3 = serde_json::from_slice::<serde_json::Value>(&v).unwrap();
+        bad3["payment_hash_hex"] = "0x12".into();
+        let bad3p = serde_json::to_vec(&bad3).unwrap();
+        assert!(handle_l402_verify(METHOD_L402_VERIFY, &bad3p).is_err());
+
+        // pay：不连闪电节点，一律具名 fail-closed。
+        let err = handle_l402_pay(METHOD_L402_PAY, &v)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("L402_LIGHTNING_NOT_CONFIGURED"), "got {err}");
+
+        // 空负载拒绝。
+        assert!(handle_l402_parse_challenge(METHOD_L402_PARSE_CHALLENGE, &[]).is_err());
+        assert!(handle_l402_verify(METHOD_L402_VERIFY, &[]).is_err());
     }
 }

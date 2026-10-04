@@ -1,3 +1,16 @@
+## [v3.9.0] - 2026-10-04
+
+### 修订版：比特币/以太坊 Agent 经济体（1/9）——结算路由 PaymentRouter（纯确定性整数选路，闪电 L402 / EVM x402 / BTC RGB·HTLC 三轨，只决策不动钱，缺轨 fail-closed）（#123，minor）
+
+- 新增 `gsn-core/src/economy/payment/router.rs` 与 `payment/mod.rs`，在 `economy/` 下开 v3.9.x 加密经济体域；零浮点/零 syscall/零 unsafe/无 panic，金额 u128 micro、全整数比较。
+- 三轨 `PaymentTrack`：lightning_l402（即时高频微支付）/ evm_x402（L2 稳定币·可编程条件·DeFi 默认）/ btc_rgb_htlc（大额或跨周期主链最终结算，is_finality）；`TrackAvailability` const all/none/only/is_empty/supports 描述节点可用轨道。
+- 确定性选路 `PaymentRouter::route` 自上而下短路：defi→EVM、smart_contract→EVM（可编程性优先于大额/跨周期）、amount>=large_floor(默认 100_000_000) 或 cross_epoch→BTC、instant 且 amount<=instant_cap(默认 10_000)→闪电、其余→EVM 稳定币默认；结果带 RouteDecision{track,reason} 五理由可审计。`RoutingPolicy::validated` 要求两阈值为正且 cap<floor，否则 RoutingPolicyInvalid。
+- fail-closed：所需轨道不可用具名 RouteTrackUnavailable{required} 拒绝而非静默降级（不改变费用/最终性/信任假设）；RoutingInput::new 构造期拒绝零金额 NonPositiveAmount、无可用轨道 NoAvailableTrack、defi&&!sc DefiWithoutSmartContract。PaymentError 5 变体带 PAYMENT_* Display + std::error::Error。
+- 新增 T0 系统插件 `com.twinsearth.sys.payment-router`（系统插件集 6→7：identity/net/storage/chain/ausec/resource-market/payment-router），只注册只读 payment_router_status；enforceable 仅 deterministic_route_decision/integer_thresholds/fail_closed=true，fund_movement/key_holding/transaction_signing/transaction_broadcast/onchain_anchor_write/currency_exchange 全 false，三类节点连接 false；仅声明 pay:route:read，pay:execute/wallet:sign/chain:anchor:write 登记为后续保留不授权。
+- 新增 11 测试（router 8：即时小额含边界、超即时上限与中段含大额下限-1、大额边界与跨周期、智能合约压过大额/跨周期、defi 强制 EVM 且矛盾 fail-closed、三轨缺失均不降级、零额/空可用/坏策略/自定义策略/确定性/字符串；payment/mod 2；系统装配快照 1：真实 spawn→call 断言 tracks=3、诚实位、capabilities_declared=1，未接线 wallet_sign/pay_execute NotFound）；全量 gsn-core lib **544/0**（较 533 增 11）、fmt --check、clippy --all-targets -D warnings（PaymentRouter 改 derive Default）、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、metadata --locked、js test(22) 全绿。
+- 版本 npm 3.9.0 ↔ gsn-core/gsn-daemon 0.3.90。
+- 诚实边界：纯决策内核，不持私钥/不签名/不广播/不划转/不兑换/不连节点/不持久化/不经 PMB 受理外部写；默认阈值（0.01/100 credits）是整数策略分界不承诺法币币价。宿主签名服务与私钥隔离 v3.9.1、EVM x402(USDC) v3.9.2、闪电 L402 v3.9.3、ERC-8004 三注册表 v3.9.4、ERC-4337 Paymaster v3.9.5、BTC HTLC/RGB 纯校验 v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8。外部协议采用量/性能数字均为第三方报道口径、非本仓复测。
+
 ## [v3.8.9] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（10/10，收尾）——动态定价 + 订单聚合 + 冷启动开关（整数千分点三因子定价永不破买方限价、同键同价小单 FIFO 聚批守恒、供给/容量不足确定性进自举期）（#122，patch）

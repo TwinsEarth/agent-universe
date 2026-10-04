@@ -59,6 +59,8 @@ pub const SYS_CHAIN: &str = "com.twinsearth.sys.chain";
 pub const SYS_AUSEC: &str = crate::ausec::AUSEC_PLUGIN;
 /// 系统插件：面向 Agent 的资源市场确定性记账内核（v3.8.0 起）。
 pub const SYS_RESOURCE_MARKET: &str = crate::economy::resource::RESOURCE_MARKET_PLUGIN;
+/// 系统插件：结算路由（v3.9.0 起，只决策不动钱）。
+pub const SYS_PAYMENT_ROUTER: &str = crate::economy::payment::PAYMENT_ROUTER_PLUGIN;
 
 /// 全部系统插件 id（构建/装配顺序）。
 pub fn system_ids() -> Vec<&'static str> {
@@ -69,6 +71,7 @@ pub fn system_ids() -> Vec<&'static str> {
         SYS_CHAIN,
         SYS_AUSEC,
         SYS_RESOURCE_MARKET,
+        SYS_PAYMENT_ROUTER,
     ]
 }
 
@@ -340,6 +343,10 @@ pub fn register_handlers(rt: &mut NativeRuntime, handles: &SystemHandles) {
     // ===== SYS_RESOURCE_MARKET：资源市场确定性记账内核（v3.8.0 起，恒注册） =====
     // 基座只暴露只读状态；撮合/计量/托管/质押处理器在后续小版本接线，未接线不注册。
     crate::economy::resource::register(rt);
+
+    // ===== SYS_PAYMENT_ROUTER：结算路由（v3.9.0 起，恒注册） =====
+    // 只注册只读状态与确定性选路面；执行/签名/链上写在后续小版本接线，未接线不注册。
+    crate::economy::payment::register(rt);
 }
 
 #[cfg(test)]
@@ -412,6 +419,45 @@ mod tests {
 
         // 未接线方法不注册（NotFound），不伪造可用。
         assert!(inst.call("offer_ask_submit", b"{}").is_err());
+    }
+
+    #[test]
+    fn payment_router_system_plugin_status() {
+        // 经系统插件真实装配 → spawn → call 路径验证结算路由处理器（v3.9.0）。
+        let mut rt = NativeRuntime::new();
+        register_handlers(&mut rt, &SystemHandles::default());
+        let mut inst = rt
+            .spawn(&system_manifest(SYS_PAYMENT_ROUTER, "3.0.0"))
+            .unwrap();
+
+        let st: serde_json::Value =
+            serde_json::from_slice(&inst.call("payment_router_status", b"{}").unwrap()).unwrap();
+        assert_eq!(st["plugin"], SYS_PAYMENT_ROUTER);
+        assert_eq!(st["introduced_in"], "v3.9.0");
+        // 金额内部整数 micro，不挂法币。
+        assert_eq!(st["amount_unit"]["integer_only"], true);
+        assert_eq!(st["amount_unit"]["fiat_pegged"], false);
+        // 三条结算轨道。
+        assert_eq!(st["tracks"].as_array().unwrap().len(), 3);
+        // 选路决策强制可用；任何资金/密钥/链上写动作本版本均诚实标注未提供。
+        assert_eq!(st["enforceable"]["deterministic_route_decision"], true);
+        assert_eq!(
+            st["enforceable"]["fail_closed_when_track_unavailable"],
+            true
+        );
+        assert_eq!(st["enforceable"]["fund_movement"], false);
+        assert_eq!(st["enforceable"]["key_holding"], false);
+        assert_eq!(st["enforceable"]["transaction_signing"], false);
+        assert_eq!(st["enforceable"]["transaction_broadcast"], false);
+        assert_eq!(st["enforceable"]["onchain_anchor_write"], false);
+        assert_eq!(st["provided"]["payment_router_status"], true);
+        assert_eq!(st["provided"]["lightning_node_connection"], false);
+        // 本版本只声明只读选路能力（1 个）；执行/签名/链上写仅登记为后续版本。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 1);
+
+        // 未接线方法不注册（NotFound），不伪造可用。
+        assert!(inst.call("wallet_sign", b"{}").is_err());
+        assert!(inst.call("pay_execute", b"{}").is_err());
     }
 
     #[test]

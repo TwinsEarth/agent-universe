@@ -1,9 +1,15 @@
 pub mod contribution;
+pub mod payment;
 pub mod pricing;
 pub mod reputation;
 pub mod resource;
 
 pub use contribution::{ContributionProof, ContributionType};
+pub use payment::{
+    status_payload as payment_router_status_payload, PaymentError, PaymentRouter, PaymentTrack,
+    RouteDecision, RouteReason, RoutingInput, RoutingPolicy, SettlementUrgency, TrackAvailability,
+    PAYMENT_ROUTER_PLUGIN,
+};
 pub use pricing::{DifficultyLevel, PricingError, TaskPricing, UrgencyLevel};
 pub use reputation::ReputationSystem;
 pub use resource::{

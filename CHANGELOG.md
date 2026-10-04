@@ -1,3 +1,17 @@
+## [v3.8.3] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（4/10）——撮合编排器（订单状态机 ↔ 容量 hold/release ↔ 计量 open/record 联动）（#116，patch）
+
+- 新增 `gsn-core/src/economy/resource/matching.rs`：纯确定性、内存态撮合编排器 `MatchingEngine`，零浮点/零 syscall/零 unsafe/无 panic，数量金额全 u128，持有订单集+`CapacityRegistry`+`MeteringLedger` 按订单状态边联动。
+- `submit/submit_named`：先过挂单容量闸门 `check_offer`（fail-closed）再 `match_offer_ask` 建单（Matched），引擎分配 `ord-{n}` 单调 id，显式 id 重复 `RESOURCE_DUPLICATE_ORDER`，未知订单任何编排 `RESOURCE_ORDER_NOT_FOUND`；提交不 hold。
+- 容量「一次 hold 恰好一次 release」：`hold_capacity`（Matched→CapacityHeld 按 filled hold，超量 fail-closed 不改写、订单停 Matched）；`settle`/`adjudicate_settle`/`adjudicate_slash` 进终态 release（判罚只归还容量，资金罚没在 3.8.4/3.8.5）；`cancel` 在 Matched 不释放、CapacityHeld release，执行期后状态机拒绝。
+- 计量随状态联动：`begin_metering`（Executing→Metering 自动开线 allocated=filled、单价=成交价，失败停 Executing）；`report_usage` 仅 Metering 态 append-only 正计量、consumed≤allocated；`to_qa`/`dispute`（争议期容量继续持有）。
+- 跨账守恒 `invariant_holds`：除容量/计量各自不变量外，每条注册 held 恰好等于「已 hold 未终态」同键订单成交量 checked 之和；失败不改写（先记账成功再推进状态）。
+- `ResourceError` 新增 2 变体（OrderNotFound/DuplicateOrder）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位置 matching_orchestration=true、matching_engine_persistence=false。
+- 新增 8 回归（全前向 hold/计量/release 守恒/竞争超卖 fail-closed 不改写/两态取消释放差异/计量仅 Metering 且有界/争议 Slash 与 Settle 均释放/挂单闸门与唯一 id/未知订单 NotFound/释放后容量可被下一单复用）；全量 gsn-core lib **488/0**（较 480 增 8，resource 32/0）、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（matching.rs 零 unsafe）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.3 ↔ gsn-core 0.3.83。
+- 诚实边界：撮合为内存编排面，不持久化/不跨节点/非全局单例/不做网络供给发现；只编排容量与计量，不托管分账不质押不罚没资金不连链（3.8.4/3.8.5/v3.9.x）；多单容量竞争在 hold 边 fail-closed、不做自动排队/抢占；不经 PMB 受理外部写单、不新增能力令牌，写方法仍不注册（NotFound）。
+
 ## [v3.8.2] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（3/10）——计量账本（append-only 正计量 + consumed≤allocated + 整数实耗/待退结算视图）（#115，patch）

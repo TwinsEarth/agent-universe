@@ -398,8 +398,10 @@ mod tests {
         assert_eq!(st["accounting_unit"]["chain_settled"], false);
         // 四类闲置资源都在目录中。
         assert_eq!(st["resource_kinds"].as_array().unwrap().len(), 4);
-        // 托管结算守恒内核（v3.8.5）已就绪；QA/审判驱动罚没与链上支付仍未强制。
+        // 托管结算守恒内核（v3.8.5）+ 快照商品化版税（v3.8.6）已就绪；QA/审判驱动
+        // 罚没与链上支付仍未强制。
         assert_eq!(st["enforceable"]["escrow_settlement"], true);
+        assert_eq!(st["enforceable"]["snapshot_royalty"], true);
         assert_eq!(st["enforceable"]["stake_slash"], false);
         assert_eq!(st["enforceable"]["onchain_payment"], false);
 

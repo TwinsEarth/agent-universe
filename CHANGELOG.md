@@ -1,3 +1,15 @@
+## [v3.7.7] - 2026-10-04
+
+### 修订版：AUSec CPU 调度（1/3）——两级时延优先级 + 优先级与权重（#46/#110，patch）
+
+- 新增 `gsn-core/src/ausec/cpu.rs`：跨平台、纯确定性、零 syscall、零 unsafe 的 CPU 两级优先级模型。`LatencyClass::Sensitive` 优先级 2、`Tolerant` 优先级 1，Sensitive 组整体先保障；同组按 `weight`（缺省 100、区间 1..=10000）算千分点份额（weight/组权重和×1000，u128 无浮点）；排序键=优先级降→权重降→申请降→id 字典序，全确定。
+- **信任仲裁防自我提级（fail-closed）**：沙盒自报 `latency` 是可伪造输入，Sensitive 仅限 System/Official；Certified/ThirdParty 自报 Sensitive → `IllegalLatencySelfPromotion`（带实际级别）拒绝；Blacklist 不参与调度；缺省 latency 按信任级安全默认（高信任→Sensitive，其余→Tolerant），PMB 入口缺省 tier 一律 third_party（绝不默认给 Sensitive）。
+- 份额取整如实呈现：三等权 333×3=999，`weight_share_total_permille=999`，不伪称整数世界恒守恒；新增 `CpuError`（10 变体）、`CpuSandboxRequest/EffectiveCpuEntry/CpuClassSummary/CpuPriorityModel`、`parse_tier/parse_latency/arbitrate_priority`；空/重复 id、权重越界、申请为 0、容量为 0 全部整体拒绝。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读 PMB 方法 `cpu_priority`（常量/手写 JSON 入口/字节桥/register 对称接线）；复用 `plugin::tier::Tier` 与 `ausec::memory::LatencyClass`，不重复定义。
+- 新增 8 个「旧实现会失败」回归（cpu 7 + PM 桥 1）；ausec 81/0、全量 lib 436/0、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（cpu.rs 零 unsafe）/metadata --locked 全绿。
+- 版本 npm 3.7.7 ↔ gsn-core 0.3.77。
+- 诚实边界：只交付优先级/权重的确定性仲裁，不调 cgroup/sched_setaffinity、不做真实限速；capacity 本版只登记不做容量约束；45.2%→17.3% 为外部 DSEC 报道（aiwiki.ai/byteiota.com）非本仓复测，仅在 v3.7.8 竞争配额仿真引用为目标口径。
+
 ## [v3.7.6] - 2026-10-04
 
 ### 修订版：AUSec 内存共享（3/3）——回收/超卖统计 + 越界拒绝 + Linux 专有原语诚实门（#102/#109，patch）

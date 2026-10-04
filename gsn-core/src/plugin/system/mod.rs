@@ -403,6 +403,7 @@ mod tests {
         assert_eq!(st["enforceable"]["escrow_settlement"], true);
         assert_eq!(st["enforceable"]["snapshot_royalty"], true);
         assert_eq!(st["enforceable"]["reputation_scoring"], true);
+        assert_eq!(st["enforceable"]["bft_lite_qa"], true);
         assert_eq!(st["enforceable"]["stake_slash"], false);
         assert_eq!(st["enforceable"]["onchain_payment"], false);
 

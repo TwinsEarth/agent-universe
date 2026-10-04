@@ -423,7 +423,8 @@ mod tests {
 
     #[test]
     fn payment_router_system_plugin_status() {
-        // 经系统插件真实装配 → spawn → call 路径验证结算路由处理器（v3.9.0）。
+        // 经系统插件真实装配 → spawn → call 路径验证结算/签名处理器（v3.9.0 路由 +
+        // v3.9.1 宿主签名闸门）。
         let mut rt = NativeRuntime::new();
         register_handlers(&mut rt, &SystemHandles::default());
         let mut inst = rt
@@ -434,29 +435,70 @@ mod tests {
             serde_json::from_slice(&inst.call("payment_router_status", b"{}").unwrap()).unwrap();
         assert_eq!(st["plugin"], SYS_PAYMENT_ROUTER);
         assert_eq!(st["introduced_in"], "v3.9.0");
+        assert_eq!(st["signing_introduced_in"], "v3.9.1");
         // 金额内部整数 micro，不挂法币。
         assert_eq!(st["amount_unit"]["integer_only"], true);
         assert_eq!(st["amount_unit"]["fiat_pegged"], false);
         // 三条结算轨道。
         assert_eq!(st["tracks"].as_array().unwrap().len(), 3);
-        // 选路决策强制可用；任何资金/密钥/链上写动作本版本均诚实标注未提供。
+        // 选路决策与签名 fail-closed 强制；资金/沙盒持钥/链上写动作诚实标注未提供。
         assert_eq!(st["enforceable"]["deterministic_route_decision"], true);
         assert_eq!(
             st["enforceable"]["fail_closed_when_track_unavailable"],
             true
         );
+        assert_eq!(
+            st["enforceable"]["fail_closed_when_signer_unconfigured"],
+            true
+        );
         assert_eq!(st["enforceable"]["fund_movement"], false);
-        assert_eq!(st["enforceable"]["key_holding"], false);
-        assert_eq!(st["enforceable"]["transaction_signing"], false);
+        assert_eq!(st["enforceable"]["key_holding_in_sandbox"], false);
+        assert_eq!(
+            st["enforceable"]["host_only_signing_private_key_isolation"],
+            true
+        );
+        assert_eq!(
+            st["enforceable"]["sandbox_direct_transaction_signing"],
+            false
+        );
         assert_eq!(st["enforceable"]["transaction_broadcast"], false);
         assert_eq!(st["enforceable"]["onchain_anchor_write"], false);
         assert_eq!(st["provided"]["payment_router_status"], true);
+        assert_eq!(st["provided"]["wallet_sign_preview"], true);
         assert_eq!(st["provided"]["lightning_node_connection"], false);
-        // 本版本只声明只读选路能力（1 个）；执行/签名/链上写仅登记为后续版本。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 1);
+        assert_eq!(st["signing"]["private_key_enters_sandbox"], false);
+        assert_eq!(
+            st["signing"]["production_default_host_key_configured"],
+            false
+        );
+        // v3.9.1 起声明只读选路 + 宿主受限签名（2 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 2);
 
-        // 未接线方法不注册（NotFound），不伪造可用。
+        // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
+        let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
+        let intent = serde_json::json!({
+            "track": "evm_x402",
+            "domain": "x402.agent-universe.local",
+            "message_digest": digest,
+            "spend_cap_micro": 1000u64,
+            "nonce": 1u64,
+            "auth_only": false
+        });
+        let payload = serde_json::to_vec(&intent).unwrap();
+        let prev: serde_json::Value =
+            serde_json::from_slice(&inst.call("wallet_sign_preview", &payload).unwrap()).unwrap();
+        assert_eq!(prev["host_key_configured"], false);
+        assert!(prev.get("signature_hex").is_none());
+
+        // wallet_sign 已注册，但生产默认未配置密钥 → 具名 SignerNotConfigured（NotFound
+        // 之外的运行时类型化拒绝），不伪造签名；空/坏负载同样拒绝。
+        let sign_err = inst.call("wallet_sign", &payload).unwrap_err().to_string();
+        assert!(
+            sign_err.contains("PAYMENT_SIGNER_NOT_CONFIGURED"),
+            "got {sign_err}"
+        );
         assert!(inst.call("wallet_sign", b"{}").is_err());
+        // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());
     }
 

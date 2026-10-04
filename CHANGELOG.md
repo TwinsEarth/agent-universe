@@ -1,3 +1,17 @@
+## [v3.9.1] - 2026-10-04
+
+### 修订版：比特币/以太坊 Agent 经济体（2/9）——宿主签名服务与私钥隔离 HostSignerGate（wallet_sign_preview 只预览不碰密钥，wallet_sign 宿主受限，生产默认 SignerNotConfigured fail-closed，私钥/seed 绝不进沙盒）（#124，patch）
+
+- 新增 `gsn-core/src/economy/payment/signer.rs`：签名闸门内核，零浮点/零 syscall/零 unsafe/无 panic。`SignIntent{track,domain,message_digest(32B),spend_cap_micro(u128),nonce,auth_only}`，`validate(&SignPolicy)` 在触碰密钥前具名拒绝空域 EmptySigningDomain/摘要长度 InvalidDigestLength/非认证 0 上限 NonPositiveSpendCap/auth_only 带上限 AuthOnlyWithSpendCap/轨道禁用 SigningTrackDisabled/超额 SpendCapExceeded。
+- 对完整授权上下文签名而非裸摘要：`normalized_payload() = domain|track|cap(u128 BE)|nonce(u64 BE)|auth_only|digest`（0x1f 分隔），防改域/改额/改轨挪用。
+- `SignPolicy`/`TrackSignRule` 每轨 enabled+单笔上限，默认 lightning=10_000/evm=100_000_000/btc=1_000_000_000 micro，const validated() 拒绝启用零额度 SignPolicyInvalid。
+- `HostSignerGate<B: SignatureBroker>`：preview() 只校验+规范化出 SignPreview（不碰密钥/不产签名），request_sign() 经宿主 broker 签发，`SignatureReceipt` 只含 public_key_hex/signature_hex/signed_normalized_payload_hex，绝不含私钥/seed。
+- fail-closed：`UnconfiguredBroker`/`UnconfiguredSignerGate`（生产默认）configured=false，任何签发一律 SignerNotConfigured 具名拒、绝不伪造签名，preview 仍可用；`InMemoryBroker` 为宿主进程内参考/测试后端（三轨 Ed25519 Keypair 只活宿主内存），真实钥匙串/TEE/HSM 后端由宿主装配注入、不经沙盒。
+- T0 系统插件 payment-router 新注册 PMB 方法 wallet_sign_preview/wallet_sign（空/坏负载类型化拒绝不 panic）；status 增 signing_introduced_in=v3.9.1 与 signing 诚实块（private_key/seed_enters_sandbox=false、production_default_host_key_configured=false、fail_closed_when_unconfigured=true、fabricated_signature_on_failure=false、replay 仅 nonce 入签名不声称已拦截），enforceable 增 host_only_signing_private_key_isolation/sandbox_direct_transaction_signing=false/fail_closed_when_signer_unconfigured=true，capabilities_declared 1→2（加 wallet:sign:host-restricted），wallet:sign 移出保留，pay:execute/chain:anchor:write 仍保留不授予。PaymentError 增 8 变体带 PAYMENT_* Display+Error。
+- 新增/扩展测试：signer 6（preview 确定性不需密钥、unconfigured 拒签、domain/digest/cap/auth_only 四类校验、轨道禁用/超额/坏策略、configured 回执可独立 Ed25519 验过且 JSON 不含 seed/secret/private、签完整载荷且坏输入到不了 broker）+ 签发桥 1 + 系统装配快照扩展（preview 已注册可用、wallet_sign 已注册但默认具名拒签，pay_execute 仍 NotFound）；全量 gsn-core lib **551/0**（较 544 净增 7）、fmt --check、clippy --all-targets -D warnings、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、metadata --locked、js test(22) 全绿。
+- 版本 npm 3.9.1 ↔ gsn-core/gsn-daemon 0.3.91。
+- 诚实边界：交付签名闸门与私钥隔离边界，非真网资金面——不广播/不划转/不托管/不兑换/不连节点/不持久化，生产默认不持密钥 wallet_sign 一律具名拒签；重放双花仅 nonce 入签名、链下拦截需有状态宿主留后续。EVM x402(USDC) v3.9.2、闪电 L402 v3.9.3、ERC-8004 三注册表 v3.9.4、ERC-4337 Paymaster v3.9.5、BTC HTLC/RGB 纯校验 v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；默认额度是整数策略分界不承诺法币币价；外部协议采用量/性能数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.0] - 2026-10-04
 
 ### 修订版：比特币/以太坊 Agent 经济体（1/9）——结算路由 PaymentRouter（纯确定性整数选路，闪电 L402 / EVM x402 / BTC RGB·HTLC 三轨，只决策不动钱，缺轨 fail-closed）（#123，minor）

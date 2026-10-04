@@ -1,3 +1,18 @@
+## [v3.7.9] - 2026-10-04
+
+### 修订版：AUSec CPU 调度（3/3）——突发涌入准入控制 + 统一 ausec status（#103/#112，patch）
+
+- 新增 `gsn-core/src/ausec/burst.rs`：创建请求突然集中涌入时，在**有限 CPU 容量 + 内存配额池**两维上对一批 arrival 做确定性 `Admitted/Queued/Rejected` 裁决。纯整数记账、零 syscall、零 unsafe、无 panic；是准入决策面，不真正建沙盒/限速/回收、不持久化全局态。
+- **CPU 软闸**：existing 先占容量，剩余按 v3.7.7 `arbitrate_priority` 顺序（Sensitive 先/权重降/id 升）逐个容纳，放不下记 `cpu_shortfall` 排队（非直接拒）。
+- **内存双闸（复用 v3.7.4 MemoryPool::project，严格区分）**：committed>physical → `physical_hard_limit` 直接拒（排队也无物理内存）；仅 nominal>超卖 ceiling 而 committed 在物理内 → `overcommit_ceiling` 排队（等空闲回收）。
+- **突发整形 + 有界队列**：`burst_max_admit` 到顶后即使放得下也 `burst_capped` 排队；`queue_capacity` 满则 `queue_full` 拒绝（不无界排队，fail-closed）；一个 arrival 可同时带多个排队原因。
+- **fail-closed**：existing+arrivals 合并一次性信任仲裁（黑名单/低信任自报 Sensitive/空重复 id/越界整体拒绝）；每个 arrival 的 CPU 与内存必须同一 sandbox_id（`IdentityMismatch`），防两套 id 规避单一仲裁。
+- **统一 `ausec_status`**：一个只读调用汇总后端/块/CPU/内存四子域；后端段实时探测平台（契约不变），块/CPU/内存段由调用方按需提供观测后确定性重算，未给即 `provided=false` 绝不伪造占用/健康度。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读 PMB 方法 `burst_admit`、`ausec_status`（常量/具名 ParsedBurstInput 解析/字节桥/register 对称接线）；新增 `BurstError(5 变体)/QueueReason/RejectReason/BurstDecision/BurstLimits/BurstArrival/ArrivalDecision/BurstSummary/BurstAdmission` 与纯函数 `run_burst_admission`。
+- 新增 7 个回归（burst 5 + PM 桥 2：物理硬闸 vs 仅超卖排队、整形名额、有界队列、身份/黑名单/自提级 fail-closed、统一 status 四段诚实汇总）；ausec 95/0、全量 lib 450/0、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（burst.rs 零 unsafe）/metadata --locked 全绿。
+- 版本 npm 3.7.9 ↔ gsn-core 0.3.79。
+- 诚实边界：是决策不是执行，不调 cgroup/隔离原语、不推进墙钟；Queued 不含真实队列存储/超时/唤醒；ausec_status 三段为申报观测重算、非守护进程实时内部态；外部"涌入/90% CPU<5%/超卖 50×"为 aiwiki.ai/byteiota.com 对 DSEC 报道、非本仓复测，仅作机制动机。v3.8.x 进入 Agent 委员会 + pack_diff/轨迹分叉。
+
 ## [v3.7.8] - 2026-10-04
 
 ### 修订版：AUSec CPU 调度（2/3）——竞争下确定性配额分配仿真（仿真时钟：敏感先保障、剩余给容忍）（#111，patch）

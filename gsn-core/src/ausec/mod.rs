@@ -28,11 +28,14 @@
 //! `memory_admit` 暴露只读查询。
 //!
 //! 后续小版本：3.7.5 等待期保内存+空闲优先回收、3.7.6 回收统计+OS 原语具名拒绝、
-//! 3.7.7–3.7.9 CPU 优先级调度；3.8.x Agent 委员会 + pack_diff/轨迹分叉；3.9.x
-//! Agent 安全组织。
+//! 3.7.7–3.7.8 CPU 优先级调度与竞争配额仿真；3.7.9 新增 [`burst`] 突发涌入准入
+//! （Admitted/Queued/Rejected，CPU 软闸 + 内存双闸 + 突发整形 + 有界队列）与统一
+//! `ausec_status` 只读汇总（后端/块/CPU/内存）。3.8.x Agent 委员会 + pack_diff/轨迹
+//! 分叉；3.9.x Agent 安全组织。
 
 pub mod backend;
 pub mod blockstore;
+pub mod burst;
 pub mod cpu;
 pub mod cpu_schedule;
 pub mod image;
@@ -47,6 +50,10 @@ pub use backend::{
 pub use blockstore::{
     BlockFetchError, BlockSource, BlockSourceKind, BlockStats, BlockStore, BlockStoreError,
     LocalDirBlockSource, SharedChunkCache, UdosRemoteBlockSource,
+};
+pub use burst::{
+    run_burst_admission, ArrivalDecision, BurstAdmission, BurstArrival, BurstDecision, BurstError,
+    BurstLimits, BurstSummary, QueueReason, RejectReason,
 };
 pub use cpu::{
     arbitrate_priority, parse_latency as parse_cpu_latency, parse_tier as parse_cpu_tier,
@@ -110,6 +117,11 @@ pub const METHOD_CPU_PRIORITY: &str = "cpu_priority";
 /// PMB 方法：v3.7.8 竞争下确定性 CPU 配额分配仿真（仿真时钟：敏感先保障、剩余给容忍，
 /// 并给无优先级 flat 对照）。纯确定性只读仿真，不调任何 OS 调度原语、不推进墙钟。
 pub const METHOD_CPU_SCHEDULE_SIM: &str = "cpu_schedule_sim";
+/// PMB 方法：v3.7.9 突发涌入准入（一批到达在 CPU 容量 + 内存配额双闸上的
+/// Admitted/Queued/Rejected 确定性裁决；fail-closed、有界队列、纯决策不落地）。
+pub const METHOD_BURST_ADMIT: &str = "burst_admit";
+/// PMB 方法：v3.7.9 统一 AUSec 调度状态只读汇总（后端/块/CPU/内存子域摘要）。
+pub const METHOD_AUSEC_STATUS: &str = "ausec_status";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -655,6 +667,192 @@ fn cpu_schedule_sim_query(input: serde_json::Value) -> Result<serde_json::Value,
     }))
 }
 
+/// v3.7.9 `burst_admit` 入参解析。
+///
+/// `{capacity_millis, physical_bytes, overcommit_times?|overcommit_permille?,
+///    sandboxes?: [MemorySandboxRequest...],   // 已在跑沙盒的内存账（先占位）
+///    existing?:  [CpuSandboxRequest...],       // 已在跑沙盒的 CPU 画像（先占容量）
+///    arrivals:   [{cpu: CpuSandboxRequest,
+///                  memory: MemorySandboxRequest}],  // 本波突发到达
+///    burst_max_admit?: u64, queue_capacity?: u64}`
+///
+/// 所有信任仲裁、身份一致性、物理/超卖闸、有界队列均在 [`run_burst_admission`] 内
+/// fail-closed；此处只做 JSON→结构的具名解析。
+struct ParsedBurstInput {
+    capacity: u64,
+    existing: Vec<CpuSandboxRequest>,
+    pool: MemoryPool,
+    arrivals: Vec<BurstArrival>,
+    limits: BurstLimits,
+}
+
+fn parse_burst_input(input: &serde_json::Value) -> Result<ParsedBurstInput, String> {
+    let capacity = input
+        .get("capacity_millis")
+        .and_then(|v| v.as_u64())
+        .ok_or("缺少 capacity_millis（非负整数，CPU 容量）")?;
+    // 内存池：复用 v3.7.4 口径，sandboxes=已在跑集合（必须全部成立否则 fail-closed）。
+    let pool = pool_from_input(input)?;
+
+    let mut existing: Vec<CpuSandboxRequest> = Vec::new();
+    if let Some(arr) = input.get("existing").and_then(|v| v.as_array()) {
+        for (i, v) in arr.iter().enumerate() {
+            let r: CpuSandboxRequest = serde_json::from_value(v.clone())
+                .map_err(|e| format!("existing[{i}] 不是合法 CpuSandboxRequest: {e}"))?;
+            existing.push(r);
+        }
+    }
+
+    let arr = input
+        .get("arrivals")
+        .and_then(|v| v.as_array())
+        .ok_or("缺少 arrivals 数组（本波突发到达，至少一个）")?;
+    let mut arrivals = Vec::with_capacity(arr.len());
+    for (i, v) in arr.iter().enumerate() {
+        let cpu_val = v
+            .get("cpu")
+            .cloned()
+            .ok_or_else(|| format!("arrivals[{i}] 缺少 cpu（CpuSandboxRequest）"))?;
+        let mem_val = v
+            .get("memory")
+            .cloned()
+            .ok_or_else(|| format!("arrivals[{i}] 缺少 memory（MemorySandboxRequest）"))?;
+        let cpu_req: CpuSandboxRequest = serde_json::from_value(cpu_val)
+            .map_err(|e| format!("arrivals[{i}].cpu 不是合法 CpuSandboxRequest: {e}"))?;
+        let mem_req: MemorySandboxRequest = serde_json::from_value(mem_val)
+            .map_err(|e| format!("arrivals[{i}].memory 不是合法 MemorySandboxRequest: {e}"))?;
+        arrivals.push(BurstArrival {
+            cpu: cpu_req,
+            memory: mem_req,
+        });
+    }
+
+    let limits = BurstLimits {
+        burst_max_admit: input.get("burst_max_admit").and_then(|v| v.as_u64()),
+        queue_capacity: input.get("queue_capacity").and_then(|v| v.as_u64()),
+    };
+    Ok(ParsedBurstInput {
+        capacity,
+        existing,
+        pool,
+        arrivals,
+        limits,
+    })
+}
+
+/// v3.7.9 `burst_admit` 入口：突发涌入的确定性准入裁决（纯决策，不真正建沙盒/限速/
+/// 回收，不持久化任何全局状态）。
+fn burst_admit_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let p = parse_burst_input(&input)?;
+    let out = run_burst_admission(p.capacity, &p.existing, p.pool, &p.arrivals, p.limits)
+        .map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "plugin": AUSEC_PLUGIN,
+        "module": "ausec",
+        "admission": out,
+        "note": "v3.7.9 突发涌入准入（逻辑裁决，非墙钟）：按 v3.7.7 仲裁顺序（Sensitive 先/权重降/id 升）逐个在 CPU 软闸 + 内存物理硬闸/超卖闸 + 突发整形名额 + 有界队列上判定 Admitted/Queued/Rejected。物理硬闸直接拒、超卖/CPU/名额不足排队、队列满则拒（不无界排队）。fail-closed：黑名单、低信任自报 Sensitive、CPU/内存身份不一致、空或重复 id 整体拒绝。不真正建沙盒、不调 cgroup、不做真实回收。",
+    }))
+}
+
+/// v3.7.9 `ausec_status` 入口：统一只读汇总四个调度子域——后端 / 块 / CPU / 内存。
+///
+/// 后端段始终实时探测平台；块/CPU/内存三段是**调用方按需提供观测**的确定性重算
+/// （本插件不持有全局运行态）：给了对应输入就算并 fail-closed 校验，没给就如实
+/// 标注 `provided=false`，绝不伪造配额或健康度。
+fn ausec_status_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    // 后端段：复用 v3.7.0 诚实就绪载荷（不改动其既有契约）。
+    let backend_status = status_payload();
+
+    // 块段：可选，入参形态同 seed_health（manifest + replica_counts）。
+    let blocks = match input.get("blocks") {
+        None | Some(serde_json::Value::Null) => serde_json::json!({
+            "provided": false,
+            "note": "未提供 blocks（manifest+replica_counts）观测；不推断块/种子健康度",
+        }),
+        Some(v) => {
+            let mut s = seed_health(v.clone())?;
+            // 去掉子查询自带 note，统一在汇总层标注，避免嵌套重复。
+            s.as_object_mut().map(|o| o.remove("note"));
+            serde_json::json!({ "provided": true, "seed": s })
+        }
+    };
+
+    // CPU 段：可选，给了 capacity_millis 即仲裁并汇总各优先级组人数。
+    let cpu = if input.get("capacity_millis").is_some() {
+        let (capacity, requests) = parse_capacity_and_requests(&input)?;
+        let model = arbitrate_priority(capacity, &requests).map_err(|e| e.to_string())?;
+        serde_json::json!({
+            "provided": true,
+            "capacity_millis": model.capacity_millis,
+            "sandbox_count": model.entries.len(),
+            "sensitive_count": model.sensitive.count,
+            "tolerant_count": model.tolerant.count,
+            "requested_millis_sum": model
+                .entries.iter().map(|e| e.requested_millis).sum::<u64>(),
+        })
+    } else {
+        serde_json::json!({
+            "provided": false,
+            "note": "未提供 capacity_millis/sandboxes；不推断 CPU 配额占用",
+        })
+    };
+
+    // 内存段：可选，给了 physical_bytes 即建账汇总。
+    let memory = if input.get("physical_bytes").is_some() {
+        let s = pool_from_input(&input)?.status();
+        serde_json::json!({
+            "provided": true,
+            "physical_bytes": s.physical_bytes,
+            "max_overcommit_permille": s.max_overcommit_permille,
+            "sandbox_count": s.sandbox_count,
+            "committed_bytes": s.committed_bytes,
+            "nominal_bytes": s.nominal_bytes,
+            "shared_dedup_saving": s.shared_dedup_saving,
+            "nominal_ceiling": s.nominal_ceiling,
+            "committed_utilization_permille": s.committed_utilization_permille,
+            "observed_overcommit_permille": s.observed_overcommit_permille,
+        })
+    } else {
+        serde_json::json!({
+            "provided": false,
+            "note": "未提供 physical_bytes/sandboxes；不推断内存配额占用",
+        })
+    };
+
+    Ok(serde_json::json!({
+        "plugin": AUSEC_PLUGIN,
+        "module": "ausec",
+        "core_version": env!("CARGO_PKG_VERSION"),
+        "backend": backend_status,
+        "blocks": blocks,
+        "cpu": cpu,
+        "memory": memory,
+        "note": "v3.7.9 统一 AUSec 调度状态：后端段实时探测平台原语/执行器诚实就绪；块/CPU/内存段由调用方提供观测后确定性重算（本插件不持有全局运行态，不联网、不读 OS 配额、不伪造占用）。所有就绪/占用均非真实限速或真实共享/回收。",
+    }))
+}
+
+/// 字节桥：`burst_admit`。
+fn handle_burst_admit(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("burst_admit 负载非合法 JSON: {e}")))?;
+    let out = burst_admit_query(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec burst_admit 序列化失败: {e}")))
+}
+
+/// 字节桥：`ausec_status`（v3.7.9 统一只读汇总）。负载可空。
+fn handle_ausec_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = if payload.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|e| PluginError::Manifest(format!("ausec_status 负载非合法 JSON: {e}")))?
+    };
+    let out = ausec_status_query(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec ausec_status 序列化失败: {e}")))
+}
+
 /// 字节桥：`memory_status`。
 fn handle_memory_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
     let input: serde_json::Value = serde_json::from_slice(payload)
@@ -754,6 +952,10 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_CPU_SCHEDULE_SIM,
         handle_cpu_schedule_sim,
     );
+    // burst_admit：v3.7.9 突发涌入准入裁决（Admitted/Queued/Rejected，只读纯决策）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_BURST_ADMIT, handle_burst_admit);
+    // ausec_status：v3.7.9 统一调度状态只读汇总（后端/块/CPU/内存）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_AUSEC_STATUS, handle_ausec_status);
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -1256,6 +1458,113 @@ mod tests {
             "sandboxes": [{"sandbox_id": "a", "tier": "system", "requested_millis": 10}],
             "ticks": [{"external_load_millis": 0, "demands": [
                 {"sandbox_id": "a", "demand_millis": 11}]}],
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn pm_burst_admit_admits_queues_rejects_and_fail_closes() {
+        // 容量 100、物理 50/1×、两个到达各 CPU60 内存10：
+        // system 敏感先入（CPU60），third_party 容忍剩 40 放不下 → 排队。
+        let out = burst_admit_query(serde_json::json!({
+            "capacity_millis": 100,
+            "physical_bytes": 1000,
+            "arrivals": [
+                {"cpu": {"sandbox_id":"bg","tier":"third_party","requested_millis":60},
+                 "memory": {"sandbox_id":"bg","private_bytes":10,"shared":[]}},
+                {"cpu": {"sandbox_id":"core","tier":"system","requested_millis":60},
+                 "memory": {"sandbox_id":"core","private_bytes":10,"shared":[]}},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(out["admission"]["summary"]["admitted"], 1);
+        assert_eq!(out["admission"]["summary"]["queued"], 1);
+        assert_eq!(out["admission"]["summary"]["rejected"], 0);
+        assert_eq!(out["admission"]["decisions"][0]["sandbox_id"], "core");
+
+        // 字节桥 round-trip。
+        let bytes = handle_burst_admit(
+            METHOD_BURST_ADMIT,
+            serde_json::to_vec(&serde_json::json!({
+                "capacity_millis": 100,
+                "physical_bytes": 50,
+                "arrivals": [
+                    {"cpu": {"sandbox_id":"big","tier":"system","requested_millis":10},
+                     "memory": {"sandbox_id":"big","private_bytes":100,"shared":[]}},
+                ],
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["admission"]["decisions"][0]["decision"], "rejected");
+        assert_eq!(
+            parsed["admission"]["decisions"][0]["reject_reason"],
+            "physical_hard_limit"
+        );
+        // 空负载与坏负载经桥报错，不 panic。
+        assert!(handle_burst_admit(METHOD_BURST_ADMIT, b"").is_err());
+        assert!(burst_admit_query(serde_json::json!({
+            "capacity_millis": 100,
+            "physical_bytes": 100,
+            "arrivals": [],
+        }))
+        .is_err());
+        // CPU/内存身份不一致 fail-closed。
+        assert!(burst_admit_query(serde_json::json!({
+            "capacity_millis": 100,
+            "physical_bytes": 100,
+            "arrivals": [
+                {"cpu": {"sandbox_id":"x","tier":"system","requested_millis":10},
+                 "memory": {"sandbox_id":"y","private_bytes":10,"shared":[]}},
+            ],
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn pm_ausec_status_aggregates_four_domains_honestly() {
+        // 无参：后端段必有；块/CPU/内存三段 provided=false（不伪造观测）。
+        let empty = ausec_status_query(serde_json::json!({})).unwrap();
+        assert_eq!(empty["plugin"], AUSEC_PLUGIN);
+        assert!(empty["backend"]["backends"].is_array());
+        assert_eq!(empty["blocks"]["provided"], false);
+        assert_eq!(empty["cpu"]["provided"], false);
+        assert_eq!(empty["memory"]["provided"], false);
+        // 字节桥：空负载等价 {}。
+        let bytes = handle_ausec_status(METHOD_AUSEC_STATUS, b"").unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(parsed["memory"]["provided"], false);
+
+        // 给全观测：三段 provided=true 且数字确定性重算；块段给合法 manifest。
+        let data = vec![7u8; 40]; // 40 字节、16/块 → 3 块
+        let manifest = build_manifest("img/status", &data, 16).unwrap();
+        let full = ausec_status_query(serde_json::json!({
+            "capacity_millis": 100,
+            "physical_bytes": 1000,
+            "sandboxes": [
+                {"sandbox_id":"c","tier":"system","requested_millis":30,"private_bytes":100,"shared":[]},
+                {"sandbox_id":"b","tier":"third_party","requested_millis":20,"private_bytes":50,"shared":[]},
+            ],
+            "blocks": {"manifest": manifest, "replica_counts": {"0":1,"1":1,"2":1}},
+        }))
+        .unwrap();
+        assert_eq!(full["cpu"]["provided"], true);
+        assert_eq!(full["cpu"]["sandbox_count"], 2);
+        assert_eq!(full["cpu"]["requested_millis_sum"], 50);
+        assert_eq!(full["memory"]["provided"], true);
+        assert_eq!(full["memory"]["committed_bytes"], 150);
+        assert_eq!(full["blocks"]["provided"], true);
+        assert_eq!(full["blocks"]["seed"]["chunks_total"], 3);
+        assert_eq!(full["blocks"]["seed"]["chunks_available"], 3);
+
+        // 坏观测（第三方自报 sensitive）在统一 status 里也要 fail-closed。
+        assert!(ausec_status_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [
+                {"sandbox_id":"z","tier":"third_party","latency":"sensitive","requested_millis":10},
+            ],
         }))
         .is_err());
     }

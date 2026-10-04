@@ -9,6 +9,7 @@
 //! | [`SYS_STORAGE`] | 存储（账本/CRDT/纠删码） |
 //! | [`SYS_CHAIN`] | 链上锚定 / EVM |
 //! | [`SYS_AUSEC`] | AUSec 弹性计算：执行后端选择/就绪（v3.7.0 起） |
+//! | [`SYS_RESOURCE_MARKET`] | 面向 Agent 的资源市场：确定性记账内核/状态机（v3.8.0 起） |
 //!
 //! T0 以 [`crate::plugin::runtime::native::NativeRuntime`] 进程内承载，
 //! 处理器是内核的真实函数，不经过隔离。
@@ -56,10 +57,19 @@ pub const SYS_STORAGE: &str = "com.twinsearth.sys.storage";
 pub const SYS_CHAIN: &str = "com.twinsearth.sys.chain";
 /// 系统插件：AUSec 弹性计算（v3.7.0 起）。
 pub const SYS_AUSEC: &str = crate::ausec::AUSEC_PLUGIN;
+/// 系统插件：面向 Agent 的资源市场确定性记账内核（v3.8.0 起）。
+pub const SYS_RESOURCE_MARKET: &str = crate::economy::resource::RESOURCE_MARKET_PLUGIN;
 
 /// 全部系统插件 id（构建/装配顺序）。
 pub fn system_ids() -> Vec<&'static str> {
-    vec![SYS_IDENTITY, SYS_NET, SYS_STORAGE, SYS_CHAIN, SYS_AUSEC]
+    vec![
+        SYS_IDENTITY,
+        SYS_NET,
+        SYS_STORAGE,
+        SYS_CHAIN,
+        SYS_AUSEC,
+        SYS_RESOURCE_MARKET,
+    ]
 }
 
 /// 构造一个 T0 系统插件清单（随内核，无外部签名）。
@@ -326,6 +336,10 @@ pub fn register_handlers(rt: &mut NativeRuntime, handles: &SystemHandles) {
     // ===== SYS_AUSEC：弹性计算后端选择/就绪（无外部句柄依赖，恒注册） =====
     // 处理器本身是只读选择/查询；真实执行后端未接线时由 readiness 诚实拒绝。
     crate::ausec::register(rt);
+
+    // ===== SYS_RESOURCE_MARKET：资源市场确定性记账内核（v3.8.0 起，恒注册） =====
+    // 基座只暴露只读状态；撮合/计量/托管/质押处理器在后续小版本接线，未接线不注册。
+    crate::economy::resource::register(rt);
 }
 
 #[cfg(test)]
@@ -363,6 +377,33 @@ mod tests {
         let out: serde_json::Value =
             serde_json::from_slice(&inst.call("select_backend", &sel).unwrap()).unwrap();
         assert_eq!(out["backend"], "fncall");
+    }
+
+    #[test]
+    fn resource_market_system_plugin_status() {
+        // 经系统插件真实装配 → spawn → call 路径验证资源市场内核处理器。
+        let mut rt = NativeRuntime::new();
+        register_handlers(&mut rt, &SystemHandles::default());
+        let mut inst = rt
+            .spawn(&system_manifest(SYS_RESOURCE_MARKET, "3.0.0"))
+            .unwrap();
+
+        let st: serde_json::Value =
+            serde_json::from_slice(&inst.call("resource_market_status", b"{}").unwrap()).unwrap();
+        assert_eq!(st["plugin"], SYS_RESOURCE_MARKET);
+        assert_eq!(st["introduced_in"], "v3.8.0");
+        // 记账单位是整数 micro，且本版本诚实标注不挂法币/链。
+        assert_eq!(st["accounting_unit"]["integer_only"], true);
+        assert_eq!(st["accounting_unit"]["fiat_pegged"], false);
+        assert_eq!(st["accounting_unit"]["chain_settled"], false);
+        // 四类闲置资源都在目录中。
+        assert_eq!(st["resource_kinds"].as_array().unwrap().len(), 4);
+        // 基座撮合/托管/链上支付诚实标注未强制。
+        assert_eq!(st["enforceable"]["escrow_settlement"], false);
+        assert_eq!(st["enforceable"]["onchain_payment"], false);
+
+        // 未接线方法不注册（NotFound），不伪造可用。
+        assert!(inst.call("offer_ask_submit", b"{}").is_err());
     }
 
     #[test]

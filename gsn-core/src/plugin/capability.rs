@@ -103,6 +103,24 @@ pub enum Capability {
     /// 安全黑名单同步 / 紧急广播（仅 T0）。
     #[serde(rename = "sandbox:blacklist:sync")]
     SandboxBlacklistSync,
+
+    // ── 资源市场（v3.8.0 起），见 releases/v3.8.0.md 与开发计划附录 B grant 矩阵 ──
+    // 闲置算力/存储/网络/Agent 能力的挂单、求购、结算、质押与罚没。
+    /// 挂出闲置资源供给（Offer）。OFF/CERT 声明式，3RD 拒绝。
+    #[serde(rename = "market:resource:offer")]
+    MarketResourceOffer,
+    /// 发布资源求购（Ask）。开放入口：除黑名单外所有级别默认授予。
+    #[serde(rename = "market:resource:ask")]
+    MarketResourceAsk,
+    /// 执行托管资金结算（守恒分账）。仅 T0 内核与 T1 官方结算插件，不可仅声明获得。
+    #[serde(rename = "market:resource:settle")]
+    MarketResourceSettle,
+    /// 质押准入保证金（OFF/CERT 声明式，3RD 拒绝）。
+    #[serde(rename = "market:stake")]
+    MarketStake,
+    /// 罚没质押（终局惩戒，仅 T0：Agent 审判/结算内核）。
+    #[serde(rename = "market:slash")]
+    MarketSlash,
 }
 
 impl Capability {
@@ -132,6 +150,11 @@ impl Capability {
         Capability::SandboxConfigure,
         Capability::SandboxPolicyApply,
         Capability::SandboxBlacklistSync,
+        Capability::MarketResourceOffer,
+        Capability::MarketResourceAsk,
+        Capability::MarketResourceSettle,
+        Capability::MarketStake,
+        Capability::MarketSlash,
     ];
 
     /// 能力的规范字符串形式。
@@ -161,6 +184,11 @@ impl Capability {
             Capability::SandboxConfigure => "sandbox:configure",
             Capability::SandboxPolicyApply => "sandbox:policy:apply",
             Capability::SandboxBlacklistSync => "sandbox:blacklist:sync",
+            Capability::MarketResourceOffer => "market:resource:offer",
+            Capability::MarketResourceAsk => "market:resource:ask",
+            Capability::MarketResourceSettle => "market:resource:settle",
+            Capability::MarketStake => "market:stake",
+            Capability::MarketSlash => "market:slash",
         }
     }
 
@@ -210,6 +238,24 @@ impl Capability {
                 | Capability::SandboxRestore
         )
     }
+
+    /// 是否为资源市场**开放入口**能力（v3.8.0）：求购 Ask 对除黑名单外的所有
+    /// 级别默认授予（消费者不设准入门槛；黑名单由分级本身拒绝）。
+    pub fn is_market_open(self) -> bool {
+        matches!(self, Capability::MarketResourceAsk)
+    }
+
+    /// 是否为资源市场**结算**能力（v3.8.0）：仅 T0 内核与 T1 官方结算插件
+    /// （`com.twinsearth.official.market-settle`）。第三方/认证即使声明也拒绝，
+    /// 因为结算持有托管资金的守恒分账权。
+    pub fn is_market_settle(self) -> bool {
+        matches!(self, Capability::MarketResourceSettle)
+    }
+
+    /// 是否为资源市场**终局罚没**能力（v3.8.0）：仅 T0（Agent 审判/结算内核）。
+    pub fn is_market_slash(self) -> bool {
+        matches!(self, Capability::MarketSlash)
+    }
 }
 
 /// 依据级别，决定某项能力是否在「默认授权」范围内。
@@ -235,14 +281,31 @@ pub fn grant_for(tier: Tier, cap: Capability) -> Grant {
     if cap.is_basic() {
         return Grant::Granted;
     }
-    if cap.is_kernel() || cap.is_sandbox_governance() {
+    if cap.is_kernel() || cap.is_sandbox_governance() || cap.is_market_slash() {
         return if tier == Tier::System {
             Grant::Granted
         } else {
             Grant::Denied
         };
     }
+    // 资源市场结算：T0 内核 / T1 官方结算插件直接授予；认证/第三方/黑名单即使
+    // 声明也拒绝（持有托管资金守恒分账权，不能靠声明获得）。
+    if cap.is_market_settle() {
+        return match tier {
+            Tier::System | Tier::Official => Grant::Granted,
+            Tier::Certified | Tier::ThirdParty | Tier::Blacklist => Grant::Denied,
+        };
+    }
+    // 资源市场开放求购入口：除黑名单外所有级别默认授予。
+    if cap.is_market_open() {
+        return if tier == Tier::Blacklist {
+            Grant::Denied
+        } else {
+            Grant::Granted
+        };
+    }
     // 网络 / 链 / 经济 / 智能体能力，以及 AUSec 可委托类沙盒能力。
+    // 资源市场的 offer / stake 也落入此档：T0 全有，T1/T2 声明式，T3/黑名单拒绝。
     match tier {
         Tier::System => Grant::Granted,
         Tier::Official | Tier::Certified => Grant::Declarable,
@@ -370,6 +433,86 @@ mod tests {
             assert_eq!(grant_for(Tier::Official, cap), Grant::Declarable);
             assert_eq!(grant_for(Tier::Certified, cap), Grant::Declarable);
             assert_eq!(grant_for(Tier::ThirdParty, cap), Grant::Denied);
+        }
+    }
+
+    // ── 资源市场（v3.8.0）能力矩阵，见开发计划附录 B ──
+    #[test]
+    fn market_offer_and_stake_offcert_declarable_thirdparty_denied() {
+        for cap in [Capability::MarketResourceOffer, Capability::MarketStake] {
+            assert_eq!(grant_for(Tier::System, cap), Grant::Granted);
+            assert_eq!(grant_for(Tier::Official, cap), Grant::Declarable);
+            assert_eq!(grant_for(Tier::Certified, cap), Grant::Declarable);
+            assert_eq!(grant_for(Tier::ThirdParty, cap), Grant::Denied);
+            assert_eq!(grant_for(Tier::Blacklist, cap), Grant::Denied);
+        }
+    }
+
+    #[test]
+    fn market_ask_open_to_all_except_blacklist() {
+        for tier in [
+            Tier::System,
+            Tier::Official,
+            Tier::Certified,
+            Tier::ThirdParty,
+        ] {
+            assert_eq!(
+                grant_for(tier, Capability::MarketResourceAsk),
+                Grant::Granted,
+                "ask 应对 {tier:?} 默认授予"
+            );
+        }
+        assert_eq!(
+            grant_for(Tier::Blacklist, Capability::MarketResourceAsk),
+            Grant::Denied
+        );
+    }
+
+    #[test]
+    fn market_settle_system_official_only() {
+        assert_eq!(
+            grant_for(Tier::System, Capability::MarketResourceSettle),
+            Grant::Granted
+        );
+        assert_eq!(
+            grant_for(Tier::Official, Capability::MarketResourceSettle),
+            Grant::Granted
+        );
+        for tier in [Tier::Certified, Tier::ThirdParty, Tier::Blacklist] {
+            assert_eq!(
+                grant_for(tier, Capability::MarketResourceSettle),
+                Grant::Denied,
+                "settle 必须对 {tier:?} 拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn market_slash_system_only() {
+        assert_eq!(
+            grant_for(Tier::System, Capability::MarketSlash),
+            Grant::Granted
+        );
+        for tier in [
+            Tier::Official,
+            Tier::Certified,
+            Tier::ThirdParty,
+            Tier::Blacklist,
+        ] {
+            assert_eq!(grant_for(tier, Capability::MarketSlash), Grant::Denied);
+        }
+    }
+
+    #[test]
+    fn market_capabilities_roundtrip_parse_str() {
+        for cap in [
+            Capability::MarketResourceOffer,
+            Capability::MarketResourceAsk,
+            Capability::MarketResourceSettle,
+            Capability::MarketStake,
+            Capability::MarketSlash,
+        ] {
+            assert_eq!(Capability::parse(cap.as_str()), Some(cap));
         }
     }
 }

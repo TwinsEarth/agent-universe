@@ -34,6 +34,7 @@
 pub mod backend;
 pub mod blockstore;
 pub mod cpu;
+pub mod cpu_schedule;
 pub mod image;
 pub mod memory;
 pub mod primitives;
@@ -52,6 +53,10 @@ pub use cpu::{
     CpuClassSummary, CpuError, CpuPriorityModel, CpuSandboxRequest, EffectiveCpuEntry,
     DEFAULT_WEIGHT as CPU_DEFAULT_WEIGHT, MAX_WEIGHT as CPU_MAX_WEIGHT,
     PRIORITY_SENSITIVE as CPU_PRIORITY_SENSITIVE, PRIORITY_TOLERANT as CPU_PRIORITY_TOLERANT,
+};
+pub use cpu_schedule::{
+    run_schedule_simulation, AggregateSchedule, AllocSummary, ScheduleError, ScheduleSimulation,
+    ScheduleTick, TickDemand, TickEntry, TickSchedule,
 };
 pub use image::{
     build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,
@@ -102,6 +107,9 @@ pub const METHOD_MEMORY_PRIMITIVE: &str = "memory_primitive_status";
 /// PMB 方法：v3.7.7 CPU 两级优先级模型（时延敏感/容忍 + 优先级与权重），纯确定性
 /// 仲裁；低信任级自我提级 Sensitive fail-closed；不调任何 OS 调度原语。
 pub const METHOD_CPU_PRIORITY: &str = "cpu_priority";
+/// PMB 方法：v3.7.8 竞争下确定性 CPU 配额分配仿真（仿真时钟：敏感先保障、剩余给容忍，
+/// 并给无优先级 flat 对照）。纯确定性只读仿真，不调任何 OS 调度原语、不推进墙钟。
+pub const METHOD_CPU_SCHEDULE_SIM: &str = "cpu_schedule_sim";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -520,6 +528,21 @@ fn memory_primitive_query(input: serde_json::Value) -> Result<serde_json::Value,
 /// tier 缺省按 `third_party`（最小信任默认，绝不默认给 sensitive）；低信任级自报
 /// sensitive 由 [`arbitrate_priority`] fail-closed 拒绝。返回仲裁后的确定性模型。
 fn cpu_priority_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let (capacity, requests) = parse_capacity_and_requests(&input)?;
+    let model = arbitrate_priority(capacity, &requests).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "plugin": AUSEC_PLUGIN,
+        "module": "ausec",
+        "model": model,
+        "note": "v3.7.7 仅交付两级优先级与权重的确定性仲裁，不调用 cgroup/sched_setaffinity 等 OS 调度原语、不做真实限速；竞争下的配额分配在 v3.7.8，突发准入在 v3.7.9。tier 缺省按 third_party；低信任级自报 sensitive 一律拒绝。",
+    }))
+}
+
+/// 从 PMB JSON 中解析 `capacity_millis` 与沙盒申报（v3.7.7/v3.7.8 共用的单一口径）。
+/// tier 缺省 → third_party（最小信任 fail-safe），权重越界/类型错误全部具名拒绝。
+fn parse_capacity_and_requests(
+    input: &serde_json::Value,
+) -> Result<(u64, Vec<CpuSandboxRequest>), String> {
     let capacity = input
         .get("capacity_millis")
         .and_then(|v| v.as_u64())
@@ -573,13 +596,62 @@ fn cpu_priority_query(input: serde_json::Value) -> Result<serde_json::Value, Str
             requested_millis,
         });
     }
+    Ok((capacity, requests))
+}
 
-    let model = arbitrate_priority(capacity, &requests).map_err(|e| e.to_string())?;
+/// 解析仿真 tick 序列：`ticks:[{external_load_millis:u64,
+/// demands?:[{sandbox_id, demand_millis:u64}]}]`；需求合法性由
+/// [`run_schedule_simulation`] 对照已仲裁集合 fail-closed 校验。
+fn parse_ticks(input: &serde_json::Value) -> Result<Vec<ScheduleTick>, String> {
+    let arr = input
+        .get("ticks")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "缺少 ticks 数组（至少一个仿真步）".to_string())?;
+    let mut ticks = Vec::with_capacity(arr.len());
+    for (ti, tv) in arr.iter().enumerate() {
+        let external_load_millis = tv
+            .get("external_load_millis")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| format!("ticks[{ti}] 缺少 external_load_millis（非负整数）"))?;
+        let mut demands = Vec::new();
+        if let Some(darr) = tv.get("demands").and_then(|x| x.as_array()) {
+            for (di, dv) in darr.iter().enumerate() {
+                let sandbox_id = dv
+                    .get("sandbox_id")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| format!("ticks[{ti}].demands[{di}] 缺少 sandbox_id 字符串"))?
+                    .to_string();
+                let demand_millis = dv
+                    .get("demand_millis")
+                    .and_then(|x| x.as_u64())
+                    .ok_or_else(|| {
+                        format!("ticks[{ti}].demands[{di}] 缺少 demand_millis（正整数）")
+                    })?;
+                demands.push(TickDemand {
+                    sandbox_id,
+                    demand_millis,
+                });
+            }
+        }
+        ticks.push(ScheduleTick {
+            external_load_millis,
+            demands,
+        });
+    }
+    Ok(ticks)
+}
+
+/// v3.7.8 `cpu_schedule_sim` 入口：多 tick 竞争下两级优先级配额分配仿真 +
+/// 无优先级 flat 对照（纯只读、确定性，不推进墙钟、不调 OS 调度原语）。
+fn cpu_schedule_sim_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let (capacity, requests) = parse_capacity_and_requests(&input)?;
+    let ticks = parse_ticks(&input)?;
+    let sim = run_schedule_simulation(capacity, &requests, &ticks).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "plugin": AUSEC_PLUGIN,
         "module": "ausec",
-        "model": model,
-        "note": "v3.7.7 仅交付两级优先级与权重的确定性仲裁，不调用 cgroup/sched_setaffinity 等 OS 调度原语、不做真实限速；竞争下的配额分配在 v3.7.8，突发准入在 v3.7.9。tier 缺省按 third_party；低信任级自报 sensitive 一律拒绝。",
+        "simulation": sim,
+        "note": "v3.7.8 竞争下 CPU 配额分配仿真（逻辑 tick，非墙钟）：每 tick Sensitive 先按权重+需求上限保障，剩余给 Tolerant；sensitive_flat 为无优先级全员按权重共分的对照。整数千分点、守恒。不调 cgroup/sched_setaffinity、不做真实限速。外部『50% 被占、延迟影响 45.2%→17.3%』为 aiwiki.ai/byteiota.com 对 DSEC 的报道，非本仓复测，仅作机制动机。",
     }))
 }
 
@@ -646,6 +718,19 @@ fn handle_cpu_priority(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
         .map_err(|e| PluginError::Runtime(format!("AUSec cpu_priority 序列化失败: {e}")))
 }
 
+/// 字节桥：`cpu_schedule_sim`（v3.7.8 竞争下确定性配额分配仿真）。
+fn handle_cpu_schedule_sim(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = if payload.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|e| PluginError::Manifest(format!("cpu_schedule_sim 负载非合法 JSON: {e}")))?
+    };
+    let out = cpu_schedule_sim_query(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec cpu_schedule_sim 序列化失败: {e}")))
+}
+
 /// 向 T0 进程内运行时注册 AUSec 系统插件的处理器（由系统插件装配流程调用）。
 pub fn register(rt: &mut NativeRuntime) {
     // memory_status / memory_admit：v3.7.4 内存共享额度记账 + 两级超卖准入（只读决策）。
@@ -663,6 +748,12 @@ pub fn register(rt: &mut NativeRuntime) {
     );
     // cpu_priority：v3.7.7 CPU 两级优先级 + 权重确定性仲裁（只读，低信任自提级拒绝）。
     rt.register_handler(AUSEC_PLUGIN, METHOD_CPU_PRIORITY, handle_cpu_priority);
+    // cpu_schedule_sim：v3.7.8 竞争下确定性配额分配仿真时钟（敏感先保障、剩余给容忍 + flat 对照，只读）。
+    rt.register_handler(
+        AUSEC_PLUGIN,
+        METHOD_CPU_SCHEDULE_SIM,
+        handle_cpu_schedule_sim,
+    );
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -1089,6 +1180,82 @@ mod tests {
         assert!(cpu_priority_query(serde_json::json!({
             "capacity_millis": 1000,
             "sandboxes": [{"sandbox_id": "a", "tier": "kernel", "requested_millis": 1}],
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn pm_cpu_schedule_sim_protects_sensitive_and_rejects_bad_ticks() {
+        // 容量 100、外部占 50（对应"50% 被占"场景）：system 敏感 + third_party 容忍各需 50。
+        let out = cpu_schedule_sim_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [
+                {"sandbox_id": "core", "tier": "system", "requested_millis": 50},
+                {"sandbox_id": "bg", "tier": "third_party", "requested_millis": 50},
+            ],
+            "ticks": [{"external_load_millis": 50, "demands": [
+                {"sandbox_id": "core", "demand_millis": 50},
+                {"sandbox_id": "bg", "demand_millis": 50},
+            ]}],
+        }))
+        .unwrap();
+        let t0 = &out["simulation"]["ticks"][0];
+        assert_eq!(t0["available_millis"], 50);
+        // priority：sensitive 全保 50，tolerant 0。
+        assert_eq!(t0["sensitive_priority"]["granted_sum"], 50);
+        assert_eq!(t0["sensitive_priority"]["impact_permille"], 0);
+        assert_eq!(t0["tolerant_priority"]["granted_sum"], 0);
+        // flat 对照：sensitive 只拿 25。
+        assert_eq!(t0["sensitive_flat"]["granted_sum"], 25);
+        // 字节桥 round-trip 可解析。
+        let bytes = handle_cpu_schedule_sim(
+            METHOD_CPU_SCHEDULE_SIM,
+            serde_json::to_vec(&serde_json::json!({
+                "capacity_millis": 100,
+                "sandboxes": [
+                    {"sandbox_id": "core", "tier": "system", "requested_millis": 50},
+                ],
+                "ticks": [{"external_load_millis": 0, "demands": [
+                    {"sandbox_id": "core", "demand_millis": 40},
+                ]}],
+            }))
+            .unwrap()
+            .as_slice(),
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            parsed["simulation"]["ticks"][0]["entries"][0]["granted_priority_millis"],
+            40
+        );
+        // 空负载不应 panic（返回缺字段错误，经桥转 Runtime）。
+        assert!(handle_cpu_schedule_sim(METHOD_CPU_SCHEDULE_SIM, b"").is_err());
+
+        // fail-closed：无 tick、外部超容量、未知沙盒、需求越界。
+        assert!(cpu_schedule_sim_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [{"sandbox_id": "a", "tier": "system", "requested_millis": 10}],
+            "ticks": [],
+        }))
+        .is_err());
+        assert!(cpu_schedule_sim_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [{"sandbox_id": "a", "tier": "system", "requested_millis": 10}],
+            "ticks": [{"external_load_millis": 101, "demands": []}],
+        }))
+        .is_err());
+        assert!(cpu_schedule_sim_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [{"sandbox_id": "a", "tier": "system", "requested_millis": 10}],
+            "ticks": [{"external_load_millis": 0, "demands": [
+                {"sandbox_id": "ghost", "demand_millis": 1}]}],
+        }))
+        .is_err());
+        assert!(cpu_schedule_sim_query(serde_json::json!({
+            "capacity_millis": 100,
+            "sandboxes": [{"sandbox_id": "a", "tier": "system", "requested_millis": 10}],
+            "ticks": [{"external_load_millis": 0, "demands": [
+                {"sandbox_id": "a", "demand_millis": 11}]}],
         }))
         .is_err());
     }

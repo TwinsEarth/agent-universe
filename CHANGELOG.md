@@ -1,3 +1,16 @@
+## [v3.7.8] - 2026-10-04
+
+### 修订版：AUSec CPU 调度（2/3）——竞争下确定性配额分配仿真（仿真时钟：敏感先保障、剩余给容忍）（#111，patch）
+
+- 新增 `gsn-core/src/ausec/cpu_schedule.rs`：在 v3.7.7 两级优先级/权重之上，新增"节点 CPU 被其他任务占掉一部分、沙盒真实竞争"时的**确定性配额分配**。每 tick `available=capacity-external_load`，Sensitive 组先按"权重+需求上限"配水，剩余才给 Tolerant；纯整数 u128、千分点、零 syscall、零 unsafe、无 panic。
+- **整数加权配水（water-filling，含需求上限）**：`0<=granted<=demand`、总分配 `=min(capacity,Σdemand)`（需求不足留空不硬塞，守恒）；cap 成员固定后权重退出比例基，floor 余数按"权重降→位置升"逐个 +1，结果对排列顺序不敏感。
+- **多 tick 仿真时钟 + flat 对照**：`ticks:[{external_load_millis,demands?:[{sandbox_id,demand_millis}]}]`，Waiting 沙盒不列需求（granted=0）；输出每沙盒 priority/flat 两策略 granted/shortfall/满足率与两组汇总，aggregate 跨 tick 先求和再算比率。50% 被占、敏感/容忍各需 50 场景：priority 敏感满足率 1000‰（impact 0）、容忍 0，flat 对照敏感仅 25（impact 500‰），确定证明敏感优先严格更优。
+- **fail-closed**：先复用 `arbitrate_priority`（含低信任自报 Sensitive/黑名单拒绝、tier 缺省 third_party）；tick 级校验外部超容量、未知沙盒、demand 越界、同 tick 重复需求，任一非法整体拒绝（7 变体 `ScheduleError`）；比率用 `checked_div`，无需求为 null 不除零。
+- 系统插件 `com.twinsearth.sys.ausec` 新增只读 PMB 方法 `cpu_schedule_sim`（常量/入口/字节桥/register 对称接线，重构出与 cpu_priority 共用的 `parse_capacity_and_requests`）；新增类型 `TickDemand/ScheduleTick/AllocSummary/TickEntry/TickSchedule/AggregateSchedule/ScheduleSimulation` 与纯函数 `run_schedule_simulation`。
+- 新增 7 个「旧实现无法表达」回归（cpu_schedule 5 + PM 桥 1 之外的守恒/取整/fail-closed 全覆盖）；ausec 88/0、全量 lib 443/0、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（cpu_schedule.rs 零 unsafe）/metadata --locked 全绿。
+- 版本 npm 3.7.8 ↔ gsn-core 0.3.78。
+- 诚实边界：是**仿真不是执行**，不调 cgroup/sched_setaffinity、不推进墙钟、不做真实限速；外部"50% 被占、延迟影响 45.2%→17.3%"为 aiwiki.ai/byteiota.com 对 DSEC 报道、非本仓复测，仅作机制动机，不声称复现该数字；突发涌入准入与统一 ausec status 在 v3.7.9。
+
 ## [v3.7.7] - 2026-10-04
 
 ### 修订版：AUSec CPU 调度（1/3）——两级时延优先级 + 优先级与权重（#46/#110，patch）

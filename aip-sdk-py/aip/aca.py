@@ -65,7 +65,7 @@ def build_manifest(
     name: str,
     capabilities: List[str],
     *,
-    version: str = "3.8.4",
+    version: str = "3.8.5",
     endpoints: Optional[List[str]] = None,
     cpu_cores: int = 0,
     memory_mb: int = 0,

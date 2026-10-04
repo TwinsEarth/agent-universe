@@ -1,3 +1,15 @@
+## [v3.8.5] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（6/10）——托管结算守恒账本（EscrowLedger 五桶分账，整数千分点费率，罚没只出供给方应得，结算边界再守恒）（#118，patch）
+
+- 新增 `gsn-core/src/economy/resource/escrow.rs`：纯确定性、内存态托管结算账本 `EscrowLedger`/`EscrowOrder`/`EscrowSplit`/`FeeSchedule`，零浮点/零 syscall/零 unsafe/无 panic，金额全 u128 checked；复用 v3.8.2 `MeterSettlement` 的 consumed_cost/refund/reserved，**不改动** metering.rs/capacity.rs/stake.rs 语义。
+- 五互斥终局桶 payout_provider/royalty/governance_fee/refund_buyer/slashed，恒有 `locked==五桶之和`（`EscrowSplit::conserves(locked)`、全表 `invariant_holds()` checked）；`lock` 开 Locked 记录，`settle` 仅 Locked→Settled 且强校验 locked==reserved，纯函数 `split_for_settlement` 先全算成功才落账，任何失败仍停 Locked。
+- 整数千分点费率 `FeeSchedule`（版税+治理≤1000‰，超出 `FEE_RATES_EXCEED_TOTAL`，恰好 1000 合法）；费额 gross×‰/1000 向下取整、余数留供给方（不造第 6 桶）；罚没只能来自供给方候选应得 payout_gross=gross−royalty−gov，超出 `SLASH_EXCEEDS_PROVIDER_PAYOUT`，**不罚消费者待退款**。
+- 结算边界再复核计量守恒 consumed_cost+refund==reserved，污染视图 `ESCROW_SPLIT_NOT_CONSERVED` fail-closed 不分钱；ResourceError 新增 7 变体（EscrowOrderNotFound/DuplicateEscrowOrder/EscrowAlreadySettled/EscrowLockedReservedMismatch/FeeRatesExceedTotal/SlashExceedsProviderPayout/EscrowSplitNotConserved）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位 escrow_settlement=true、escrow_ledger_persistence=false，stake_slash/onchain_payment 仍 false（同步系统插件 status 快照测试）。
+- 新增 8 回归（正常五桶守恒/费取整余数留供给方/费率超总 fail-closed 与恰好 1000/全消耗零退与零消耗全退/罚没只出供给方应得且守恒/lock-settle 生命周期与具名错误且 mismatch 不改写/污染计量视图边界拒绝/多单隔离与全表守恒）；全量 gsn-core lib **503/0**（较 495 增 8，resource 47/0）、fmt --check/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（escrow.rs 零 unsafe）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.5 ↔ gsn-core 0.3.85。
+- 诚实边界：托管为内存记账面，不持久化/不跨节点/非全局单例；只算给定计量视图/费率/罚没额下唯一且守恒的分钱结果，不做真实划转/不托管真实代币/不连链/不经 PMB 受理外部写/不新增能力令牌；账本不判违规不定费率（费率由治理给入、罚没由 v3.8.8 QA/审判给入，决策/资金分离）；slashed 桶归属不做再分配落地、与 StakeLedger 保证金罚没不强行对账（两账键不同）；royalty 桶为 3.8.6 快照版税预留出口；私钥隔离与真实 BTC/ETH/稳定币结算在 v3.9.x。
+
 ## [v3.8.4] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（5/10）——准入质押冻结/罚没账本（StakeLedger 四桶资金守恒，罚没只能来自己冻结保证金，决策/资金分离）（#117，patch）

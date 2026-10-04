@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.8.1");
+            println!("agent-universe v3.8.2");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {

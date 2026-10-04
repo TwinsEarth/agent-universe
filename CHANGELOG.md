@@ -1,3 +1,19 @@
+## [v3.9.2] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（3/9）——EVM x402 / USDC 纯协议内核（402 challenge 校验 + EIP-3009 transferWithAuthorization 的 EIP-712 授权构造 + facilitator 精确金额守恒；无依赖纯 Rust Keccak-256，只构造不签名，生产默认 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC/不广播/不划转）（#125，patch）
+
+- 新增 `gsn-core/src/economy/payment/x402.rs`：零第三方依赖（仓内无 tiny-keccak/sha3/secp256k1/k256/alloy/ethers），纯 Rust Keccak-f[1600]（rate=136、Keccak 填充 0x01/0x80 区别 SHA3），零 unsafe/零浮点/零 syscall/无生产 panic。
+- 值类型 `EvmAddress([u8;20])`/`Nonce32([u8;32])` 带 0x 小写 hex 序列化与严格反序列化；`X402Error` 14 变体全 `X402_*` Display+Error。
+- `X402Challenge{scheme,network,resource,pay_to,max_amount_required_raw(u128),asset{contract,decimals,symbol},deadline_unix,max_timeout_seconds}`：validate(now_unix) 只接受 exact，具名拒绝空白网络/资源/币种、零额、decimals>36、非正超时、过期（X402_CHALLENGE_EXPIRED）；金额整数 raw units（USDC 6 decimals），now 由调用方传入、内核不读时钟。
+- `X402Domain.separator()` 与 `build_authorization()`：按 EIP-712 对 EIP712Domain(string name,string version,uint256 chainId,address verifyingContract) 求域分隔符，对 TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce) ABI 编码求 structHash，digest=keccak(0x1901‖sep‖struct)，输出 TransferAuthorization{…,digest_hex,signature_hex:None}，只给待签 digest 不给签名。
+- typehash 以编译期 [u8;32] 常量固化（无运行期 hex 解析/expect）；TRANSFER 常量经 EIP-3009 官方规范与双独立 Keccak 实现核定为 0x7c7c6cdb…1c1a2267，保留 keccak(规范串)==常量 锚点测试。
+- `verify_settlement(required_raw,paid_raw)` 精确金额守恒，多付/少付一律 X402_SETTLEMENT_MISMATCH 不静默接受差额。
+- EVM 签发 fail-closed：本版本无 secp256k1 宿主后端，x402_sign 对任何请求一律 X402_EVM_SIGNER_NOT_CONFIGURED 具名拒绝，不解析私钥、不伪造链上签名；真实签发留待宿主注入密钥后端（独立闸门）。
+- T0 系统插件 payment-router 新注册 x402_challenge_validate/x402_authorize_preview/x402_settlement_verify（只读）+x402_sign（fail-closed），连旧共 7 handler；统一 parse_json::<T> 助手类型化拒绝坏 JSON 不 panic。status 增 x402_introduced_in=v3.9.2 与 x402 诚实块（produces_onchain_signature=false、evm_signer_configured_by_default=false、live_settlement=false、evm_rpc_connection=false、clock_read_in_kernel=false、exact_settlement_conservation=true），enforceable 增 fail_closed_when_evm_signer_unconfigured=true/x402_exact_amount_conservation=true，capabilities_declared 2→3（加 x402:protocol:read）。
+- 全量 gsn-core lib **559/0**（较 551 净增 8）、fmt --check、clippy --all-targets -D warnings、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、js test(22)、check-version 3.9.2 全绿；release daemon --version=0.3.92。
+- 版本 npm 3.9.2 ↔ gsn-core/gsn-daemon 0.3.92。
+- 诚实边界：交付 x402 纯协议内核（校验/构造/守恒）非真网资金面——不连 RPC/不广播/不划转/不链上查询/不持久化，x402_sign 一律具名拒签不伪造；facilitator 校验仅本地精确守恒不代表链上已确认；EIP-3009 重放双花拦截需有状态 nonce 账本留后续；仅承诺 USDC(FiatToken) transferWithAuthorization，不含 ReceiveWithAuthorization/ERC-8335。闪电 L402 v3.9.3、ERC-8004 三注册表 v3.9.4、ERC-4337 Paymaster v3.9.5、BTC HTLC/RGB 纯校验 v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；外部协议采用量/性能数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.1] - 2026-10-04
 
 ### 修订版：比特币/以太坊 Agent 经济体（2/9）——宿主签名服务与私钥隔离 HostSignerGate（wallet_sign_preview 只预览不碰密钥，wallet_sign 宿主受限，生产默认 SignerNotConfigured fail-closed，私钥/seed 绝不进沙盒）（#124，patch）

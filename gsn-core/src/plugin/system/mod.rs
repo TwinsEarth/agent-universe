@@ -436,6 +436,7 @@ mod tests {
         assert_eq!(st["plugin"], SYS_PAYMENT_ROUTER);
         assert_eq!(st["introduced_in"], "v3.9.0");
         assert_eq!(st["signing_introduced_in"], "v3.9.1");
+        assert_eq!(st["x402_introduced_in"], "v3.9.2");
         // 金额内部整数 micro，不挂法币。
         assert_eq!(st["amount_unit"]["integer_only"], true);
         assert_eq!(st["amount_unit"]["fiat_pegged"], false);
@@ -451,6 +452,11 @@ mod tests {
             st["enforceable"]["fail_closed_when_signer_unconfigured"],
             true
         );
+        assert_eq!(
+            st["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
+            true
+        );
+        assert_eq!(st["enforceable"]["x402_exact_amount_conservation"], true);
         assert_eq!(st["enforceable"]["fund_movement"], false);
         assert_eq!(st["enforceable"]["key_holding_in_sandbox"], false);
         assert_eq!(
@@ -465,14 +471,22 @@ mod tests {
         assert_eq!(st["enforceable"]["onchain_anchor_write"], false);
         assert_eq!(st["provided"]["payment_router_status"], true);
         assert_eq!(st["provided"]["wallet_sign_preview"], true);
+        assert_eq!(st["provided"]["x402_challenge_validate"], true);
+        assert_eq!(st["provided"]["x402_authorize_preview"], true);
+        assert_eq!(st["provided"]["x402_settlement_verify"], true);
+        assert_eq!(st["provided"]["x402_sign_when_evm_signer_configured"], true);
         assert_eq!(st["provided"]["lightning_node_connection"], false);
+        assert_eq!(st["x402"]["produces_onchain_signature"], false);
+        assert_eq!(st["x402"]["evm_signer_configured_by_default"], false);
+        assert_eq!(st["x402"]["live_settlement"], false);
+        assert_eq!(st["x402"]["evm_rpc_connection"], false);
         assert_eq!(st["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(
             st["signing"]["production_default_host_key_configured"],
             false
         );
-        // v3.9.1 起声明只读选路 + 宿主受限签名（2 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 2);
+        // v3.9.1 两个 + v3.9.2 x402 只读协议能力（共 3 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 3);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -498,6 +512,83 @@ mod tests {
             "got {sign_err}"
         );
         assert!(inst.call("wallet_sign", b"{}").is_err());
+
+        // ── v3.9.2 x402：真实装配路径调用四个 handler ─────────────────────────
+        let usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+        let payee = "0x1111111111111111111111111111111111111111";
+        let payer = "0x2222222222222222222222222222222222222222";
+        let challenge = serde_json::json!({
+            "scheme": "exact",
+            "network": "base",
+            "resource": "https://api.example.local/compute",
+            "pay_to": payee,
+            "max_amount_required_raw": 1_000_000u64,
+            "asset": {"contract": usdc, "decimals": 6, "symbol": "USDC"},
+            "deadline_unix": 2_000_000_000u64,
+            "max_timeout_seconds": 30u32
+        });
+
+        // challenge 校验：未过期 → valid；过期 challenge → 类型化拒绝。
+        let cv = serde_json::to_vec(
+            &serde_json::json!({"challenge": challenge, "now_unix": 1_000_000u64}),
+        )
+        .unwrap();
+        let cvok: serde_json::Value =
+            serde_json::from_slice(&inst.call("x402_challenge_validate", &cv).unwrap()).unwrap();
+        assert_eq!(cvok["valid"], true);
+        let cvexp = serde_json::to_vec(
+            &serde_json::json!({"challenge": challenge, "now_unix": 3_000_000_000u64}),
+        )
+        .unwrap();
+        assert!(inst
+            .call("x402_challenge_validate", &cvexp)
+            .unwrap_err()
+            .to_string()
+            .contains("X402_CHALLENGE_EXPIRED"));
+
+        // 授权预览：产出 32 字节 EIP-712 digest，但 signature_hex 恒为 null。
+        let auth = serde_json::to_vec(&serde_json::json!({
+            "challenge": challenge,
+            "now_unix": 1_000_000u64,
+            "domain": {"name": "USD Coin", "version": "2", "chain_id": 8453u64, "verifying_contract": usdc},
+            "from": payer,
+            "valid_after": 0u64,
+            "valid_before": 1_999_999_999u64,
+            "nonce": "0x".to_string() + &"09".repeat(32)
+        }))
+        .unwrap();
+        let aok: serde_json::Value =
+            serde_json::from_slice(&inst.call("x402_authorize_preview", &auth).unwrap()).unwrap();
+        assert_eq!(aok["digest_hex"].as_str().unwrap().len(), 66);
+        assert!(aok["digest_hex"].as_str().unwrap().starts_with("0x"));
+        assert!(aok.get("signature_hex").unwrap().is_null());
+        assert_eq!(aok["value_raw"].as_u64(), Some(1_000_000));
+
+        // 结算守恒：精确相等通过；多付/少付类型化拒绝。
+        let sok = serde_json::to_vec(
+            &serde_json::json!({"required_raw": 1_000_000u64, "paid_raw": 1_000_000u64}),
+        )
+        .unwrap();
+        let sokv: serde_json::Value =
+            serde_json::from_slice(&inst.call("x402_settlement_verify", &sok).unwrap()).unwrap();
+        assert_eq!(sokv["conserved"], true);
+        let sbad = serde_json::to_vec(
+            &serde_json::json!({"required_raw": 1_000_000u64, "paid_raw": 999_999u64}),
+        )
+        .unwrap();
+        assert!(inst
+            .call("x402_settlement_verify", &sbad)
+            .unwrap_err()
+            .to_string()
+            .contains("X402_SETTLEMENT_MISMATCH"));
+
+        // x402_sign：本版无 secp256k1 后端，任何请求一律具名 fail-closed，不伪造签名。
+        let sign_err = inst.call("x402_sign", &auth).unwrap_err().to_string();
+        assert!(
+            sign_err.contains("X402_EVM_SIGNER_NOT_CONFIGURED"),
+            "got {sign_err}"
+        );
+
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());
     }

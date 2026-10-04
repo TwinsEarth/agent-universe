@@ -35,6 +35,7 @@
 
 pub mod router;
 pub mod signer;
+pub mod x402;
 
 pub use router::{
     PaymentRouter, PaymentTrack, RouteDecision, RouteReason, RoutingInput, RoutingPolicy,
@@ -43,6 +44,10 @@ pub use router::{
 pub use signer::{
     HostSignerGate, InMemoryBroker, SignIntent, SignPolicy, SignPreview, SignatureBroker,
     SignatureReceipt, TrackSignRule, UnconfiguredBroker, UnconfiguredSignerGate,
+};
+pub use x402::{
+    keccak256, verify_settlement, EvmAddress, Nonce32, TransferAuthorization, X402Asset,
+    X402Challenge, X402Domain, X402Error,
 };
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -60,6 +65,18 @@ pub const METHOD_WALLET_SIGN_PREVIEW: &str = "wallet_sign_preview";
 
 /// PMB 方法：宿主受限签发（私钥不进沙盒；生产未配置则具名 SignerNotConfigured）。
 pub const METHOD_WALLET_SIGN: &str = "wallet_sign";
+
+/// PMB 方法：x402 402 challenge 纯校验（now 显式传入，不读时钟）。
+pub const METHOD_X402_CHALLENGE_VALIDATE: &str = "x402_challenge_validate";
+
+/// PMB 方法：x402 EIP-3009 授权预览（构造 EIP-712 digest，不产出 secp256k1 签名）。
+pub const METHOD_X402_AUTHORIZE_PREVIEW: &str = "x402_authorize_preview";
+
+/// PMB 方法：x402 facilitator 结算回执精确守恒校验（实付须恰等于应付）。
+pub const METHOD_X402_SETTLEMENT_VERIFY: &str = "x402_settlement_verify";
+
+/// PMB 方法：x402 EVM 链上签发（本版无 secp256k1 后端，一律具名 fail-closed，不伪造）。
+pub const METHOD_X402_SIGN: &str = "x402_sign";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +190,7 @@ pub fn status_payload() -> serde_json::Value {
         "domain": "agent-payment-economy",
         "introduced_in": "v3.9.0",
         "signing_introduced_in": "v3.9.1",
+        "x402_introduced_in": "v3.9.2",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -193,8 +211,12 @@ pub fn status_payload() -> serde_json::Value {
             "instant_cap": RoutingPolicy::default().instant_cap_micro,
             "large_floor": RoutingPolicy::default().large_floor_micro
         },
-        // v3.9.1 起声明只读选路 + 宿主受限签名（私钥不进沙盒）；执行/链上写仍在后续版本。
-        "capabilities_declared": ["pay:route:read", "wallet:sign:host-restricted"],
+        // v3.9.1 只读选路 + 宿主受限签名；v3.9.2 增 x402 协议只读构造/校验。执行/链上写仍在后续版本。
+        "capabilities_declared": [
+            "pay:route:read",
+            "wallet:sign:host-restricted",
+            "x402:protocol:read"
+        ],
         "capabilities_reserved_later": [
             "pay:execute",
             "chain:anchor:write"
@@ -215,13 +237,38 @@ pub fn status_payload() -> serde_json::Value {
             "fabricated_signature_on_failure": false,
             "replay_protection_note": "nonce 纳入被签规范化载荷；链下重放双花拦截需有状态宿主，本版本不声称已完成。"
         },
+        "x402": {
+            "introduced_in": "v3.9.2",
+            "track": "evm_x402",
+            "stablecoin": "USDC (raw units, 6 decimals on mainnets)",
+            "methods": [
+                "x402_challenge_validate",
+                "x402_authorize_preview",
+                "x402_settlement_verify",
+                "x402_sign"
+            ],
+            "scheme_supported": ["exact"],
+            "authorization_standard": "EIP-3009 transferWithAuthorization",
+            "digest_standard": "EIP-712 typed-data (keccak256, dependency-free)",
+            "produces_onchain_signature": false,
+            "evm_signer_configured_by_default": false,
+            "x402_sign_fail_closed": true,
+            "fabricated_signature_on_failure": false,
+            "exact_settlement_conservation": true,
+            "clock_read_in_kernel": false,
+            "evm_rpc_connection": false,
+            "live_settlement": false,
+            "note": "只校验 402 challenge、构造 EIP-3009 授权与 EIP-712 待签 digest、按精确金额守恒校验 facilitator 回执；不持 secp256k1 私钥、不产出链上签名、不连 RPC、不广播不划转。过期判定 now 由调用方传入。"
+        },
         "enforceable": {
             "deterministic_route_decision": true,
             "integer_thresholds": true,
             "fail_closed_when_track_unavailable": true,
             "fail_closed_when_signer_unconfigured": true,
+            "fail_closed_when_evm_signer_unconfigured": true,
             "host_only_signing_private_key_isolation": true,
             "sandbox_direct_transaction_signing": false,
+            "x402_exact_amount_conservation": true,
             "fund_movement": false,
             "key_holding_in_sandbox": false,
             "transaction_signing": false,
@@ -233,12 +280,16 @@ pub fn status_payload() -> serde_json::Value {
             "payment_router_status": true,
             "wallet_sign_preview": true,
             "wallet_sign_when_host_configured": true,
+            "x402_challenge_validate": true,
+            "x402_authorize_preview": true,
+            "x402_settlement_verify": true,
+            "x402_sign_when_evm_signer_configured": true,
             "router_persistence": false,
             "lightning_node_connection": false,
             "evm_rpc_connection": false,
             "btc_rgb_connection": false
         },
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷（domain|track|cap|nonce|auth_only|digest）不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker 不持密钥，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造，InMemoryBroker 为宿主侧参考后端。仍不连任何链/节点、不广播、不划转、不兑换、不持久化。x402/L402/ERC-8004/Paymaster/HTLC/RGB/ZK 对接在 v3.9.2-v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。闪电 L402 v3.9.3、ERC-8004 v3.9.4、Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
     })
 }
 
@@ -287,11 +338,101 @@ fn handle_wallet_sign(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
         .map_err(|e| PluginError::Runtime(format!("wallet_sign 序列化失败: {e}")))
 }
 
+/// 字节桥：`x402_challenge_validate`（只读校验 402 challenge；now 显式传入）。
+///
+/// 负载：`{"challenge": <X402Challenge>, "now_unix": <u64>}`。坏 JSON/缺字段归类运行时
+/// 拒绝，语义错误（过期/金额/合约等）由内核返回类型化 [`X402Error`]。
+fn handle_x402_challenge_validate(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        challenge: X402Challenge,
+        now_unix: u64,
+    }
+    let req: Req = parse_json("x402_challenge_validate", payload)?;
+    req.challenge
+        .validate(req.now_unix)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "valid": true,
+        "scheme": req.challenge.scheme,
+        "network": req.challenge.network,
+        "amount_raw": req.challenge.max_amount_required_raw,
+    }))
+    .map_err(|e| PluginError::Runtime(format!("x402_challenge_validate 序列化失败: {e}")))
+}
+
+/// 字节桥：`x402_authorize_preview`（构造 EIP-3009 授权与 EIP-712 digest，不签名）。
+fn handle_x402_authorize_preview(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        challenge: X402Challenge,
+        now_unix: u64,
+        domain: X402Domain,
+        from: EvmAddress,
+        valid_after: u64,
+        valid_before: u64,
+        nonce: Nonce32,
+    }
+    let req: Req = parse_json("x402_authorize_preview", payload)?;
+    let auth = req
+        .challenge
+        .build_authorization(
+            req.now_unix,
+            &req.domain,
+            req.from,
+            req.valid_after,
+            req.valid_before,
+            req.nonce,
+        )
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&auth)
+        .map_err(|e| PluginError::Runtime(format!("x402_authorize_preview 序列化失败: {e}")))
+}
+
+/// 字节桥：`x402_settlement_verify`（facilitator 回执精确金额守恒校验）。
+fn handle_x402_settlement_verify(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        required_raw: u128,
+        paid_raw: u128,
+    }
+    let req: Req = parse_json("x402_settlement_verify", payload)?;
+    verify_settlement(req.required_raw, req.paid_raw)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "conserved": true,
+        "required_raw": req.required_raw,
+        "paid_raw": req.paid_raw,
+    }))
+    .map_err(|e| PluginError::Runtime(format!("x402_settlement_verify 序列化失败: {e}")))
+}
+
+/// 字节桥：`x402_sign`（EVM 链上签发）。
+///
+/// 本版**没有** secp256k1 宿主签名后端：对任何请求（含空/坏负载）一律具名
+/// [`X402Error::EvmSignerNotConfigured`] fail-closed，绝不伪造链上签名，也不解析私钥。
+fn handle_x402_sign(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
+    Err(PluginError::Runtime(
+        X402Error::EvmSignerNotConfigured.to_string(),
+    ))
+}
+
+fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
+    if payload.is_empty() {
+        return Err(PluginError::Runtime(format!(
+            "{method}: empty payload (expected JSON)"
+        )));
+    }
+    serde_json::from_slice::<T>(payload)
+        .map_err(|e| PluginError::Runtime(format!("{method}: invalid payload: {e}")))
+}
+
 /// 把结算/签名内核处理器注册到 T0 native 运行时（随系统插件装配调用）。
 ///
 /// v3.9.0 注册只读状态查询；v3.9.1 追加 `wallet_sign_preview`（只读预览）与宿主受限
-/// `wallet_sign`（生产默认未配置密钥，具名 fail-closed）。选路执行/链上写在后续小版本
-/// 接线，未接线方法明确不注册（NotFound），不伪造可用。
+/// `wallet_sign`（生产默认未配置密钥，具名 fail-closed）。v3.9.2 追加 x402 四个方法：
+/// challenge 校验、授权预览、结算守恒校验（只读）与 `x402_sign`（无 secp256k1 后端，
+/// 具名 fail-closed）。选路执行/链上写在后续小版本接线，未接线方法不注册（NotFound）。
 pub fn register(rt: &mut NativeRuntime) {
     rt.register_handler(
         PAYMENT_ROUTER_PLUGIN,
@@ -308,6 +449,22 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_WALLET_SIGN,
         handle_wallet_sign,
     );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_X402_CHALLENGE_VALIDATE,
+        handle_x402_challenge_validate,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_X402_AUTHORIZE_PREVIEW,
+        handle_x402_authorize_preview,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_X402_SETTLEMENT_VERIFY,
+        handle_x402_settlement_verify,
+    );
+    rt.register_handler(PAYMENT_ROUTER_PLUGIN, METHOD_X402_SIGN, handle_x402_sign);
 }
 
 #[cfg(test)]
@@ -361,10 +518,21 @@ mod tests {
         assert_eq!(s["enforceable"]["onchain_anchor_write"], false);
         assert_eq!(s["provided"]["payment_router_status"], true);
         assert_eq!(s["provided"]["wallet_sign_preview"], true);
+        assert_eq!(s["provided"]["x402_challenge_validate"], true);
+        assert_eq!(s["provided"]["x402_authorize_preview"], true);
+        assert_eq!(s["provided"]["x402_settlement_verify"], true);
         assert_eq!(s["provided"]["lightning_node_connection"], false);
         assert_eq!(s["tracks"].as_array().unwrap().len(), 3);
-        // v3.9.1 起声明只读选路 + 宿主受限签名。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 2);
+        // v3.9.1 两个 + v3.9.2 x402 只读协议能力。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 3);
+        assert_eq!(
+            s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
+            true
+        );
+        assert_eq!(s["enforceable"]["x402_exact_amount_conservation"], true);
+        assert_eq!(s["x402"]["introduced_in"], "v3.9.2");
+        assert_eq!(s["x402"]["produces_onchain_signature"], false);
+        assert_eq!(s["x402"]["live_settlement"], false);
         assert_eq!(s["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(s["signing"]["seed_enters_sandbox"], false);
         assert_eq!(

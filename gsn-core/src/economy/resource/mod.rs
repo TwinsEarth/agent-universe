@@ -37,6 +37,13 @@
 //!   （[`FeeSchedule`]，和 ≤1000，取整余数留供给方），罚没只能来自供给方候选应得出账、
 //!   不罚消费者待退款；计量视图在结算边界再复核守恒，污染视图 fail-closed 不分钱。账本
 //!   不判违规/不定费率/不做真实划转/不连链，只保证给定输入分钱唯一且守恒。
+//! - **v3.8.6 快照商品化版税**：[`RoyaltyLedger`] + [`SnapshotRegistry`] 把 AUSec 的
+//!   pack_diff 增量快照变成可挂单商品（snapshot_ref → 创建者 DID + 版税千分点费率）；每笔
+//!   已结算订单按其恢复的快照记一次版税（一笔订单只记一次），按快照/创建者/全表三维度
+//!   累计，并与 [`EscrowSplit`] 的 royalty 桶**逐单对账**——托管抽出的版税必须等于按快照
+//!   费率算给创建者的钱（取整口径同 v3.8.5，余数留供给方），不符或「扣了版税却无快照
+//!   受款」fail-closed 不落账；恒有全表版税=Σ快照=Σ创建者。仍是内存确定性记账，不真实
+//!   派发版税、不持久化、不连链。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -55,6 +62,7 @@ pub mod catalog;
 pub mod escrow;
 pub mod matching;
 pub mod metering;
+pub mod royalty;
 pub mod stake;
 
 pub use capacity::{CapacityRegistration, CapacityRegistry};
@@ -64,6 +72,7 @@ pub use escrow::{
 };
 pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
+pub use royalty::{RoyaltyAccrual, RoyaltyLedger, SnapshotAsset, SnapshotRegistry};
 pub use stake::{StakeAccount, StakeLedger};
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -243,6 +252,22 @@ pub enum ResourceError {
     SlashExceedsProviderPayout { attempted: u128, payout: u128 },
     /// 分账五桶不守恒或计量视图被污染（v3.8.5，结算边界 fail-closed）。
     EscrowSplitNotConserved,
+    /// 快照引用为空/空白（v3.8.6）。
+    EmptySnapshotRef,
+    /// 引用了未在快照目录注册的 snapshot_ref（v3.8.6）。
+    SnapshotRefNotFound { snapshot_ref: String },
+    /// 快照引用在目录中重复注册（v3.8.6）。
+    DuplicateSnapshotRef { snapshot_ref: String },
+    /// 快照版税费率超过 1000‰（v3.8.6）。
+    SnapshotRoyaltyRateExceedsTotal { permyriad: u32 },
+    /// 同一订单重复累计版税（v3.8.6，一笔订单只记一次）。
+    RoyaltyAlreadyAccrued { order_id: String },
+    /// 版税账按快照费率算出的版税与托管 royalty 桶不符（v3.8.6，含「扣了版税却无快照受款」）。
+    RoyaltyEscrowMismatch {
+        order_id: String,
+        escrow_royalty: u128,
+        accrued_royalty: u128,
+    },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -400,6 +425,29 @@ impl std::fmt::Display for ResourceError {
             ResourceError::EscrowSplitNotConserved => write!(
                 f,
                 "RESOURCE_ESCROW_SPLIT_NOT_CONSERVED: 分账五桶之和不等于托管锁定额或计量视图被污染"
+            ),
+            ResourceError::EmptySnapshotRef => {
+                write!(f, "RESOURCE_EMPTY_SNAPSHOT_REF: 快照引用为空")
+            }
+            ResourceError::SnapshotRefNotFound { snapshot_ref } => {
+                write!(f, "RESOURCE_SNAPSHOT_REF_NOT_FOUND: 未注册快照引用 {snapshot_ref}")
+            }
+            ResourceError::DuplicateSnapshotRef { snapshot_ref } => {
+                write!(f, "RESOURCE_DUPLICATE_SNAPSHOT_REF: 快照引用重复注册 {snapshot_ref}")
+            }
+            ResourceError::SnapshotRoyaltyRateExceedsTotal { permyriad } => {
+                write!(f, "RESOURCE_SNAPSHOT_ROYALTY_RATE_EXCEEDS_TOTAL: 版税费率 {permyriad}‰ 超过 1000‰")
+            }
+            ResourceError::RoyaltyAlreadyAccrued { order_id } => {
+                write!(f, "RESOURCE_ROYALTY_ALREADY_ACCRUED: 订单 {order_id} 已累计过版税")
+            }
+            ResourceError::RoyaltyEscrowMismatch {
+                order_id,
+                escrow_royalty,
+                accrued_royalty,
+            } => write!(
+                f,
+                "RESOURCE_ROYALTY_ESCROW_MISMATCH: 订单 {order_id} 托管版税 {escrow_royalty} 与快照应计版税 {accrued_royalty} 不符"
             ),
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
@@ -756,6 +804,7 @@ pub fn status_payload() -> serde_json::Value {
             "matching_orchestration": true,
             "stake_ledger": true,
             "escrow_settlement": true,
+            "snapshot_royalty": true,
             "stake_slash": false,
             "onchain_payment": false
         },
@@ -767,9 +816,10 @@ pub fn status_payload() -> serde_json::Value {
             "metering_ledger_persistence": false,
             "matching_engine_persistence": false,
             "stake_ledger_persistence": false,
-            "escrow_ledger_persistence": false
+            "escrow_ledger_persistence": false,
+            "snapshot_royalty_persistence": false
         },
-        "note": "v3.8.5：新增托管结算守恒账本 EscrowLedger——消费者锁定托管预留额，结算时穷尽分到五桶（payout_provider/royalty/governance_fee/refund_buyer/slashed），恒有 locked=五桶之和；复用 v3.8.2 MeterSettlement 的实耗/待退，费率整数千分点（FeeSchedule，版税+治理≤1000‰，取整余数留供给方），罚没只能来自供给方候选应得出账、不罚消费者待退款，计量视图在结算边界再复核守恒，污染视图 fail-closed 不分钱。账本不判违规/不定费率/不做真实划转/不连链/不经 PMB 受理外部写/不持久化；QA/审判驱动罚没与真实 BTC/ETH/稳定币结算仍在后续小版本（stake_slash/onchain_payment 暂 false）。"
+        "note": "v3.8.6：新增快照商品化版税 RoyaltyLedger+SnapshotRegistry——pack_diff 增量快照注册为商品（snapshot_ref→创建者 DID+版税千分点），每笔已结算订单按恢复快照记一次版税（一单一次），按快照/创建者/全表三维累计，恒有全表版税=Σ快照=Σ创建者，并与 v3.8.5 EscrowSplit 的 royalty 桶逐单对账（取整口径同 v3.8.5、余数留供给方；扣了版税却无快照受款或金额不符 fail-closed 不落账）。纯内存确定性记账，不真实派发版税/不持久化/不连 UDOS/不连链/不经 PMB 受理外部写/不新增能力令牌；真实版税划转、pack_diff 存储与 BTC/ETH/稳定币结算仍在后续（onchain_payment 暂 false）。v3.8.5：托管五桶守恒（payout_provider/royalty/governance_fee/refund_buyer/slashed，locked=五桶之和），费率整数千分点、罚没只出供给方候选应得、不罚消费者退款、结算边界再守恒，污染视图 fail-closed。"
     })
 }
 

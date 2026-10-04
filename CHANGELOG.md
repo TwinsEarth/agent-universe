@@ -1,3 +1,15 @@
+## [v3.8.6] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（7/10）——快照商品化版税账本（pack_diff 快照注册为商品，按次/复用版税三维累计，与托管 royalty 桶逐单对账）（#119，patch）
+
+- 新增 `gsn-core/src/economy/resource/royalty.rs`：纯确定性、内存态快照版税账本 `RoyaltyLedger` + 快照商品目录 `SnapshotRegistry`/`SnapshotAsset`/`RoyaltyAccrual`，零浮点/零 syscall/零 unsafe/无 panic，金额全 u128 checked，费率整数千分点（PERMYRIAD=1000）；取整口径与 v3.8.5 escrow 完全一致（gross×‰/1000 向下取整、余数留供给方）。
+- 快照注册 snapshot_ref→创建者 DID+版税千分点（空引用/空创建者/费率>1000‰/重复引用 fail-closed）；`accrue(order,Option<snapshot_ref>,gross,escrow_royalty)` 一笔订单只记一次，Some(ref) 按目录费率算版税且必须等于托管 royalty 桶（不符 `RoyaltyEscrowMismatch` 不落账），None 版税0 且托管桶必须0（扣了版税却无快照受款同样拒绝）。
+- 三维守恒 `invariant_holds`：全表版税==Σ快照==Σ创建者（三条独立 checked 求和），且每条版税记录受款创建者与目录一致；查询 total_royalty/total_for_snapshot/total_for_creator/restore_count（为后续按复用率持续版税预留）。
+- ResourceError 新增 6 变体（EmptySnapshotRef/SnapshotRefNotFound/DuplicateSnapshotRef/SnapshotRoyaltyRateExceedsTotal/RoyaltyAlreadyAccrued/RoyaltyEscrowMismatch）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位 snapshot_royalty=true、snapshot_royalty_persistence=false，stake_slash/onchain_payment 仍 false（同步系统插件 status 快照测试）。
+- 新增 8 回归（基本恢复计创建者版税三维一致/取整余数与 escrow 同口径及托管错记拒绝/重复空引用空创建者拒绝/费率超1000边界1001拒绝1000合法/未知快照NotFound不污染/重复订单只记一次空id拒绝/无快照单要求托管royalty=0否则mismatch/多快照多创建者三方守恒）；全量 gsn-core lib **511/0**（较 503 增 8，resource 55/0）、fmt --check/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（royalty.rs 零 unsafe，仍仅 winjob.rs 3/3）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.6 ↔ gsn-core 0.3.86。
+- 诚实边界：版税为内存记账面，不持久化/不跨节点/非全局单例；只算并累计「某单恢复某快照该付创建者多少版税」并与托管 royalty 桶逐单相等，不做真实派发/不托管真实代币/不校验 pack_diff 内容/不连 UDOS/不连链/不经 PMB 受理外部写/不新增能力令牌；snapshot_ref 为不透明标识、不假定真实快照存储格式；只记账不划转，与 StakeLedger/EscrowLedger 不自动联动资金，动态定价/信誉溢价在 3.8.9、四维信誉 3.8.7、BFT-lite QA 3.8.8、真实 BTC/ETH/稳定币结算与私钥隔离在 v3.9.x。
+
 ## [v3.8.5] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（6/10）——托管结算守恒账本（EscrowLedger 五桶分账，整数千分点费率，罚没只出供给方应得，结算边界再守恒）（#118，patch）

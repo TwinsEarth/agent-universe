@@ -475,18 +475,24 @@ mod tests {
         assert_eq!(st["provided"]["x402_authorize_preview"], true);
         assert_eq!(st["provided"]["x402_settlement_verify"], true);
         assert_eq!(st["provided"]["x402_sign_when_evm_signer_configured"], true);
+        assert_eq!(st["provided"]["l402_parse_challenge"], true);
+        assert_eq!(st["provided"]["l402_verify"], true);
+        assert_eq!(st["provided"]["l402_pay_when_lightning_configured"], true);
         assert_eq!(st["provided"]["lightning_node_connection"], false);
         assert_eq!(st["x402"]["produces_onchain_signature"], false);
         assert_eq!(st["x402"]["evm_signer_configured_by_default"], false);
         assert_eq!(st["x402"]["live_settlement"], false);
         assert_eq!(st["x402"]["evm_rpc_connection"], false);
+        assert_eq!(st["l402"]["introduced_in"], "v3.9.3");
+        assert_eq!(st["l402"]["lightning_node_connection"], false);
+        assert_eq!(st["l402"]["l402_pay_fail_closed"], true);
         assert_eq!(st["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(
             st["signing"]["production_default_host_key_configured"],
             false
         );
-        // v3.9.1 两个 + v3.9.2 x402 只读协议能力（共 3 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 3);
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 只读协议能力（共 4 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 4);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -587,6 +593,39 @@ mod tests {
         assert!(
             sign_err.contains("X402_EVM_SIGNER_NOT_CONFIGURED"),
             "got {sign_err}"
+        );
+
+        // v3.9.3 L402：parse_challenge 给出整数 msat 金额；verify 校验 preimage/hash/金额。
+        use sha2::{Digest, Sha256};
+        let pre = [9u8; 32];
+        let lhash = hex::encode(Sha256::digest(pre));
+        let lpre = hex::encode(pre);
+        let lheader = r#"L402 macaroon="MAC9", invoice="lnbc100n1p""#; // 10_000 msat
+        let lp = serde_json::to_vec(&serde_json::json!({ "www_authenticate": lheader })).unwrap();
+        let lout: serde_json::Value =
+            serde_json::from_slice(&inst.call("l402_parse_challenge", &lp).unwrap()).unwrap();
+        assert_eq!(lout["amount_msat"], 10_000);
+
+        let lv = serde_json::to_vec(&serde_json::json!({
+            "www_authenticate": lheader,
+            "payment_hash_hex": lhash,
+            "preimage_hex": lpre,
+            "paid_msat": 10_000u64,
+        }))
+        .unwrap();
+        let lok: serde_json::Value =
+            serde_json::from_slice(&inst.call("l402_verify", &lv).unwrap()).unwrap();
+        assert_eq!(lok["settled"], true);
+        // 金额不守恒 → 拒绝。
+        let mut lbad = serde_json::from_slice::<serde_json::Value>(&lv).unwrap();
+        lbad["paid_msat"] = 1.into();
+        let lbadp = serde_json::to_vec(&lbad).unwrap();
+        assert!(inst.call("l402_verify", &lbadp).is_err());
+        // l402_pay：不连闪电节点，一律具名 fail-closed。
+        let lpay_err = inst.call("l402_pay", &lv).unwrap_err().to_string();
+        assert!(
+            lpay_err.contains("L402_LIGHTNING_NOT_CONFIGURED"),
+            "got {lpay_err}"
         );
 
         // pay_execute 尚未接线（NotFound），不伪造可用。

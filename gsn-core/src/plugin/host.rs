@@ -555,6 +555,14 @@ mod tests {
     use crate::plugin::official;
     use crate::plugin::runtime::OutboxMessage;
 
+    /// 串行化所有读写进程级环境变量 `GSN_BLACKLIST_FILE` 的测试。
+    ///
+    /// `std::env::set_var/remove_var/var` 作用于整个进程，cargo 默认多线程并行跑用例，
+    /// 两个都操作该变量的测试若交叉调度，会让「期望读到显式路径」的一方在 `remove_var`
+    /// 后读到未设置（no-op Ok），产生时序 flake（CI 已观测到）。用进程内锁把它们串行化，
+    /// 仅测试代码使用，不影响生产（生产启动时单线程只读一次环境变量）。
+    static BLACKLIST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// B2 测试：产生预设 outbox 的 stub 实例（不真正跑子进程）。
     struct StubOutboxInstance {
         outbox: Vec<OutboxMessage>,
@@ -963,6 +971,7 @@ mod tests {
     // ── v3.5.2（AU-07）：黑名单可播种 + start() 复检 ────────────────
     #[test]
     fn blacklist_seeded_from_operator_file_blocks_install() {
+        let _g = BLACKLIST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("au-bl-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
         let blf = dir.join("blacklist.txt");
@@ -973,6 +982,7 @@ mod tests {
         let mut host = PluginHost::new("3.0.0", None);
         let r = host.seed_blacklist_from_env();
         std::env::remove_var("GSN_BLACKLIST_FILE");
+        drop(_g);
         r.unwrap();
         assert!(host
             .blacklist()
@@ -991,6 +1001,7 @@ mod tests {
     /// 而不是静默按空黑名单继续。
     #[test]
     fn blacklist_seed_read_failure_is_error_not_silent_empty() {
+        let _g = BLACKLIST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // 指向一个目录（load_operator_file 读它会失败），模拟"显式配置却读不出来"。
         let dir = std::env::temp_dir().join(format!("au-bldir-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&dir);
@@ -1005,6 +1016,7 @@ mod tests {
         // 未设置变量时才是 no-op（现状）。
         let mut host2 = PluginHost::new("3.0.0", None);
         assert!(host2.seed_blacklist_from_env().is_ok());
+        drop(_g);
     }
 
     #[test]

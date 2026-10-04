@@ -1,3 +1,19 @@
+## [v3.9.3] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（4/9）——L402 / 比特币闪电网络纯协议内核（402 challenge 头解析 + BOLT11 人类可读金额前缀整数解析 + preimage/payment_hash SHA256 关系与精确金额守恒；只用仓内 sha2/hex 无新依赖，只校验不连节点，生产默认 L402_LIGHTNING_NOT_CONFIGURED fail-closed，不持钥/不签 HTLC/不解 bech32/不校 macaroon 签名）（#126，patch）
+
+- 新增 `gsn-core/src/economy/payment/l402.rs`：零新依赖（仅复用仓内 sha2 0.10 / hex 0.4，无 lightning/ldk/secp/bech32），零浮点/零 syscall/零 unsafe/无生产 panic。
+- `L402Challenge::parse_www_authenticate`：解析 `L402 macaroon="…", invoice="lnbc…"`，scheme 大小写不敏感、macaroon/invoice 序可互换、值必须双引号、尊重引号内逗号、容忍空白、忽略未知参数，缺参/未加引号/空值/scheme 不符具名拒；macaroon 不透明透传不校验签名。
+- `parse_bolt11_amount_msat`：只解析 ln(bc|tb|bcrt)<amount><m|u|n|p?> 人类可读前缀，绝不触碰 bech32 数据段；支持 lightning: 前缀；以 1 BTC=1e11 msat 整数乘数（m=1e8/u=1e5/n=1e2/p=amount/10 须 is_multiple_of(10) 否则 L402_SUB_MSAT_AMOUNT；省略或数字后非 m/u/n/p 字符按整 BTC），u128 中间运算防溢出 L402_AMOUNT_OVERFLOW，无金额发票 L402_INVALID_AMOUNT。
+- `PaymentHash/Preimage([u8;32])` 带 0x 可选严格 hex；`Preimage::payment_hash()` 用标准 SHA-256（非 keccak）；`L402Credential::verify` 三重校验 macaroon 一致 / SHA256(preimage)==expected / 金额精确守恒，`to_authorization_header` 出 `L402 <mac>:<prehex>`；`verify_settlement` 多付少付一律 L402_SETTLEMENT_MISMATCH。
+- `L402Error` 10 变体全 `L402_*` Display+Error（MALFORMED_CHALLENGE/MISSING_PARAM/MACAROON_MISMATCH/UNSUPPORTED_INVOICE_NETWORK/INVALID_AMOUNT/SUB_MSAT_AMOUNT/AMOUNT_OVERFLOW/INVALID_PREIMAGE/PREIMAGE_HASH_MISMATCH/SETTLEMENT_MISMATCH）。
+- 闪电执行 fail-closed：本版本无闪电节点后端，l402_pay 对任何请求一律 L402_LIGHTNING_NOT_CONFIGURED 具名拒绝，不伪造支付/不构造广播 HTLC；真实支付留待宿主注入受信任节点后端（独立闸门）。
+- T0 系统插件 payment-router 新注册 l402_parse_challenge/l402_verify（只读）+l402_pay（fail-closed），连旧共 10 handler；status 增 l402_introduced_in=v3.9.3 与 l402 诚实块（payment_hash=标准 SHA256 非 keccak、bolt11_bech32_data_decoded=false、macaroon_signature_verified=false、l402_pay_fail_closed=true、exact_settlement_conservation=true、lightning_node_connection=false、htlc_creation_or_settlement=false、live_settlement=false），enforceable 增 l402_exact_amount_conservation/fail_closed_when_lightning_not_configured，capabilities_declared 3→4（加 l402:protocol:read）。
+- 根治 host.rs 黑名单环境变量测试 flake：新增进程内 static BLACKLIST_ENV_LOCK:Mutex<()>，两用例取锁串行化 GSN_BLACKLIST_FILE 读写、用完显式 drop；生产 seed_blacklist_from_env 未改。
+- 全量 gsn-core lib **566/0**（较 559 净增 7：l402 6 + payment handler E2E 1）、黑名单两用例 --test-threads=16 连跑 15 轮 0 flake、fmt --check、clippy --all-targets -D warnings（u128::is_multiple_of）、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、js test(22)、check-version 3.9.3 全绿；release daemon --version=0.3.93。
+- 版本 npm 3.9.3 ↔ gsn-core/gsn-daemon 0.3.93。
+- 诚实边界：交付 L402 纯协议内核（头解析/金额前缀/原像哈希/守恒）非真网资金面——不连节点/不持钥/不签 HTLC/不广播/不划转；payment_hash 须来自受信任闪电节点（bech32 数据段不解码）；不校 macaroon 签名（只做票据一致）；preimage 校验是本地密码学关系非 HTLC 最终确认。ERC-8004 三注册表 v3.9.4、ERC-4337 Paymaster v3.9.5、BTC HTLC/RGB 纯校验 v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；外部协议采用量/费率数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.2] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（3/9）——EVM x402 / USDC 纯协议内核（402 challenge 校验 + EIP-3009 transferWithAuthorization 的 EIP-712 授权构造 + facilitator 精确金额守恒；无依赖纯 Rust Keccak-256，只构造不签名，生产默认 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC/不广播/不划转）（#125，patch）

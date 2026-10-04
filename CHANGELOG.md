@@ -1,3 +1,17 @@
+## [v3.8.2] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（3/10）——计量账本（append-only 正计量 + consumed≤allocated + 整数实耗/待退结算视图）（#115，patch）
+
+- 新增 `gsn-core/src/economy/resource/metering.rs`：纯确定性、内存态计量账本，零浮点/零 syscall/零 unsafe/无 panic，数量金额全 u128 checked，超配额 fail-closed。
+- `UsageLine{order_id,kind,unit,allocated,consumed,unit_price_micro}`：构造校验非空订单 id/正预留/正单价/unit 必须属于该形态 `catalog::default_units` 目录，初始 consumed=0；`allocated` 为撮合预留上限（=filled_quantity），`consumed` 只增不减、恒 ≤ allocated。
+- `MeteringLedger`（有序 Vec 确定遍历，唯一键 (order,kind,unit)）：`open` 校验+唯一性（同键 `RESOURCE_DUPLICATE_USAGE_LINE`，同订单异维度/异订单同维度可共存）；`record` 仅接受正增量 append-only 计量，零增量拒绝、累计超预留 `RESOURCE_USAGE_EXCEEDS_ALLOCATION` 且失败不改写账本，未开线 `RESOURCE_USAGE_LINE_NOT_FOUND`。
+- 整数结算视图 `settlement_view→MeterSettlement{consumed,allocated,consumed_cost_micro,refund_micro,reserved_cost_micro}`：实耗=consumed×单价、待退=(allocated-consumed)×单价、预留=allocated×单价，恒有 reserved=consumed_cost+refund（v3.8.5 托管守恒计量侧依据）；只算钱不动钱、不托管不连链。
+- `total_consumed(kind,unit)` 跨订单 checked 聚合（无条目为 0）；`invariant_holds` 全表自检 consumed≤allocated 且金额守恒式。
+- `ResourceError` 新增 4 变体（EmptyOrderId/DuplicateUsageLine/UsageLineNotFound/UsageExceedsAllocation）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位置 metering_ledger=true、metering_ledger_persistence=false。
+- 新增 8 回归（合法开线/四类入场拒绝/重复与多维共存/累计不超配额且失败不改写/零增量与未知线/结算视图守恒/未知视图拒绝/跨订单聚合）；全量 gsn-core lib **480/0**（较 472 增 8）、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（metering.rs 零 unsafe）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.2 ↔ gsn-core 0.3.82。
+- 诚实边界：计量为内存记账面，不持久化/不接真实用量探针/不按墙钟计费/非全局单例；record 只增不减压不支持负冲减；本版只算实耗/待退视图，不托管分账不罚没不连链（托管 3.8.5、质押 3.8.4、链上结算 v3.9.x）；纯规则不随订单 executing→metering 自动联动（联动在 v3.8.3）；不新增对外写能力令牌。
+
 ## [v3.8.1] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（2/10）——注册容量账本（register/hold/release/deregister）+ 挂单容量闸门（#114，patch）

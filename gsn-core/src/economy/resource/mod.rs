@@ -17,6 +17,10 @@
 //! - **v3.8.1 注册容量**：[`CapacityRegistry`] 内存账本（register/hold/release/
 //!   deregister）+ 挂单容量闸门 [`CapacityRegistry::check_offer`]，fail-closed，
 //!   守恒不变量 `held <= capacity`；只登记准入质押，不冻结/罚没。
+//! - **v3.8.2 计量账本**：[`MeteringLedger`] 按 `(订单,形态,维度)` 对真实用量做
+//!   append-only 正计量（[`MeteringLedger::record`]），累计 `consumed` 不得超过撮合
+//!   预留 `allocated`，并整数算出实耗/待退结算视图（[`MeterSettlement`]），恒有
+//!   `reserved = consumed_cost + refund`；只记账、不动资金、不连链。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -32,9 +36,11 @@
 
 pub mod capacity;
 pub mod catalog;
+pub mod metering;
 
 pub use capacity::{CapacityRegistration, CapacityRegistry};
 pub use catalog::{catalog_entries, default_units};
+pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
 
 use crate::plugin::error::{PluginError, PluginResult};
 use crate::plugin::runtime::native::NativeRuntime;
@@ -172,6 +178,21 @@ pub enum ResourceError {
         offer_quantity: u128,
         available: u128,
     },
+    /// 计量订单 id 为空（v3.8.2，开计量线必须有可追责订单）。
+    EmptyOrderId,
+    /// 同一 (订单, 资源形态, 计量单位) 计量线已开，不可重复开。
+    DuplicateUsageLine {
+        order_id: String,
+        kind: ResourceKind,
+        unit: MeterUnit,
+    },
+    /// 计量线不存在（未开线不得上报用量）。
+    UsageLineNotFound,
+    /// 累计实耗超过撮合预留上限（违反 `consumed <= allocated`，fail-closed）。
+    UsageExceedsAllocation {
+        consumed_after: u128,
+        allocated: u128,
+    },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -257,6 +278,29 @@ impl std::fmt::Display for ResourceError {
             } => write!(
                 f,
                 "RESOURCE_OFFER_EXCEEDS_CAPACITY: 挂单数量 {offer_quantity} 超过注册可售 {available}"
+            ),
+            ResourceError::EmptyOrderId => {
+                write!(f, "RESOURCE_EMPTY_ORDER_ID: 计量订单 id 不能为空")
+            }
+            ResourceError::DuplicateUsageLine {
+                order_id,
+                kind,
+                unit,
+            } => write!(
+                f,
+                "RESOURCE_DUPLICATE_USAGE_LINE: 计量线已开: order={order_id} kind={} unit={}",
+                kind.as_str(),
+                unit.as_str()
+            ),
+            ResourceError::UsageLineNotFound => {
+                write!(f, "RESOURCE_USAGE_LINE_NOT_FOUND: 计量线不存在（未开线不得计量）")
+            }
+            ResourceError::UsageExceedsAllocation {
+                consumed_after,
+                allocated,
+            } => write!(
+                f,
+                "RESOURCE_USAGE_EXCEEDS_ALLOCATION: 累计实耗 {consumed_after} 超过预留上限 {allocated}"
             ),
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
@@ -609,7 +653,7 @@ pub fn status_payload() -> serde_json::Value {
             "state_machine": true,
             "matching_kernel": true,
             "capacity_registration": true,
-            "metering_ledger": false,
+            "metering_ledger": true,
             "escrow_settlement": false,
             "stake_slash": false,
             "onchain_payment": false
@@ -618,9 +662,10 @@ pub fn status_payload() -> serde_json::Value {
             "resource_market_status": true,
             "order_lifecycle_advance": false,
             "offer_ask_submit": false,
-            "capacity_registry_persistence": false
+            "capacity_registry_persistence": false,
+            "metering_ledger_persistence": false
         },
-        "note": "v3.8.1：类型+状态机+内部记账单位+注册容量内存账本（register/hold/release/挂单容量闸门，fail-closed）；计量/托管/质押/链上结算在后续小版本。容量账本为确定性内存记账面，不持久化、非全局单例。"
+        "note": "v3.8.2：类型+状态机+内部记账单位+注册容量内存账本+计量内存账本（按订单/形态/维度 append-only 正计量，consumed<=allocated fail-closed，整数实耗/待退结算视图）；托管分账/质押罚没/链上结算在后续小版本。容量与计量账本均为确定性内存记账面，不持久化、非全局单例，不接真实用量上报通道。"
     })
 }
 

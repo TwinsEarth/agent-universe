@@ -31,6 +31,12 @@
 //!   恒有 `deposited == available+frozen+slashed+withdrawn`；deposit/freeze/unfreeze/
 //!   slash/withdraw 全 checked、越界 fail-closed 不改写。**罚没只能来自己冻结保证金**
 //!   （决策/资金分离，账本不判违规），且**不改动**容量账本语义、不与订单/链接线。
+//! - **v3.8.5 托管结算守恒**：[`EscrowLedger`] 把消费者锁定的托管预留额在结算时穷尽
+//!   分到五桶（payout_provider/royalty/governance_fee/refund_buyer/slashed），恒有
+//!   `locked == 五桶之和`；复用 [`MeterSettlement`] 的实耗/待退，费率用整数千分点
+//!   （[`FeeSchedule`]，和 ≤1000，取整余数留供给方），罚没只能来自供给方候选应得出账、
+//!   不罚消费者待退款；计量视图在结算边界再复核守恒，污染视图 fail-closed 不分钱。账本
+//!   不判违规/不定费率/不做真实划转/不连链，只保证给定输入分钱唯一且守恒。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -46,12 +52,16 @@
 
 pub mod capacity;
 pub mod catalog;
+pub mod escrow;
 pub mod matching;
 pub mod metering;
 pub mod stake;
 
 pub use capacity::{CapacityRegistration, CapacityRegistry};
 pub use catalog::{catalog_entries, default_units};
+pub use escrow::{
+    split_for_settlement, EscrowLedger, EscrowOrder, EscrowSplit, EscrowState, FeeSchedule,
+};
 pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
 pub use stake::{StakeAccount, StakeLedger};
@@ -219,6 +229,20 @@ pub enum ResourceError {
     UnfreezeExceedsFrozen { attempted: u128, frozen: u128 },
     /// 罚没超过冻结额（v3.8.4；罚没只能来自己冻结保证金，不能动可用余额）。
     SlashExceedsFrozen { attempted: u128, frozen: u128 },
+    /// 托管订单不存在（v3.8.5，未 lock 不得结算）。
+    EscrowOrderNotFound,
+    /// 托管订单重复锁定（v3.8.5，同一 order_id 只能 lock 一次）。
+    DuplicateEscrowOrder { order_id: String },
+    /// 托管订单已结算（v3.8.5，Settled 为终态不可重复分账）。
+    EscrowAlreadySettled { order_id: String },
+    /// 托管锁定额与计量预留总额不一致（v3.8.5，locked 必须 == reserved_cost）。
+    EscrowLockedReservedMismatch { locked: u128, reserved: u128 },
+    /// 分账费率之和超过 1000‰（v3.8.5，版税+治理费不得超过实耗的 100%）。
+    FeeRatesExceedTotal { sum_permyriad: u32 },
+    /// 罚没超过供给方候选应得出账（v3.8.5；只能罚 provider 应得，不能罚消费者退款）。
+    SlashExceedsProviderPayout { attempted: u128, payout: u128 },
+    /// 分账五桶不守恒或计量视图被污染（v3.8.5，结算边界 fail-closed）。
+    EscrowSplitNotConserved,
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -348,6 +372,34 @@ impl std::fmt::Display for ResourceError {
             ResourceError::SlashExceedsFrozen { attempted, frozen } => write!(
                 f,
                 "RESOURCE_SLASH_EXCEEDS_FROZEN: 罚没 {attempted} 超过冻结额 {frozen}（只能罚没已冻结保证金）"
+            ),
+            ResourceError::EscrowOrderNotFound => write!(
+                f,
+                "RESOURCE_ESCROW_ORDER_NOT_FOUND: 托管订单不存在（未 lock 不得结算）"
+            ),
+            ResourceError::DuplicateEscrowOrder { order_id } => write!(
+                f,
+                "RESOURCE_DUPLICATE_ESCROW_ORDER: 托管订单已锁定，不可重复: {order_id}"
+            ),
+            ResourceError::EscrowAlreadySettled { order_id } => write!(
+                f,
+                "RESOURCE_ESCROW_ALREADY_SETTLED: 托管订单已结算，终态不可重复分账: {order_id}"
+            ),
+            ResourceError::EscrowLockedReservedMismatch { locked, reserved } => write!(
+                f,
+                "RESOURCE_ESCROW_LOCKED_RESERVED_MISMATCH: 托管锁定 {locked} 与计量预留 {reserved} 不一致"
+            ),
+            ResourceError::FeeRatesExceedTotal { sum_permyriad } => write!(
+                f,
+                "RESOURCE_FEE_RATES_EXCEED_TOTAL: 版税+治理费 {sum_permyriad}‰ 超过 1000‰（实耗的 100%）"
+            ),
+            ResourceError::SlashExceedsProviderPayout { attempted, payout } => write!(
+                f,
+                "RESOURCE_SLASH_EXCEEDS_PROVIDER_PAYOUT: 罚没 {attempted} 超过供给方候选应得 {payout}（不能罚消费者退款）"
+            ),
+            ResourceError::EscrowSplitNotConserved => write!(
+                f,
+                "RESOURCE_ESCROW_SPLIT_NOT_CONSERVED: 分账五桶之和不等于托管锁定额或计量视图被污染"
             ),
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
@@ -703,7 +755,7 @@ pub fn status_payload() -> serde_json::Value {
             "metering_ledger": true,
             "matching_orchestration": true,
             "stake_ledger": true,
-            "escrow_settlement": false,
+            "escrow_settlement": true,
             "stake_slash": false,
             "onchain_payment": false
         },
@@ -714,9 +766,10 @@ pub fn status_payload() -> serde_json::Value {
             "capacity_registry_persistence": false,
             "metering_ledger_persistence": false,
             "matching_engine_persistence": false,
-            "stake_ledger_persistence": false
+            "stake_ledger_persistence": false,
+            "escrow_ledger_persistence": false
         },
-        "note": "v3.8.4：新增独立准入质押账本 StakeLedger——deposit/freeze/unfreeze/slash/withdraw 四桶资金（available/frozen/slashed/withdrawn）守恒 deposited=四桶之和，全 checked、越界 fail-closed 不改写；罚没只能来自己冻结保证金（决策/资金分离，账本不判违规），不改动容量账本、不与订单/PMB/链接线、不持久化。stake_ledger 内核已就绪可单测，但质押按订单自动冻结、QA/审判驱动罚没、托管分账与链上结算仍在后续小版本（stake_slash/escrow_settlement/onchain_payment 暂 false）。"
+        "note": "v3.8.5：新增托管结算守恒账本 EscrowLedger——消费者锁定托管预留额，结算时穷尽分到五桶（payout_provider/royalty/governance_fee/refund_buyer/slashed），恒有 locked=五桶之和；复用 v3.8.2 MeterSettlement 的实耗/待退，费率整数千分点（FeeSchedule，版税+治理≤1000‰，取整余数留供给方），罚没只能来自供给方候选应得出账、不罚消费者待退款，计量视图在结算边界再复核守恒，污染视图 fail-closed 不分钱。账本不判违规/不定费率/不做真实划转/不连链/不经 PMB 受理外部写/不持久化；QA/审判驱动罚没与真实 BTC/ETH/稳定币结算仍在后续小版本（stake_slash/onchain_payment 暂 false）。"
     })
 }
 

@@ -1,3 +1,16 @@
+## [v3.8.1] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（2/10）——注册容量账本（register/hold/release/deregister）+ 挂单容量闸门（#114，patch）
+
+- 新增 `gsn-core/src/economy/resource/capacity.rs`：纯确定性、内存态注册容量账本，零浮点/零 syscall/零 unsafe/无 panic，数量金额全 u128 checked，越界与超卖 fail-closed。
+- `CapacityRegistration{provider_did,kind,unit,capacity,held,stake_micro}`：构造校验非空 DID/正容量/unit 必须属于该形态 `catalog::default_units` 目录，初始 held=0，`available=capacity-held`；`stake_micro` 本版仅登记，冻结/罚没在 v3.8.4。
+- `CapacityRegistry`（有序 Vec 确定遍历，唯一键 (provider,kind,unit)）：`register` 校验+唯一性（同键 `RESOURCE_DUPLICATE_REGISTRATION`，同形态不同维度可共存）；`hold` 超可售 `RESOURCE_CAPACITY_EXCEEDED` 绝不超卖；`release` 超 held `RESOURCE_OVER_RELEASE` 守恒拒绝；`deregister` held>0 时 `RESOURCE_CAPACITY_STILL_HELD` 阻止带单撤供给；`invariant_holds` 全表自检 held≤capacity。
+- 挂单入场容量闸门 `check_offer`：供给方必须已注册同形态/同维度容量且挂单量≤当前可售，未注册 fail-closed `REGISTRATION_NOT_FOUND`、超量 `OFFER_EXCEEDS_REGISTERED_CAPACITY`；供 v3.8.3 撮合器 drafted→published 复用。
+- `ResourceError` 新增 8 变体（EmptyProviderDid/UnitNotInCatalog/DuplicateRegistration/RegistrationNotFound/CapacityExceeded/OverRelease/CapacityStillHeld/OfferExceedsRegisteredCapacity）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位置 capacity_registration=true、capacity_registry_persistence=false。
+- 新增 7 回归（合法注册/入场三类拒绝/重复与多维共存/hold 不超卖/release 守恒/注销拦截/挂单容量闸门）；全量 gsn-core lib **472/0**（较 465 增 7，resource 16/0）、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（capacity.rs 零 unsafe）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.1 ↔ gsn-core 0.3.81。
+- 诚实边界：容量为内存记账面，不持久化/不跨节点/非全局单例；只登记质押不冻结不罚没、不动资金不连链；hold/release/check_offer 是纯规则、本版不随订单状态自动联动（撮合联动在 v3.8.3）；不新增对外写能力令牌。
+
 ## [v3.8.0] - 2026-10-04
 
 ### 中版本：面向 Agent 的资源市场（1/10）——领域类型 + 资源单状态机 + 内部记账单位 + T0 系统插件只读状态（#113，minor）

@@ -54,6 +54,14 @@
 //!   重复幂等、为不同结果背书即 equivocation，**整轮作废**（不结算、不记信誉、留证据
 //!   供 v3.8.4 质押罚没联动）。仍是内存确定性裁决，不抽样、不真实验证、不自动罚没、
 //!   不持久化、不连链。
+//! - **v3.8.9 动态定价/订单聚合/冷启动开关**：[`DynamicPricer`] 在基准单价上叠加整数
+//!   千分点的稀缺度（需求/供给压力）、信誉溢价（读 v3.8.7 复合分 0..100000）与时延敏感度
+//!   （敏感/中性/容忍），合成倍率收敛到有界区间后乘基准价（向下取整），且**永不静默突破
+//!   买方限价**；[`OrderBatcher`] 把同资源键、同单价带的小单 FIFO 聚合成批，逐批守恒
+//!   （Σ 行量==批量、Σ 行金额==批金额），异键/超量/重复 fail-closed；[`BootstrapGate`]
+//!   在在线供给方数或可用容量低于阈值时确定性进入自举期（补贴倍率、聚合门槛降为 1）。
+//!   三者都只产出建议价/批/开关，不改 Escrow/Metering/Stake 任何账、不撮合、不发现金
+//!   补贴、不持久化、不连链，供需量与信誉分均为调用方入参。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -72,6 +80,7 @@ pub mod catalog;
 pub mod escrow;
 pub mod matching;
 pub mod metering;
+pub mod pricing;
 pub mod qa;
 pub mod reputation;
 pub mod royalty;
@@ -84,6 +93,10 @@ pub use escrow::{
 };
 pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
+pub use pricing::{
+    BatchLine, BootstrapConfig, BootstrapGate, BootstrapObservation, DynamicPricer, LatencyClass,
+    OrderBatch, OrderBatcher, PriceQuote, PricingInput, PricingPolicy,
+};
 pub use qa::{QaRound, QaVerdict, QaVote};
 pub use reputation::{DimensionWeights, ReputationDimension, ReputationFeedback, ReputationLedger};
 pub use royalty::{RoyaltyAccrual, RoyaltyLedger, SnapshotAsset, SnapshotRegistry};
@@ -300,6 +313,33 @@ pub enum ResourceError {
     EmptyQaValidator,
     /// 容错参数 f 使 3f+1/2f+1 阈值溢出（v3.8.8）。
     QaFaultToleranceOverflow { f: u64 },
+    /// 动态定价基准单价为 0（v3.8.9）。
+    NonPositiveBasePrice,
+    /// 信誉复合分越界（须 0..=100000，v3.8.9）。
+    ReputationCompositeOutOfRange { value: u128 },
+    /// 供给为 0 却有需求，无法按稀缺度定价（v3.8.9）。
+    ScarcityZeroSupply { demand: u128 },
+    /// 动态建议价超过买方限价（不静默压价，v3.8.9）。
+    PriceExceedsBuyerCap {
+        computed_micro: u128,
+        cap_micro: u128,
+    },
+    /// 批内行订单 id 为空或供给方 DID 为空（v3.8.9）。
+    EmptyBatchOrderId,
+    /// 批内行数量为 0（v3.8.9）。
+    BatchLineZeroQuantity,
+    /// 并入行与开放批的资源键或单价不一致（v3.8.9）。
+    BatchKeyMismatch,
+    /// 并入后批量超过单批最大量（v3.8.9）。
+    BatchExceedsMaxSize { requested: u128, max: u128 },
+    /// 同一 order_id 重复并入批（v3.8.9）。
+    DuplicateBatchOrder { order_id: String },
+    /// 聚合器配置非法（max=0、target=0 或 target>max，v3.8.9）。
+    BatchConfigInvalid { max: u128, target: u128 },
+    /// 对空开放批执行 seal（v3.8.9）。
+    EmptyBatchSeal,
+    /// 冷启动正常聚合目标量为 0（v3.8.9）。
+    BootstrapConfigInvalid,
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -507,6 +547,48 @@ impl std::fmt::Display for ResourceError {
             }
             ResourceError::QaFaultToleranceOverflow { f: faulty } => {
                 write!(f, "RESOURCE_QA_FAULT_TOLERANCE_OVERFLOW: 容错参数 f={faulty} 使 3f+1/2f+1 阈值溢出")
+            }
+            ResourceError::NonPositiveBasePrice => {
+                write!(f, "RESOURCE_NON_POSITIVE_BASE_PRICE: 动态定价基准单价必须为正(micro/单位)")
+            }
+            ResourceError::ReputationCompositeOutOfRange { value } => {
+                write!(f, "RESOURCE_REPUTATION_COMPOSITE_OUT_OF_RANGE: 信誉复合分 {value} 越界(须 0..=100000)")
+            }
+            ResourceError::ScarcityZeroSupply { demand } => {
+                write!(f, "RESOURCE_SCARCITY_ZERO_SUPPLY: 供给为 0 却有需求 {demand}，无法按稀缺度定价")
+            }
+            ResourceError::PriceExceedsBuyerCap {
+                computed_micro,
+                cap_micro,
+            } => {
+                write!(
+                    f,
+                    "RESOURCE_PRICE_EXCEEDS_BUYER_CAP: 动态建议价 {computed_micro} micro 超过买方限价 {cap_micro} micro(不静默压价)"
+                )
+            }
+            ResourceError::EmptyBatchOrderId => {
+                write!(f, "RESOURCE_EMPTY_BATCH_ORDER_ID: 批内行订单 id/供给方 DID 为空")
+            }
+            ResourceError::BatchLineZeroQuantity => {
+                write!(f, "RESOURCE_BATCH_LINE_ZERO_QUANTITY: 批内行数量必须为正")
+            }
+            ResourceError::BatchKeyMismatch => {
+                write!(f, "RESOURCE_BATCH_KEY_MISMATCH: 并入行与开放批的资源键(provider/kind/unit)或单价不一致")
+            }
+            ResourceError::BatchExceedsMaxSize { requested, max } => {
+                write!(f, "RESOURCE_BATCH_EXCEEDS_MAX_SIZE: 并入后批量 {requested} 超过单批最大量 {max}")
+            }
+            ResourceError::DuplicateBatchOrder { order_id } => {
+                write!(f, "RESOURCE_DUPLICATE_BATCH_ORDER: 订单 {order_id} 已在批中，不可重复并入")
+            }
+            ResourceError::BatchConfigInvalid { max, target } => {
+                write!(f, "RESOURCE_BATCH_CONFIG_INVALID: 聚合配置非法(max={max}, target={target}；须 max>0、1≤target≤max)")
+            }
+            ResourceError::EmptyBatchSeal => {
+                write!(f, "RESOURCE_EMPTY_BATCH_SEAL: 开放批为空，无法封批")
+            }
+            ResourceError::BootstrapConfigInvalid => {
+                write!(f, "RESOURCE_BOOTSTRAP_CONFIG_INVALID: 冷启动正常聚合目标量必须为正")
             }
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
@@ -866,6 +948,9 @@ pub fn status_payload() -> serde_json::Value {
             "snapshot_royalty": true,
             "reputation_scoring": true,
             "bft_lite_qa": true,
+            "dynamic_pricing": true,
+            "order_batching": true,
+            "bootstrap_gate": true,
             "stake_slash": false,
             "onchain_payment": false
         },
@@ -880,9 +965,10 @@ pub fn status_payload() -> serde_json::Value {
             "escrow_ledger_persistence": false,
             "snapshot_royalty_persistence": false,
             "reputation_ledger_persistence": false,
-            "qa_round_persistence": false
+            "qa_round_persistence": false,
+            "pricing_persistence": false
         },
-        "note": "v3.8.8：新增 BFT-lite QA 可验证质量门 QaRound——抽样验证者 n≥3f+1、确认与否决均需 2f+1 诚实超多数；验证者重算结果摘要投票，同验证者同摘要幂等、为不同结果背书即 equivocation 整轮作废（Verified/Rejected/Pending/NoSupermajority/EquivocationVoid）。仅内存确定性裁决、不抽样、不真实验证、不自动罚没/不联动 v3.8.4 质押、不持久化、不上链、不经 PMB 受理外部写/不新增能力令牌，防刷分只是规则面、真实验证者抽样与信誉上链在后续版本。v3.8.7：四维信誉账本 ReputationLedger——每笔已结算订单事后反馈按 quality/speed/honesty/availability 四维独立累计，评分整数 0..=100，均值整数千分位（100000=100.0、确定性向下取整），复合分用和为 1000‰ 的归一整数权重（默认等权，非归一 fail-closed），单一不可变反馈日志、查询时确定性 fold，复合分经逐维度/逐反馈两独立路径守恒复核。信誉绑定身份、不可转让（无转账过户接口），为撮合优先级与后续定价权提供确定性输入；纯内存态、不持久化/不上链/不经 PMB 受理外部写/不新增能力令牌/不自动驱动撮合定价，链上 ERC-8004 信誉锚定在 v3.9.x。v3.8.6：快照商品化版税 RoyaltyLedger+SnapshotRegistry，pack_diff 快照注册为商品、一单一次版税、全表=Σ快照=Σ创建者并与 royalty 桶逐单对账，不符 fail-closed 不落账，不真实派发/不连 UDOS/链。v3.8.5：托管五桶守恒，整数千分点、罚没只出供给方候选应得、不罚消费者退款、结算边界再守恒。"
+        "note": "v3.8.9：资源市场收尾——DynamicPricer 动态定价（整数千分点叠加稀缺度需求/供给压力+信誉溢价读复合分 0..100000+时延敏感度敏感/中性/容忍，倍率 clamp 有界区间后乘基准价向下取整，永不静默突破买方限价 quote_within_cap）、OrderBatcher 同资源键同单价带小单 FIFO 聚合成批（Σ行量==批量、Σ行金额==批金额逐批守恒，异键/超量/重复/空 seal fail-closed）、BootstrapGate 冷启动自举开关（在线供给方数或可用容量低于阈值确定性 active，补贴倍率仅更小价不发现金、聚合门槛降为 1）。三者只产出建议价/批/开关，不改 Escrow/Metering/Stake 账、不撮合、不发现金补贴、不持久化、不连链、不经 PMB 受理外部写/不新增能力令牌，供需量与信誉分是调用方入参，真实节点发现与补贴资金不在内核。v3.8.8：新增 BFT-lite QA 可验证质量门 QaRound——抽样验证者 n≥3f+1、确认与否决均需 2f+1 诚实超多数；验证者重算结果摘要投票，同验证者同摘要幂等、为不同结果背书即 equivocation 整轮作废（Verified/Rejected/Pending/NoSupermajority/EquivocationVoid）。仅内存确定性裁决、不抽样、不真实验证、不自动罚没/不联动 v3.8.4 质押、不持久化、不上链、不经 PMB 受理外部写/不新增能力令牌，防刷分只是规则面、真实验证者抽样与信誉上链在后续版本。v3.8.7：四维信誉账本 ReputationLedger——每笔已结算订单事后反馈按 quality/speed/honesty/availability 四维独立累计，评分整数 0..=100，均值整数千分位（100000=100.0、确定性向下取整），复合分用和为 1000‰ 的归一整数权重（默认等权，非归一 fail-closed），单一不可变反馈日志、查询时确定性 fold，复合分经逐维度/逐反馈两独立路径守恒复核。信誉绑定身份、不可转让（无转账过户接口），为撮合优先级与后续定价权提供确定性输入；纯内存态、不持久化/不上链/不经 PMB 受理外部写/不新增能力令牌/不自动驱动撮合定价，链上 ERC-8004 信誉锚定在 v3.9.x。v3.8.6：快照商品化版税 RoyaltyLedger+SnapshotRegistry，pack_diff 快照注册为商品、一单一次版税、全表=Σ快照=Σ创建者并与 royalty 桶逐单对账，不符 fail-closed 不落账，不真实派发/不连 UDOS/链。v3.8.5：托管五桶守恒，整数千分点、罚没只出供给方候选应得、不罚消费者退款、结算边界再守恒。"
     })
 }
 

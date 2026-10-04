@@ -1,3 +1,16 @@
+## [v3.8.9] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（10/10，收尾）——动态定价 + 订单聚合 + 冷启动开关（整数千分点三因子定价永不破买方限价、同键同价小单 FIFO 聚批守恒、供给/容量不足确定性进自举期）（#122，patch）
+
+- 新增 `gsn-core/src/economy/resource/pricing.rs`：纯确定性内存态决策面 `DynamicPricer`+`OrderBatcher`/`OrderBatch`+`BootstrapGate`/`BootstrapConfig`/`BootstrapObservation`，零浮点/零 syscall/零 unsafe/无 panic；金额 u128 micro、率与倍率与压力比整数千分点（PERMILLE=1000，信誉 0..100000=100.0），乘除全 checked。
+- 动态定价三因子合成：稀缺度 pressure=demand*1000/supply（≥1000 线性加价默认+300‰封顶、<1000 按缺口降价默认−200‰，supply=0/demand>0 具名 ScarcityZeroSupply、空市场不调）+信誉溢价（复合分≥50 至满分+150‰、<50 至零分−200‰、中性0）+时延敏感度（Sensitive+100/Neutral0/Tolerant−150），合成倍率 clamp floor=500‰/ceil=2000‰ 后 base*mult/1000 向下取整；`quote_within_cap` 建议价>买方限价具名 PriceExceedsBuyerCap 绝不静默压价，`quote_bootstrap` 自举期只降价（默认900‰）不发现金。
+- 订单聚合：同资源键（provider/kind/unit）同单价带小单 FIFO，首行定键，异键/异价 BatchKeyMismatch、空 id/零量/零价 fail-closed、重复 order_id DuplicateBatchOrder、超 max_batch_quantity BatchExceedsMaxSize 不改写，new(max,target) 须 max>0 且 1≤target≤max；seal 封批守恒自检 Σ行量==批量、Σ行金额==总量×单价，空批 EmptyBatchSeal，invariant_holds 逐批复核全部已封批。
+- 冷启动开关 BootstrapGate.observe(providers,available)：在线供给方数或可用容量任一维度低于阈值（阈值0维度不参与）确定性 active，返回 batch_target_hint（active→1/否则 normal_target）与 below_providers/below_capacity，越过阈值自动关闭；normal_target=0 BootstrapConfigInvalid。
+- ResourceError 新增 12 变体（NonPositiveBasePrice/ReputationCompositeOutOfRange{value}/ScarcityZeroSupply{demand}/PriceExceedsBuyerCap{computed_micro,cap_micro}/EmptyBatchOrderId/BatchLineZeroQuantity/BatchKeyMismatch/BatchExceedsMaxSize{requested,max}/DuplicateBatchOrder{order_id}/BatchConfigInvalid{max,target}/EmptyBatchSeal/BootstrapConfigInvalid）复用既有 ArithmeticOverflow，补齐 RESOURCE_* Display；`resource_market_status` 诚实位 dynamic_pricing/order_batching/bootstrap_gate=true、pricing_persistence=false，note 顶部置 v3.8.9 边界，stake_slash/onchain_payment 仍 false（同步系统插件 status 快照三断言）。
+- 新增 7 回归（稀缺紧张/宽松/平衡、信誉溢价折价分段、三时延档与倍率 clamp、买方限价不静默突破、零价零供给溢出 fail-closed、批 FIFO 守恒与异键超量重复拒绝、冷启动翻转与补贴倍率）；全量 gsn-core lib **533/0**（较 526 增 7）、fmt --check、clippy --all-targets -D warnings（修 manual_try_fold 与两处 Option/Result .ok() 误用、2 处生产 expect 改具名错误）、check-no-panics(prod=0)、unsafe-containment（pricing.rs 零 unsafe，仍仅 winjob.rs 3/3）、metadata --locked、js test(22) 全绿。
+- 版本 npm 3.8.9 ↔ gsn-core 0.3.89。
+- 诚实边界：只产出建议价/批/开关，不改 Escrow/Metering/Stake 账、不提交订单、不真实聚合、不联动撮合；供需量与信誉分是入参不采集、不做节点发现；bootstrap「补贴」只是更小倍率不铸币垫付；内存态不持久化/不上链/不经 PMB 外部写/不新增能力令牌；策略是宿主常量不做自适应报价。真实 BTC/ETH/稳定币结算、支付路由、私钥隔离、ERC-8004 信誉锚定在 v3.9.0-v3.9.8。
+
 ## [v3.8.8] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（9/10）——BFT-lite QA 抽样验证（n≥3f+1、2f+1 诚实超多数、equivocation 整轮作废）（#121，patch）

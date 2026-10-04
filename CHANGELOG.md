@@ -1,3 +1,16 @@
+## [v3.8.4] - 2026-10-04
+
+### 修订版：面向 Agent 的资源市场（5/10）——准入质押冻结/罚没账本（StakeLedger 四桶资金守恒，罚没只能来自己冻结保证金，决策/资金分离）（#117，patch）
+
+- 新增 `gsn-core/src/economy/resource/stake.rs`：纯确定性、内存态准入质押账本 `StakeLedger`/`StakeAccount`，零浮点/零 syscall/零 unsafe/无 panic，金额全 u128 checked；与容量账本（资源量）两账分离，**不改动** capacity.rs 任何 hold/release 语义。
+- 四互斥资金桶 `available/frozen/slashed/withdrawn` + `deposited` 锚，恒有 `deposited==available+frozen+slashed+withdrawn`（单账户 `conserves()`、全表 `invariant_holds()` checked 求和）；slashed 终局不可回流。
+- 方法：`deposit`（自动开户、可累计，deposited/available 同增）；`freeze`（available→frozen，不足 `INSUFFICIENT_FREE_STAKE` fail-closed 且失败分桶逐字节不变）；`unfreeze`（frozen→available，超冻 `UNFREEZE_EXCEEDS_FROZEN`）；`slash`（**只能 frozen→slashed**，超冻 `SLASH_EXCEEDS_FROZEN`，即使有大笔 available 未冻也不能罚）；`withdraw`（available→withdrawn，冻结中不可提）。
+- 决策/资金分离：账本不判违规、不定义罚没归属，只保证「罚没只能来自己冻结保证金」；空/空白 DID `EMPTY_PROVIDER_DID`、零额 `NON_POSITIVE_QUANTITY`、未知账户非存入操作 `STAKE_ACCOUNT_NOT_FOUND`、溢出 `ARITHMETIC_OVERFLOW`；副作用先局部算成功才落账。
+- `ResourceError` 新增 4 变体（StakeAccountNotFound/InsufficientFreeStake/UnfreezeExceedsFrozen/SlashExceedsFrozen）并补齐 RESOURCE_* Display；`resource_market_status` 诚实位置 stake_ledger=true、stake_ledger_persistence=false，stake_slash/escrow_settlement/onchain_payment 仍 false。
+- 新增 7 回归（存冻解提全路径守恒/冻结不足 fail-closed 不改写/解冻不超冻/罚没只消耗 frozen 且终局/罚没不能动 available/零额空 DID 未知账户拒绝/多供给方隔离且提取尊重冻结）；全量 gsn-core lib **495/0**（较 488 增 7，resource 39/0）、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（stake.rs 零 unsafe）/metadata --locked/js test(22) 全绿。
+- 版本 npm 3.8.4 ↔ gsn-core 0.3.84。
+- 诚实边界：质押为内存记账面，不持久化/不跨节点/非全局单例；本版不与撮合订单/容量联动（何时按单冻结、罚没多少在 3.8.5 托管守恒与 3.8.8 QA/审判接线）、`stake_micro` 仍仅登记不自动开户冻结、不定义 slashed 资金归属（3.8.5 分账桶）、不接链不经 PMB 受理外部写不新增能力令牌、私钥隔离与真实 BTC/ETH/稳定币结算在 v3.9.x。
+
 ## [v3.8.3] - 2026-10-04
 
 ### 修订版：面向 Agent 的资源市场（4/10）——撮合编排器（订单状态机 ↔ 容量 hold/release ↔ 计量 open/record 联动）（#116，patch）

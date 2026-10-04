@@ -35,6 +35,7 @@ pub mod backend;
 pub mod blockstore;
 pub mod image;
 pub mod memory;
+pub mod primitives;
 pub mod seed;
 
 pub use backend::{
@@ -50,8 +51,11 @@ pub use image::{
 };
 pub use memory::{
     ActivityState, Admission, IdleReclaimer, LatencyClass, MemoryError, MemoryPool,
-    MemorySandboxRequest, OvercommitRatio, PoolStatus, ReclaimPlan, ReclaimStep,
-    SandboxIdleObservation, SharedRef,
+    MemorySandboxRequest, OvercommitRatio, PoolStatus, ReclaimLedger, ReclaimPlan, ReclaimStats,
+    ReclaimStep, SandboxIdleObservation, SharedRef,
+};
+pub use primitives::{
+    memory_primitive_status, MemoryPrimitive, MemoryPrimitiveState, MemoryPrimitiveStatus,
 };
 pub use seed::{
     chunk_attestation_message, sign_chunk, sign_chunk_with_keypair, verify_chunk_attestation,
@@ -82,6 +86,12 @@ pub const METHOD_MEMORY_STATUS: &str = "memory_status";
 pub const METHOD_MEMORY_ADMIT: &str = "memory_admit";
 /// PMB 方法：v3.7.5 等待期保内存 + 空闲优先回收的确定性回收计划（纯建议、无副作用）。
 pub const METHOD_IDLE_RECLAIM: &str = "idle_reclaim_plan";
+/// PMB 方法：v3.7.6 回收/超卖统计只读汇总（由历史回收计划 + 当前账/观测确定性重算，
+/// 入账即做越界/溢出 fail-closed 校验）。
+pub const METHOD_RECLAIM_STATS: &str = "reclaim_stats";
+/// PMB 方法：v3.7.6 Linux-MicroVM 专有内存原语（virtio-pmem/DAX/DAMON/balloon）
+/// 的诚实门：非 Linux 具名拒绝；Linux 仅声明、can_enforce=false（执行器未接线）。
+pub const METHOD_MEMORY_PRIMITIVE: &str = "memory_primitive_status";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -423,6 +433,75 @@ fn idle_reclaim_plan(input: serde_json::Value) -> Result<serde_json::Value, Stri
     serde_json::to_value(&plan).map_err(|e| format!("ReclaimPlan 序列化失败: {e}"))
 }
 
+/// `reclaim_stats` 入参：
+/// `{records?: [ReclaimPlan...], observations?: [SandboxIdleObservation...],
+///    physical_bytes?, overcommit_times?|overcommit_permille?, sandboxes?: [...]}`。
+///
+/// 每条历史回收计划在入账时做越界/溢出 fail-closed 校验（0 字节步骤、步骤合计≠声明、
+/// 声明>目标、shortfall 不自洽、求和溢出）；统计全部由已入账记录 + 可选当前池/观测
+/// 确定性重算。**不读 OS、不持久化、不伪造回收。**
+fn reclaim_stats(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let mut ledger = ReclaimLedger::new();
+    if let Some(arr) = input.get("records").and_then(|v| v.as_array()) {
+        for (i, v) in arr.iter().enumerate() {
+            let plan: ReclaimPlan = serde_json::from_value(v.clone())
+                .map_err(|e| format!("records[{i}] 不是合法 ReclaimPlan: {e}"))?;
+            ledger
+                .record(plan)
+                .map_err(|e| format!("records[{i}] 账实不符被拒绝: {e}"))?;
+        }
+    }
+
+    let observations: Vec<SandboxIdleObservation> = match input.get("observations") {
+        None => Vec::new(),
+        Some(serde_json::Value::Null) => Vec::new(),
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("observations 不是合法 SandboxIdleObservation 数组: {e}"))?,
+    };
+
+    // 仅当给出 physical_bytes 时才构造配额池；否则纯历史/观测口径。
+    let pool = if input.get("physical_bytes").is_some() {
+        Some(pool_from_input(&input)?)
+    } else {
+        None
+    };
+
+    let stats = ledger
+        .summarize(pool.as_ref(), &observations)
+        .map_err(|e| e.to_string())?;
+    serde_json::to_value(&stats).map_err(|e| format!("ReclaimStats 序列化失败: {e}"))
+}
+
+/// `memory_primitive_status` 入参：`{primitive?: "virtio_pmem"|"dax"|"damon"|"balloon",
+/// platform?: "linux"|"macos"|"windows"|"other"}`；缺省 primitive 返回四原语、平台用
+/// 编译期当前平台（platform 覆盖仅用于跨平台确定性核查）。
+fn memory_primitive_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let platform = match input.get("platform").and_then(|v| v.as_str()) {
+        None => Platform::current(),
+        Some("linux") => Platform::Linux,
+        Some("macos") => Platform::MacOs,
+        Some("windows") => Platform::Windows,
+        Some("other") => Platform::Other,
+        Some(other) => return Err(format!("非法 platform={other}")),
+    };
+    let prims = match input.get("primitive").and_then(|v| v.as_str()) {
+        None => MemoryPrimitive::all().to_vec(),
+        Some(name) => vec![MemoryPrimitive::parse(name)
+            .ok_or_else(|| format!("未知内存原语 {name}（仅 virtio_pmem/dax/damon/balloon）"))?],
+    };
+    let statuses: Vec<MemoryPrimitiveStatus> = prims
+        .into_iter()
+        .map(|p| memory_primitive_status(platform, p))
+        .collect();
+    Ok(serde_json::json!({
+        "plugin": AUSEC_PLUGIN,
+        "module": "ausec",
+        "platform": serde_json::to_value(platform).unwrap_or(serde_json::Value::Null),
+        "primitives": statuses,
+        "note": "virtio-pmem/DAX/DAMON/balloon 为 Linux-MicroVM 专有原语；v3.7.6 非 Linux 具名拒绝，Linux 仅声明、执行器未接线，can_enforce 恒 false，不代表已真实共享/回收内存",
+    }))
+}
+
 /// 字节桥：`memory_status`。
 fn handle_memory_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
     let input: serde_json::Value = serde_json::from_slice(payload)
@@ -450,6 +529,29 @@ fn handle_idle_reclaim(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
         .map_err(|e| PluginError::Runtime(format!("AUSec idle_reclaim_plan 序列化失败: {e}")))
 }
 
+/// 字节桥：`reclaim_stats`（v3.7.6 只读统计汇总）。
+fn handle_reclaim_stats(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = serde_json::from_slice(payload)
+        .map_err(|e| PluginError::Manifest(format!("reclaim_stats 负载非合法 JSON: {e}")))?;
+    let out = reclaim_stats(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec reclaim_stats 序列化失败: {e}")))
+}
+
+/// 字节桥：`memory_primitive_status`（v3.7.6 Linux 专有原语诚实门）。
+fn handle_memory_primitive(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = if payload.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(payload).map_err(|e| {
+            PluginError::Manifest(format!("memory_primitive_status 负载非合法 JSON: {e}"))
+        })?
+    };
+    let out = memory_primitive_query(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec memory_primitive_status 序列化失败: {e}")))
+}
+
 /// 向 T0 进程内运行时注册 AUSec 系统插件的处理器（由系统插件装配流程调用）。
 pub fn register(rt: &mut NativeRuntime) {
     // memory_status / memory_admit：v3.7.4 内存共享额度记账 + 两级超卖准入（只读决策）。
@@ -457,6 +559,14 @@ pub fn register(rt: &mut NativeRuntime) {
     rt.register_handler(AUSEC_PLUGIN, METHOD_MEMORY_ADMIT, handle_memory_admit);
     // idle_reclaim_plan：v3.7.5 等待期保内存 + 空闲优先回收（只读纯建议）。
     rt.register_handler(AUSEC_PLUGIN, METHOD_IDLE_RECLAIM, handle_idle_reclaim);
+    // reclaim_stats：v3.7.6 回收/超卖统计只读汇总（入账即 fail-closed 校验）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_RECLAIM_STATS, handle_reclaim_stats);
+    // memory_primitive_status：v3.7.6 Linux 专有内存原语诚实门（非 Linux 具名拒绝）。
+    rt.register_handler(
+        AUSEC_PLUGIN,
+        METHOD_MEMORY_PRIMITIVE,
+        handle_memory_primitive,
+    );
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -759,5 +869,86 @@ mod tests {
         assert_eq!(none["shortfall_bytes"], 10);
         // 缺 target_bytes 才 fail-closed。
         assert!(idle_reclaim_plan(serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn pm_reclaim_stats_accumulates_and_rejects_forged_records() {
+        // 合法：两条计划（60 不足 + 40 足额），累计 100/140。
+        let ok = reclaim_stats(serde_json::json!({
+            "records": [
+                {"target_bytes": 100, "reclaimed_bytes": 60, "shortfall_bytes": 40,
+                 "sufficient": false,
+                 "steps": [{"sandbox_id": "a", "bytes": 60, "reason": "idle"}]},
+                {"target_bytes": 40, "reclaimed_bytes": 40, "shortfall_bytes": 0,
+                 "sufficient": true,
+                 "steps": [{"sandbox_id": "b", "bytes": 40, "reason": "idle"}]},
+            ],
+        }))
+        .unwrap();
+        assert_eq!(ok["records"], 2);
+        assert_eq!(ok["cumulative_reclaimed_bytes"], 100);
+        assert_eq!(ok["cumulative_target_bytes"], 140);
+        assert_eq!(ok["distinct_reclaimed_sandboxes"], 2);
+        assert_eq!(ok["sufficient_records"], 1);
+        assert_eq!(ok["insufficient_records"], 1);
+
+        // 伪造记录（步骤合计≠声明）必须经 PM 入口 fail-closed。
+        let forged = reclaim_stats(serde_json::json!({
+            "records": [
+                {"target_bytes": 100, "reclaimed_bytes": 60, "shortfall_bytes": 40,
+                 "sufficient": false,
+                 "steps": [{"sandbox_id": "a", "bytes": 40, "reason": "idle"}]},
+            ],
+        }));
+        assert!(forged.is_err());
+
+        // 0 字节步骤拒绝。
+        let zero = reclaim_stats(serde_json::json!({
+            "records": [
+                {"target_bytes": 0, "reclaimed_bytes": 0, "shortfall_bytes": 0,
+                 "sufficient": true,
+                 "steps": [{"sandbox_id": "a", "bytes": 0, "reason": "x"}]},
+            ],
+        }));
+        assert!(zero.is_err());
+
+        // 观测字节溢出拒绝。
+        let ovf = reclaim_stats(serde_json::json!({
+            "observations": [
+                {"sandbox_id": "a", "state": "Waiting", "idle_ms": 1, "latency": "Tolerant",
+                 "reserved_bytes": u64::MAX, "reclaimable_idle_bytes": 1},
+            ],
+        }));
+        assert!(ovf.is_err());
+    }
+
+    #[test]
+    fn pm_memory_primitive_named_reject_off_linux_and_declared_on_linux() {
+        // 非 Linux：四原语全部 unsupported、can_enforce=false。
+        for plat in ["macos", "windows", "other"] {
+            let out = memory_primitive_query(serde_json::json!({"platform": plat})).unwrap();
+            let arr = out["primitives"].as_array().unwrap();
+            assert_eq!(arr.len(), 4);
+            for s in arr {
+                assert_eq!(s["state"], "unsupported", "{plat} {}", s["primitive"]);
+                assert_eq!(s["can_enforce"], false);
+            }
+        }
+        // Linux：declared_linux 但 can_enforce 仍 false（只声明、执行器未接线）。
+        let lin = memory_primitive_query(serde_json::json!({"platform": "linux"})).unwrap();
+        for s in lin["primitives"].as_array().unwrap() {
+            assert_eq!(s["state"], "declared_linux");
+            assert_eq!(s["can_enforce"], false);
+        }
+        // 单原语查询 + 连写别名。
+        let one = memory_primitive_query(
+            serde_json::json!({"primitive": "virtio-pmem", "platform": "macos"}),
+        )
+        .unwrap();
+        assert_eq!(one["primitives"][0]["primitive"], "virtio_pmem");
+        assert_eq!(one["primitives"][0]["state"], "unsupported");
+        // 未知原语/平台 fail-closed。
+        assert!(memory_primitive_query(serde_json::json!({"primitive": "ksm"})).is_err());
+        assert!(memory_primitive_query(serde_json::json!({"platform": "plan9"})).is_err());
     }
 }

@@ -78,6 +78,30 @@ pub enum MemoryError {
     },
     #[error("空闲回收观测里沙盒 id 重复：{0}")]
     DuplicateIdleObservation(String),
+    #[error(
+        "入账回收计划 #{index} 非法：reclaimed_bytes({reclaimed}) 不能大于 target_bytes({target})"
+    )]
+    RecordReclaimedExceedsTarget {
+        index: usize,
+        target: u64,
+        reclaimed: u64,
+    },
+    #[error("入账回收计划 #{index} 含 0 字节回收步骤（沙盒 {sandbox}）；0 字节步骤不应入账")]
+    ZeroReclaimStep { index: usize, sandbox: String },
+    #[error("入账回收计划 #{index} 的步骤合计 {steps_sum} 与声明 reclaimed_bytes {declared} 不一致（账实不符，拒绝入账）")]
+    ReclaimStepTotalMismatch {
+        index: usize,
+        steps_sum: u64,
+        declared: u64,
+    },
+    #[error("回收统计第 {index} 条记录在 {field} 求和时溢出 u64（申报字节不合法，fail-closed）")]
+    ReclaimArithmeticOverflow { index: usize, field: String },
+    #[error("观测 {sandbox} 非法：reserved_bytes({reserved}) + reclaimable_idle_bytes({reclaimable}) 溢出 u64（申报边界不合法）")]
+    ReservedReclaimOverflow {
+        sandbox: String,
+        reserved: u64,
+        reclaimable: u64,
+    },
 }
 
 /// 超卖比（nominal / physical 上限），千分点；1000=1×，50000=50×。
@@ -408,7 +432,7 @@ pub struct SandboxIdleObservation {
 }
 
 /// 一条回收步骤：从某个沙盒回收多少空闲页，以及选中理由（确定性、可审计）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReclaimStep {
     pub sandbox_id: String,
     pub bytes: u64,
@@ -417,7 +441,7 @@ pub struct ReclaimStep {
 }
 
 /// 一次空闲回收的确定性计划（纯建议，不释放沙盒、不改配额账）。
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ReclaimPlan {
     pub target_bytes: u64,
     /// 计划回收总量 = min(target, 全部可回收之和)。
@@ -531,6 +555,260 @@ impl IdleReclaimer {
             shortfall_bytes: shortfall,
             sufficient: shortfall == 0,
             steps,
+        })
+    }
+}
+
+// ─────────────── v3.7.6：回收/超卖统计汇总 + 越界拒绝（纯记账） ───────────────
+
+/// 回收/超卖统计的只读汇总（全部由已入账的 [`ReclaimPlan`] 与当前观测/配额账
+/// **确定性重算**，不读 OS、不调原语、不四舍五入）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReclaimStats {
+    /// 已入账的回收计划条数。
+    pub records: u64,
+    /// 累计计划回收字节（跨记录求和，溢出 fail-closed）。
+    pub cumulative_reclaimed_bytes: u64,
+    /// 累计回收目标字节。
+    pub cumulative_target_bytes: u64,
+    /// 累计缺口字节。
+    pub cumulative_shortfall_bytes: u64,
+    /// 足额计划条数 / 不足额条数。
+    pub sufficient_records: u64,
+    pub insufficient_records: u64,
+    /// 累计回收/累计目标的千分点（无目标时为 1000）。
+    pub reclaim_success_rate_permille: u64,
+    /// 至少被回收过一次的不同沙盒数。
+    pub distinct_reclaimed_sandboxes: u64,
+    // —— 当前配额账（可选；给出 MemoryPool 时才有）——
+    pub physical_bytes: Option<u64>,
+    pub committed_bytes: Option<u64>,
+    pub nominal_bytes: Option<u64>,
+    /// 当前名义超卖倍数 nominal/committed（千分点，空池 1000）。
+    pub current_overcommit_permille: Option<u64>,
+    /// 累计回收量占当前已提交内存的千分点（committed=0 时为 None）。
+    pub cumulative_reclaim_of_committed_permille: Option<u64>,
+    // —— 当前空闲观测（可选；给出 observations 时才有）——
+    /// 全部观测的等待期内存足迹 = Σ(reserved+reclaimable)。
+    pub idle_footprint_bytes: Option<u64>,
+    /// 全部观测当前可回收空闲页之和。
+    pub reclaimable_idle_bytes: Option<u64>,
+    /// 可回收空闲页 / 空闲足迹 的千分点（足迹为 0 时 None，避免凭空造比例）。
+    pub idle_reclaimable_fraction_permille: Option<u64>,
+}
+
+/// 回收账本：把一次次 [`ReclaimPlan`] 作为**不可变历史**入账，并据此重算统计。
+///
+/// 入账即校验（fail-closed）：任何账实不符（步骤 0 字节、步骤合计≠声明值、
+/// 声明回收>目标、求和溢出）都拒绝入账——防止"伪造一条好看的回收记录"污染统计。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReclaimLedger {
+    records: Vec<ReclaimPlan>,
+}
+
+impl ReclaimLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+    pub fn records(&self) -> &[ReclaimPlan] {
+        &self.records
+    }
+
+    /// 校验一条回收计划自身的账实一致性（索引 `index` 仅用于错误定位）。
+    fn validate_record(index: usize, plan: &ReclaimPlan) -> Result<(), MemoryError> {
+        // 声明回收不得超过目标（shortfall=target-reclaimed 必须成立）。
+        if plan.reclaimed_bytes > plan.target_bytes {
+            return Err(MemoryError::RecordReclaimedExceedsTarget {
+                index,
+                target: plan.target_bytes,
+                reclaimed: plan.reclaimed_bytes,
+            });
+        }
+        // shortfall 必须与 target-reclaimed 自洽。
+        if plan.shortfall_bytes != plan.target_bytes.saturating_sub(plan.reclaimed_bytes) {
+            return Err(MemoryError::RecordReclaimedExceedsTarget {
+                index,
+                target: plan.target_bytes,
+                reclaimed: plan.reclaimed_bytes,
+            });
+        }
+        let mut sum: u64 = 0;
+        for st in &plan.steps {
+            if st.bytes == 0 {
+                return Err(MemoryError::ZeroReclaimStep {
+                    index,
+                    sandbox: st.sandbox_id.clone(),
+                });
+            }
+            sum = sum
+                .checked_add(st.bytes)
+                .ok_or(MemoryError::ReclaimArithmeticOverflow {
+                    index,
+                    field: "steps".to_string(),
+                })?;
+        }
+        if sum != plan.reclaimed_bytes {
+            return Err(MemoryError::ReclaimStepTotalMismatch {
+                index,
+                steps_sum: sum,
+                declared: plan.reclaimed_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// 入账一条已执行（或拟执行）的回收计划；账实不符则整体拒绝、账本不变。
+    pub fn record(&mut self, plan: ReclaimPlan) -> Result<(), MemoryError> {
+        let index = self.records.len();
+        Self::validate_record(index, &plan)?;
+        self.records.push(plan);
+        Ok(())
+    }
+
+    /// 校验一组空闲观测的申报边界：id 去重沿用 [`IdleReclaimer::plan`] 口径，
+    /// 额外拒绝 reserved+reclaimable 的 u64 溢出（申报边界不合法）。
+    fn validate_observations(observations: &[SandboxIdleObservation]) -> Result<(), MemoryError> {
+        let mut seen = std::collections::HashSet::new();
+        for o in observations {
+            if o.sandbox_id.is_empty() {
+                return Err(MemoryError::EmptySandboxId);
+            }
+            if !seen.insert(o.sandbox_id.clone()) {
+                return Err(MemoryError::DuplicateIdleObservation(o.sandbox_id.clone()));
+            }
+            if o.reserved_bytes
+                .checked_add(o.reclaimable_idle_bytes)
+                .is_none()
+            {
+                return Err(MemoryError::ReservedReclaimOverflow {
+                    sandbox: o.sandbox_id.clone(),
+                    reserved: o.reserved_bytes,
+                    reclaimable: o.reclaimable_idle_bytes,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// 由已入账历史 + 可选当前配额账 + 可选当前空闲观测，确定性重算统计汇总。
+    pub fn summarize(
+        &self,
+        pool: Option<&MemoryPool>,
+        observations: &[SandboxIdleObservation],
+    ) -> Result<ReclaimStats, MemoryError> {
+        Self::validate_observations(observations)?;
+
+        let mut cum_reclaimed: u64 = 0;
+        let mut cum_target: u64 = 0;
+        let mut cum_shortfall: u64 = 0;
+        let mut sufficient = 0u64;
+        let mut insufficient = 0u64;
+        let mut sandboxes = std::collections::HashSet::new();
+
+        for (i, p) in self.records.iter().enumerate() {
+            // 入账时已校验；这里再防御性校验一次，保证即使账本被非常规构造也不出错。
+            Self::validate_record(i, p)?;
+            cum_reclaimed = cum_reclaimed.checked_add(p.reclaimed_bytes).ok_or(
+                MemoryError::ReclaimArithmeticOverflow {
+                    index: i,
+                    field: "cumulative_reclaimed_bytes".to_string(),
+                },
+            )?;
+            cum_target = cum_target.checked_add(p.target_bytes).ok_or(
+                MemoryError::ReclaimArithmeticOverflow {
+                    index: i,
+                    field: "cumulative_target_bytes".to_string(),
+                },
+            )?;
+            cum_shortfall = cum_shortfall.checked_add(p.shortfall_bytes).ok_or(
+                MemoryError::ReclaimArithmeticOverflow {
+                    index: i,
+                    field: "cumulative_shortfall_bytes".to_string(),
+                },
+            )?;
+            if p.sufficient {
+                sufficient += 1;
+            } else {
+                insufficient += 1;
+            }
+            for st in &p.steps {
+                sandboxes.insert(st.sandbox_id.clone());
+            }
+        }
+
+        let success_rate = if cum_target == 0 {
+            1000
+        } else {
+            saturating_u64(cum_reclaimed as u128 * 1000 / cum_target as u128)
+        };
+
+        // 当前空闲观测汇总（u128 中间运算，最终再落 u64；单字段已保证两两相加不溢出）。
+        let mut footprint: u128 = 0;
+        let mut reclaimable: u128 = 0;
+        for o in observations {
+            footprint += (o.reserved_bytes as u128) + (o.reclaimable_idle_bytes as u128);
+            reclaimable += o.reclaimable_idle_bytes as u128;
+        }
+        let footprint_u64 = saturating_u64(footprint);
+        let reclaimable_u64 = saturating_u64(reclaimable);
+        let (idle_footprint, idle_reclaimable, idle_fraction) = if observations.is_empty() {
+            (None, None, None)
+        } else {
+            let frac = if footprint_u64 == 0 {
+                None
+            } else {
+                Some(saturating_u64(
+                    reclaimable_u64 as u128 * 1000 / footprint_u64 as u128,
+                ))
+            };
+            (Some(footprint_u64), Some(reclaimable_u64), frac)
+        };
+
+        // 当前配额账口径。
+        let (physical, committed, nominal, overcommit, reclaim_of_committed) = match pool {
+            None => (None, None, None, None, None),
+            Some(p) => {
+                let s = p.status();
+                let ratio = if s.committed_bytes == 0 {
+                    None
+                } else {
+                    Some(saturating_u64(
+                        cum_reclaimed as u128 * 1000 / s.committed_bytes as u128,
+                    ))
+                };
+                (
+                    Some(s.physical_bytes),
+                    Some(s.committed_bytes),
+                    Some(s.nominal_bytes),
+                    Some(s.observed_overcommit_permille),
+                    ratio,
+                )
+            }
+        };
+
+        Ok(ReclaimStats {
+            records: self.records.len() as u64,
+            cumulative_reclaimed_bytes: cum_reclaimed,
+            cumulative_target_bytes: cum_target,
+            cumulative_shortfall_bytes: cum_shortfall,
+            sufficient_records: sufficient,
+            insufficient_records: insufficient,
+            reclaim_success_rate_permille: success_rate,
+            distinct_reclaimed_sandboxes: sandboxes.len() as u64,
+            physical_bytes: physical,
+            committed_bytes: committed,
+            nominal_bytes: nominal,
+            current_overcommit_permille: overcommit,
+            cumulative_reclaim_of_committed_permille: reclaim_of_committed,
+            idle_footprint_bytes: idle_footprint,
+            reclaimable_idle_bytes: idle_reclaimable,
+            idle_reclaimable_fraction_permille: idle_fraction,
         })
     }
 }
@@ -922,6 +1200,209 @@ mod tests {
         ];
         assert!(matches!(
             IdleReclaimer::plan(&dup, 10),
+            Err(MemoryError::DuplicateIdleObservation(_))
+        ));
+    }
+
+    // ───────── v3.7.6 回收/超卖统计 + 越界拒绝（旧实现会失败的回归） ─────────
+
+    fn valid_plan(target: u64, obs: &[SandboxIdleObservation]) -> ReclaimPlan {
+        IdleReclaimer::plan(obs, target).expect("fixture 计划应合法")
+    }
+
+    #[test]
+    fn ledger_rejects_zero_byte_step() {
+        let mut ledger = ReclaimLedger::new();
+        let forged = ReclaimPlan {
+            target_bytes: 100,
+            reclaimed_bytes: 0,
+            shortfall_bytes: 100,
+            sufficient: false,
+            steps: vec![ReclaimStep {
+                sandbox_id: "s1".to_string(),
+                bytes: 0,
+                reason: "forged".to_string(),
+            }],
+        };
+        let err = ledger.record(forged).expect_err("0 字节步骤必须拒绝");
+        assert!(matches!(err, MemoryError::ZeroReclaimStep { .. }), "{err}");
+        assert!(ledger.is_empty(), "拒绝入账后账本必须保持为空");
+    }
+
+    #[test]
+    fn ledger_rejects_steps_sum_not_equal_declared() {
+        let mut ledger = ReclaimLedger::new();
+        // 伪造：声明 reclaimed=60，但步骤实际只还 40（账实不符）。
+        let forged = ReclaimPlan {
+            target_bytes: 100,
+            reclaimed_bytes: 60,
+            shortfall_bytes: 40,
+            sufficient: false,
+            steps: vec![ReclaimStep {
+                sandbox_id: "s1".to_string(),
+                bytes: 40,
+                reason: "idle".to_string(),
+            }],
+        };
+        let err = ledger.record(forged).expect_err("账实不符必须拒绝");
+        assert!(
+            matches!(err, MemoryError::ReclaimStepTotalMismatch { .. }),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ledger_rejects_reclaimed_exceeds_target_and_bad_shortfall() {
+        let mut ledger = ReclaimLedger::new();
+        let bad = ReclaimPlan {
+            target_bytes: 50,
+            reclaimed_bytes: 60,
+            shortfall_bytes: 0,
+            sufficient: true,
+            steps: vec![ReclaimStep {
+                sandbox_id: "s1".to_string(),
+                bytes: 60,
+                reason: "x".to_string(),
+            }],
+        };
+        assert!(matches!(
+            ledger.record(bad),
+            Err(MemoryError::RecordReclaimedExceedsTarget { .. })
+        ));
+        // 即使 reclaimed<=target，shortfall 不自洽也要拒绝。
+        let bad2 = ReclaimPlan {
+            target_bytes: 100,
+            reclaimed_bytes: 60,
+            shortfall_bytes: 999,
+            sufficient: false,
+            steps: vec![ReclaimStep {
+                sandbox_id: "s1".to_string(),
+                bytes: 60,
+                reason: "x".to_string(),
+            }],
+        };
+        assert!(matches!(
+            ledger.record(bad2),
+            Err(MemoryError::RecordReclaimedExceedsTarget { .. })
+        ));
+    }
+
+    #[test]
+    fn summarize_accumulates_reclaim_and_overcommit_deterministically() {
+        let mut p = pool(1_000, 10);
+        p.admit(req("a", 300, &[])).unwrap();
+        p.admit(req("b", 300, &[])).unwrap();
+        // 私有 600 → committed 600、nominal 600 → 当前超卖 1000‰。
+
+        let mut ledger = ReclaimLedger::new();
+        ledger
+            .record(valid_plan(
+                100,
+                &[
+                    obs(
+                        "a",
+                        ActivityState::Waiting,
+                        100,
+                        LatencyClass::Tolerant,
+                        300,
+                        60,
+                    ),
+                    obs(
+                        "b",
+                        ActivityState::Running,
+                        10,
+                        LatencyClass::Sensitive,
+                        300,
+                        0,
+                    ),
+                ],
+            ))
+            .unwrap(); // 只取 a 的 60，b 无可回收 → 未足额、缺口 40
+        ledger
+            .record(valid_plan(
+                40,
+                &[obs(
+                    "b",
+                    ActivityState::Waiting,
+                    9,
+                    LatencyClass::Tolerant,
+                    300,
+                    40,
+                )],
+            ))
+            .unwrap(); // 足额 40
+
+        let stats = ledger
+            .summarize(
+                Some(&p),
+                &[obs(
+                    "a",
+                    ActivityState::Waiting,
+                    5,
+                    LatencyClass::Tolerant,
+                    300,
+                    60,
+                )],
+            )
+            .expect("统计应成功");
+        assert_eq!(stats.records, 2);
+        assert_eq!(stats.cumulative_reclaimed_bytes, 100);
+        assert_eq!(stats.cumulative_target_bytes, 140);
+        assert_eq!(stats.cumulative_shortfall_bytes, 40);
+        assert_eq!(stats.sufficient_records, 1);
+        assert_eq!(stats.insufficient_records, 1);
+        assert_eq!(stats.distinct_reclaimed_sandboxes, 2);
+        // 100/140 = 714.285… → 714‰
+        assert_eq!(stats.reclaim_success_rate_permille, 714);
+        // 累计回收占已提交 100/600 = 166‰
+        assert_eq!(stats.cumulative_reclaim_of_committed_permille, Some(166));
+        assert_eq!(stats.current_overcommit_permille, Some(1000));
+        // 当前观测：足迹 360，可回收 60 → 166‰
+        assert_eq!(stats.idle_footprint_bytes, Some(360));
+        assert_eq!(stats.reclaimable_idle_bytes, Some(60));
+        assert_eq!(stats.idle_reclaimable_fraction_permille, Some(166));
+    }
+
+    #[test]
+    fn summarize_no_pool_no_obs_keeps_optional_fields_none() {
+        let mut ledger = ReclaimLedger::new();
+        let empty_ok = IdleReclaimer::plan(&[], 0).unwrap();
+        assert!(empty_ok.sufficient && empty_ok.steps.is_empty());
+        ledger.record(empty_ok).expect("0 目标空计划应可入账");
+        let stats = ledger.summarize(None, &[]).unwrap();
+        assert_eq!(stats.records, 1);
+        assert_eq!(stats.reclaim_success_rate_permille, 1000);
+        assert_eq!(stats.physical_bytes, None);
+        assert_eq!(stats.idle_footprint_bytes, None);
+        assert_eq!(stats.idle_reclaimable_fraction_permille, None);
+    }
+
+    #[test]
+    fn summarize_rejects_overflowing_reserved_plus_reclaimable() {
+        let ledger = ReclaimLedger::new();
+        let bad = vec![SandboxIdleObservation {
+            sandbox_id: "s1".into(),
+            state: ActivityState::Waiting,
+            idle_ms: 1,
+            latency: LatencyClass::Tolerant,
+            reserved_bytes: u64::MAX,
+            reclaimable_idle_bytes: 1,
+        }];
+        assert!(matches!(
+            ledger.summarize(None, &bad),
+            Err(MemoryError::ReservedReclaimOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn summarize_rejects_duplicate_observations() {
+        let ledger = ReclaimLedger::new();
+        let dup = vec![
+            obs("a", ActivityState::Waiting, 1, LatencyClass::Tolerant, 1, 1),
+            obs("a", ActivityState::Waiting, 2, LatencyClass::Tolerant, 1, 1),
+        ];
+        assert!(matches!(
+            ledger.summarize(None, &dup),
             Err(MemoryError::DuplicateIdleObservation(_))
         ));
     }

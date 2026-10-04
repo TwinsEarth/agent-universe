@@ -1,4 +1,4 @@
-// Agent Universe v3.8.2 — 桌面工作台 Tauri 壳
+// Agent Universe v3.8.3 — 桌面工作台 Tauri 壳
 // 架构：Tauri 主进程（Rust）管理 gsn-daemon（本地后端，HTTP :4002），
 // 前端为工作台 SPA。提供单实例、系统托盘、关闭隐藏、默认工作区、
 // 模型提供商配置、本地终端、文件浏览与预览数据等能力。
@@ -77,7 +77,7 @@ fn show_main(app: &AppHandle) {
 #[tauri::command]
 fn get_app_info(state: tauri::State<AppState>) -> AppInfo {
     AppInfo {
-        version: "3.8.2".to_string(),
+        version: "3.8.3".to_string(),
         platform: platform_name(),
         workspace: state.workspace.clone(),
         daemon_data_dir: workspace::daemon_data_dir().display().to_string(),

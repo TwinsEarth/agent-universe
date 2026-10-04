@@ -21,6 +21,11 @@
 //!   append-only 正计量（[`MeteringLedger::record`]），累计 `consumed` 不得超过撮合
 //!   预留 `allocated`，并整数算出实耗/待退结算视图（[`MeterSettlement`]），恒有
 //!   `reserved = consumed_cost + refund`；只记账、不动资金、不连链。
+//! - **v3.8.3 撮合编排**：[`MatchingEngine`] 把订单状态机与容量/计量两账按状态边接线——
+//!   `Matched → CapacityHeld` 按成交量 hold，执行/计量期开计量线并正计量，结算/判罚/
+//!   持有期取消 release；一次 hold 恰好一次 release，跨账守恒
+//!   `capacity.held == Σ 已 hold 未终态订单成交量`，副作用失败不改写（fail-closed）。
+//!   仍是内存确定性编排，不动资金、不连链、不持久化、不新增对外写能力。
 //!
 //! # 为什么内核是系统插件（T0）而不是官方插件（T1）
 //!
@@ -36,10 +41,12 @@
 
 pub mod capacity;
 pub mod catalog;
+pub mod matching;
 pub mod metering;
 
 pub use capacity::{CapacityRegistration, CapacityRegistry};
 pub use catalog::{catalog_entries, default_units};
+pub use matching::MatchingEngine;
 pub use metering::{MeterSettlement, MeteringLedger, UsageLine};
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -193,6 +200,10 @@ pub enum ResourceError {
         consumed_after: u128,
         allocated: u128,
     },
+    /// 撮合订单不存在（v3.8.3，对未知订单 id 的任何编排操作具名拒绝）。
+    OrderNotFound,
+    /// 订单 id 已存在（v3.8.3，同一 id 不可重复提交成交）。
+    DuplicateOrder { order_id: String },
     /// 记账溢出（u128）。
     ArithmeticOverflow,
 }
@@ -302,6 +313,12 @@ impl std::fmt::Display for ResourceError {
                 f,
                 "RESOURCE_USAGE_EXCEEDS_ALLOCATION: 累计实耗 {consumed_after} 超过预留上限 {allocated}"
             ),
+            ResourceError::OrderNotFound => {
+                write!(f, "RESOURCE_ORDER_NOT_FOUND: 撮合订单不存在")
+            }
+            ResourceError::DuplicateOrder { order_id } => {
+                write!(f, "RESOURCE_DUPLICATE_ORDER: 订单 id 已存在: {order_id}")
+            }
             ResourceError::ArithmeticOverflow => {
                 write!(f, "RESOURCE_ARITHMETIC_OVERFLOW: u128 记账溢出")
             }
@@ -654,6 +671,7 @@ pub fn status_payload() -> serde_json::Value {
             "matching_kernel": true,
             "capacity_registration": true,
             "metering_ledger": true,
+            "matching_orchestration": true,
             "escrow_settlement": false,
             "stake_slash": false,
             "onchain_payment": false
@@ -663,9 +681,10 @@ pub fn status_payload() -> serde_json::Value {
             "order_lifecycle_advance": false,
             "offer_ask_submit": false,
             "capacity_registry_persistence": false,
-            "metering_ledger_persistence": false
+            "metering_ledger_persistence": false,
+            "matching_engine_persistence": false
         },
-        "note": "v3.8.2：类型+状态机+内部记账单位+注册容量内存账本+计量内存账本（按订单/形态/维度 append-only 正计量，consumed<=allocated fail-closed，整数实耗/待退结算视图）；托管分账/质押罚没/链上结算在后续小版本。容量与计量账本均为确定性内存记账面，不持久化、非全局单例，不接真实用量上报通道。"
+        "note": "v3.8.3：在类型/状态机/注册容量/计量账本之上，新增确定性撮合编排器 MatchingEngine——挂单容量闸门、Matched→CapacityHeld 按成交量 hold、执行/计量期开计量线与正计量、结算/判罚/持有期取消 release，一次 hold 恰好一次 release，跨账守恒 capacity.held=Σ在持订单成交量；副作用失败 fail-closed 不改写。仍为内存编排面，不持久化、不经 PMB 受理外部写单、不动资金、不连链；托管分账/质押罚没/链上结算在后续小版本。"
     })
 }
 

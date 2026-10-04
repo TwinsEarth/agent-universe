@@ -874,7 +874,7 @@ dependencies = [
 
 [[package]]
 name = "gsn-core"
-version = "0.3.75"
+version = "0.3.76"
 dependencies = [
  "anyhow",
  "async-trait",

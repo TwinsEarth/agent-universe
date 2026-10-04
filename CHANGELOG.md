@@ -1,3 +1,15 @@
+## [v3.7.6] - 2026-10-04
+
+### 修订版：AUSec 内存共享（3/3）——回收/超卖统计 + 越界拒绝 + Linux 专有原语诚实门（#102/#109，patch）
+
+- 新增 `ReclaimLedger`/`ReclaimStats`（memory.rs）：历史 `ReclaimPlan` 作不可变记录入账，确定性重算累计回收/目标/缺口、足额/不足条数、回收成功率千分点、去重沙盒数，以及可选的当前超卖倍数、累计回收占已提交千分点、空闲足迹/可回收占比；无浮点，缺池/缺观测字段为 null。
+- **越界拒绝 fail-closed**（入账即校验，任一非法整体拒绝、账本不变）：`ZeroReclaimStep`、`ReclaimStepTotalMismatch`（步骤合计≠声明）、`RecordReclaimedExceedsTarget`（声明>目标或 shortfall 不自洽）、`ReclaimArithmeticOverflow`、`ReservedReclaimOverflow`（reserved+reclaimable 溢出 u64）。
+- 新增 `ausec/primitives.rs`：virtio-pmem/DAX/DAMON/virtio-balloon 四 Linux-MicroVM 专有原语诚实门。非 Linux（macOS/Windows/Other）一律 `unsupported` 具名拒绝；Linux 仅 `declared_linux` 且 `can_enforce` 恒 false（执行器未接线，不声称已共享/回收物理页）；零 unsafe。
+- 系统插件 `com.twinsearth.sys.ausec` 新增两个只读 PMB 方法 `reclaim_stats`、`memory_primitive_status`（常量/入口/字节桥/register 对称接线，未知原语/平台 fail-closed）。
+- 新增 13 个「旧实现会失败」回归（primitives 4 + memory 7 + PM 桥 2）；ausec 73/0、全量 lib 428/0、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment/metadata --locked 全绿。
+- 版本 npm 3.7.6 ↔ gsn-core 0.3.76。
+- 诚实边界：四原语在 Linux 也只声明、执行器未接线；40.2%/21.2%/50×/90% 等均为外部 DSEC 报道（aiwiki.ai/byteiota.com）非本仓复测；统计是记账口径自洽性证明，不证明物理页已真实回收。
+
 ## [v3.7.5] - 2026-10-04
 
 ### 修订版：AUSec 内存共享（2/3）——等待期保内存 + 空闲优先回收规划（#102/#108，patch）

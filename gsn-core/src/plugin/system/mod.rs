@@ -404,6 +404,9 @@ mod tests {
         assert_eq!(st["enforceable"]["snapshot_royalty"], true);
         assert_eq!(st["enforceable"]["reputation_scoring"], true);
         assert_eq!(st["enforceable"]["bft_lite_qa"], true);
+        assert_eq!(st["enforceable"]["dynamic_pricing"], true);
+        assert_eq!(st["enforceable"]["order_batching"], true);
+        assert_eq!(st["enforceable"]["bootstrap_gate"], true);
         assert_eq!(st["enforceable"]["stake_slash"], false);
         assert_eq!(st["enforceable"]["onchain_payment"], false);
 

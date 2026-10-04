@@ -33,6 +33,7 @@
 
 pub mod backend;
 pub mod blockstore;
+pub mod cpu;
 pub mod image;
 pub mod memory;
 pub mod primitives;
@@ -45,6 +46,12 @@ pub use backend::{
 pub use blockstore::{
     BlockFetchError, BlockSource, BlockSourceKind, BlockStats, BlockStore, BlockStoreError,
     LocalDirBlockSource, SharedChunkCache, UdosRemoteBlockSource,
+};
+pub use cpu::{
+    arbitrate_priority, parse_latency as parse_cpu_latency, parse_tier as parse_cpu_tier,
+    CpuClassSummary, CpuError, CpuPriorityModel, CpuSandboxRequest, EffectiveCpuEntry,
+    DEFAULT_WEIGHT as CPU_DEFAULT_WEIGHT, MAX_WEIGHT as CPU_MAX_WEIGHT,
+    PRIORITY_SENSITIVE as CPU_PRIORITY_SENSITIVE, PRIORITY_TOLERANT as CPU_PRIORITY_TOLERANT,
 };
 pub use image::{
     build_manifest, digest_hex, ChunkEntry, ChunkManifest, ManifestError, MAX_CHUNK_SIZE,
@@ -92,6 +99,9 @@ pub const METHOD_RECLAIM_STATS: &str = "reclaim_stats";
 /// PMB 方法：v3.7.6 Linux-MicroVM 专有内存原语（virtio-pmem/DAX/DAMON/balloon）
 /// 的诚实门：非 Linux 具名拒绝；Linux 仅声明、can_enforce=false（执行器未接线）。
 pub const METHOD_MEMORY_PRIMITIVE: &str = "memory_primitive_status";
+/// PMB 方法：v3.7.7 CPU 两级优先级模型（时延敏感/容忍 + 优先级与权重），纯确定性
+/// 仲裁；低信任级自我提级 Sensitive fail-closed；不调任何 OS 调度原语。
+pub const METHOD_CPU_PRIORITY: &str = "cpu_priority";
 
 /// 把就绪状态转成诚实的 JSON：区分 ready / executor_not_wired / needs_probe /
 /// unsupported，并带 `can_run_now` 布尔与平台原语细节。
@@ -502,6 +512,77 @@ fn memory_primitive_query(input: serde_json::Value) -> Result<serde_json::Value,
     }))
 }
 
+/// `cpu_priority` 入参：
+/// `{capacity_millis: u64, sandboxes: [{sandbox_id, tier?: "system"|"official"|
+/// "certified"|"third_party"(缺省=最小信任), latency?: "sensitive"|"tolerant",
+/// weight?: u32, requested_millis: u64}]}`。
+///
+/// tier 缺省按 `third_party`（最小信任默认，绝不默认给 sensitive）；低信任级自报
+/// sensitive 由 [`arbitrate_priority`] fail-closed 拒绝。返回仲裁后的确定性模型。
+fn cpu_priority_query(input: serde_json::Value) -> Result<serde_json::Value, String> {
+    let capacity = input
+        .get("capacity_millis")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| "缺少 capacity_millis（必须为正整数 u64）".to_string())?;
+
+    let arr = input
+        .get("sandboxes")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "缺少 sandboxes 数组".to_string())?;
+
+    let mut requests = Vec::with_capacity(arr.len());
+    for (i, v) in arr.iter().enumerate() {
+        let sandbox_id = v
+            .get("sandbox_id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| format!("sandboxes[{i}] 缺少 sandbox_id 字符串"))?
+            .to_string();
+        // tier 缺省 → third_party（最小信任，fail-safe 默认）。
+        let tier = match v.get("tier") {
+            None | Some(serde_json::Value::Null) => Tier::ThirdParty,
+            Some(serde_json::Value::String(s)) => {
+                parse_cpu_tier(s).map_err(|e| format!("sandboxes[{i}].tier 非法: {e}"))?
+            }
+            Some(_) => return Err(format!("sandboxes[{i}].tier 必须是字符串")),
+        };
+        let latency = match v.get("latency") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(s)) => Some(
+                parse_cpu_latency(s).map_err(|e| format!("sandboxes[{i}].latency 非法: {e}"))?,
+            ),
+            Some(_) => return Err(format!("sandboxes[{i}].latency 必须是字符串")),
+        };
+        let weight = match v.get("weight") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(w) => Some(
+                w.as_u64()
+                    .filter(|n| *n <= u64::from(CPU_MAX_WEIGHT))
+                    .ok_or_else(|| format!("sandboxes[{i}].weight 非法或越界"))?
+                    as u32,
+            ),
+        };
+        let requested_millis = v
+            .get("requested_millis")
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| format!("sandboxes[{i}] 缺少 requested_millis（正整数）"))?;
+        requests.push(CpuSandboxRequest {
+            sandbox_id,
+            tier,
+            latency,
+            weight,
+            requested_millis,
+        });
+    }
+
+    let model = arbitrate_priority(capacity, &requests).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({
+        "plugin": AUSEC_PLUGIN,
+        "module": "ausec",
+        "model": model,
+        "note": "v3.7.7 仅交付两级优先级与权重的确定性仲裁，不调用 cgroup/sched_setaffinity 等 OS 调度原语、不做真实限速；竞争下的配额分配在 v3.7.8，突发准入在 v3.7.9。tier 缺省按 third_party；低信任级自报 sensitive 一律拒绝。",
+    }))
+}
+
 /// 字节桥：`memory_status`。
 fn handle_memory_status(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
     let input: serde_json::Value = serde_json::from_slice(payload)
@@ -552,6 +633,19 @@ fn handle_memory_primitive(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8
         .map_err(|e| PluginError::Runtime(format!("AUSec memory_primitive_status 序列化失败: {e}")))
 }
 
+/// 字节桥：`cpu_priority`（v3.7.7 CPU 两级优先级 + 权重确定性仲裁）。
+fn handle_cpu_priority(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let input: serde_json::Value = if payload.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice(payload)
+            .map_err(|e| PluginError::Manifest(format!("cpu_priority 负载非合法 JSON: {e}")))?
+    };
+    let out = cpu_priority_query(input).map_err(PluginError::Runtime)?;
+    serde_json::to_vec(&out)
+        .map_err(|e| PluginError::Runtime(format!("AUSec cpu_priority 序列化失败: {e}")))
+}
+
 /// 向 T0 进程内运行时注册 AUSec 系统插件的处理器（由系统插件装配流程调用）。
 pub fn register(rt: &mut NativeRuntime) {
     // memory_status / memory_admit：v3.7.4 内存共享额度记账 + 两级超卖准入（只读决策）。
@@ -567,6 +661,8 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_MEMORY_PRIMITIVE,
         handle_memory_primitive,
     );
+    // cpu_priority：v3.7.7 CPU 两级优先级 + 权重确定性仲裁（只读，低信任自提级拒绝）。
+    rt.register_handler(AUSEC_PLUGIN, METHOD_CPU_PRIORITY, handle_cpu_priority);
     // status：无参，只读。
     rt.register_handler(AUSEC_PLUGIN, METHOD_STATUS, handle_status);
     // select_backend：只读选择/就绪查询。
@@ -950,5 +1046,50 @@ mod tests {
         // 未知原语/平台 fail-closed。
         assert!(memory_primitive_query(serde_json::json!({"primitive": "ksm"})).is_err());
         assert!(memory_primitive_query(serde_json::json!({"platform": "plan9"})).is_err());
+    }
+
+    #[test]
+    fn pm_cpu_priority_arbitrates_and_rejects_self_promotion() {
+        // system 缺省 sensitive 排前；第三方缺省/显式 tolerant 在后。
+        let ok = cpu_priority_query(serde_json::json!({
+            "capacity_millis": 1000,
+            "sandboxes": [
+                {"sandbox_id": "bg", "tier": "third_party", "requested_millis": 500},
+                {"sandbox_id": "core", "tier": "system", "requested_millis": 300},
+                {"sandbox_id": "off", "requested_millis": 200}, // tier 缺省=third_party
+            ],
+        }))
+        .unwrap();
+        let entries = ok["model"]["entries"].as_array().unwrap();
+        assert_eq!(entries[0]["sandbox_id"], "core");
+        assert_eq!(entries[0]["effective_latency"], "Sensitive");
+        assert_eq!(entries[1]["effective_latency"], "Tolerant");
+        assert_eq!(entries[2]["effective_latency"], "Tolerant");
+        assert_eq!(ok["model"]["sensitive"]["count"], 1);
+
+        // 低信任级自报 sensitive：经 PM 入口 fail-closed。
+        let err = cpu_priority_query(serde_json::json!({
+            "capacity_millis": 1000,
+            "sandboxes": [
+                {"sandbox_id": "x", "tier": "certified", "latency": "sensitive",
+                 "requested_millis": 100},
+            ],
+        }))
+        .unwrap_err();
+        assert!(err.contains("不得自我提升为时延敏感"), "got: {err}");
+
+        // 缺 capacity、权重越界、非法 tier 全部拒绝。
+        assert!(cpu_priority_query(serde_json::json!({"sandboxes": []})).is_err());
+        assert!(cpu_priority_query(serde_json::json!({
+            "capacity_millis": 1000,
+            "sandboxes": [{"sandbox_id": "a", "tier": "system", "weight": 0,
+                           "requested_millis": 1}],
+        }))
+        .is_err());
+        assert!(cpu_priority_query(serde_json::json!({
+            "capacity_millis": 1000,
+            "sandboxes": [{"sandbox_id": "a", "tier": "kernel", "requested_millis": 1}],
+        }))
+        .is_err());
     }
 }

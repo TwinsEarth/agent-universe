@@ -1,3 +1,17 @@
+## [v3.8.0] - 2026-10-04
+
+### 中版本：面向 Agent 的资源市场（1/10）——领域类型 + 资源单状态机 + 内部记账单位 + T0 系统插件只读状态（#113，minor）
+
+- 开启 v3.8.x「面向 Agent 的资源市场」中版本：把每个人闲置 Agent 的**算力/存储/网络/Agent 能力**沉淀为可挂单、可撮合、可结算、可治理的供给。本版只交付**确定性领域内核**（纯函数/整数记账/零浮点/零 syscall/零 unsafe/类型化错误无 panic），不真撮合、不托管资金、不发链上交易。
+- 新增 `gsn-core/src/economy/resource/{mod.rs,catalog.rs}`：`ResourceKind`（compute/storage/network/agent_capability）、`MeterUnit`（cpu/gpu 毫秒、内存 MB·秒、存储 GB·秒、网络字节、调用、快照恢复共 7 维）、只读静态目录；`Credits` u128 微单位（1 credit=10^6 micro，`fiat_pegged=false`/`chain_settled=false`，checked 运算溢出具名 `RESOURCE_ARITHMETIC_OVERFLOW`）。
+- 资源单状态机 `OrderState` 11 态（drafted→published→matched→capacity_held→executing→metering→qa_pending→settled，分支 cancelled 与 disputed→settled/slashed），`can_transition/transition` 单一合法转移赋值点，越态/跳态/终态转出/自转具名 `RESOURCE_INVALID_TRANSITION`。
+- `ResourceOffer/ResourceAsk/ResourceOrder`：构造正数校验；`match_offer_ask` 对形态不符 `KIND_MISMATCH`、单位不符 `UNIT_MISMATCH`、限价低于供给 `ASK_PRICE_BELOW_OFFER` 具名拒绝，成交量取 min(ask,offer)；`notional_micro` checked 乘法，作为 3.8.5 托管守恒分账的待托管总额。
+- `plugin/capability.rs` 新增 5 能力令牌 + grant 矩阵：`market:resource:ask` 对除黑名单外全级别默认授予（消费者零门槛）；`market:resource:settle` 仅 T0/T1 官方结算（认证/第三方即使声明也拒绝）；`market:slash` 仅 T0；`market:resource:offer`/`market:stake` 为 T0 全有、T1/T2 声明式、T3/黑名单拒绝。
+- 新增 T0 系统插件 `com.twinsearth.sys.resource-market`（与 sys.ausec 同构，进 system_ids/bundled_manifests/系统装配，entry=native 无签名不可热插拔），只读 PMB `resource_market_status` 带 enforceable/provided 诚实位；未接线方法不注册（NotFound）。
+- 新增 15 回归（resource 内核 7 + catalog 2 + capability 市场矩阵 5 + 系统装配集成 1）；全量 gsn-core lib **465/0**（较 450 增 15）、fmt/clippy -D warnings/check-no-panics(prod=0)/unsafe-containment（仅 winjob.rs 3/3，resource/** 零 unsafe）/metadata --locked/js test 全绿。
+- 版本 npm 3.8.0 ↔ gsn-core 0.3.80。
+- 诚实边界：是内核与只读状态、不是可交易市场，不接挂单/不撮合/不计量/不动资金/不连链；Credits 不锚定法币或任何加密货币，BTC/ETH/稳定币结算与私钥隔离在 v3.9.x；外部"90% 沙盒 CPU<5%/超卖 50×/4.2–13.3%/1.71×/−40.2%/x402 量/BlackRock 79.1%"等均为第三方报道、非本仓复测。按最新规划 v3.8 重定义为资源市场、v3.9 重定义为加密 Agent 经济体（旧 §3.2 委员会/pack_diff、§3.3 安全组织标 superseded，pack_diff 降级为 3.8.6 消费能力）。
+
 ## [v3.7.9] - 2026-10-04
 
 ### 修订版：AUSec CPU 调度（3/3）——突发涌入准入控制 + 统一 ausec status（#103/#112，patch）

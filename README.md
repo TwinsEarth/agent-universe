@@ -8,11 +8,15 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/ci.yml?label=CI)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Client Build](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/client-build.yml?label=client%20build)](https://github.com/TwinsEarth/agent-universe/actions/workflows/client-build.yml)
+[![Release Pipeline](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/release.yml?label=release%20pipeline)](https://github.com/TwinsEarth/agent-universe/actions/workflows/release.yml)
 [![Publish Pipeline](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/publish.yml?label=publish%20pipeline)](https://github.com/TwinsEarth/agent-universe/actions/workflows/publish.yml)
 
 **版本**
 
 [![Release](https://img.shields.io/github/v/release/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
+[![Release Date](https://img.shields.io/github/release-date/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/commits/main)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/commit-activity)
 [![npm](https://img.shields.io/npm/v/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
 [![npm downloads](https://img.shields.io/npm/dm/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
 
@@ -27,6 +31,10 @@
 **质量与社区**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Safety Gates](https://img.shields.io/badge/safety-no%20panic%20%E2%80%A2%20unsafe%20contained-success)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
+[![Stars](https://img.shields.io/github/stars/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/stargazers)
+[![Forks](https://img.shields.io/github/forks/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/network/members)
+[![Watchers](https://img.shields.io/github/watchers/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/watchers)
 [![Contributors](https://img.shields.io/github/contributors/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/contributors)
 [![Issues](https://img.shields.io/github/issues/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues)
 [![Issues Closed](https://img.shields.io/github/issues-closed/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues?q=is%3Aissue+is%3Aclosed)

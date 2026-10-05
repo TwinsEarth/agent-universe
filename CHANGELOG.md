@@ -1,3 +1,18 @@
+## [v3.9.9] - 2026-10-05
+
+### 主网就绪加固版：CRDT 状态同步接线 + 纠删码分布式分片接线 + 链上信任锚完整代码路径（Base/Arbitrum 测试网+主网双就绪）+ DHT Server 模式规模修复（真实多节点 3/5/10/20/50 回归 + 分区/恶意节点 + Docker/Compose/CI/可观测/部署运维手册）（#132，patch）
+
+- 本版本为三轮端到端复查的「主网就绪加固版」，非新功能大版本（资源市场 MVP 属 v4.0.0，需单独授权）。全部改动本地完成：未 push/PR/tag/Release/npm；版本号仅预置。
+- 五个 P0：①DHT 自举补 ConnectionEstablished/Identify 的 add_address + BootstrapDht；②GossipSub 入站 Message 分支 + GossipDedup message-id 去重；③PoCV 重写为带 Ed25519 签名 + DID 绑定 + nonce 防重放 + 实际 input/output SHA256 一致性校验的 SignedProofOfComputation（domain AU-POCV/v1）；④新增 marketplace/governance.rs 的 SignedGovernanceCommand（domain AU-GOV-CMD/v1，GSN_GOVERNANCE_FILE，未配置 fail-closed），罚没/授信只接受受权治理集签名；⑤身份按 data-dir 首次生成持久化（load_or_create_identity_in，Unix 0600）。
+- CRDT 接线：新增 crdt/store.rs（LWW Map，max_keys 上限），订阅 gsn/crdt，Op 低延迟 + Snapshot 周期反熵（GSN_CRDT_SNAPSHOT_INTERVAL_SECS 默认 15），CrdtHandle + REST /api/v1/crdt 系列；GSN_CRDT_MAX_KEYS 防膨胀。
+- 纠删码接线：新增 erasure/distributed.rs（ShardEnvelope/ShardTransport/DistributedShardNode，FNV 放置、original_size 元数据随消息、缺失拉取有界重建）、erasure/wire.rs（ShardWire + GossipShardTransport，topic gsn/shards）；REST /api/v1/erasure/{ingest,reconstruct}；真实 3 进程 e2e 本地分片不足经 NeedShards 拉取后重建逐字节 MATCH（scripts/regression-erasure.sh）。
+- DHT 规模修复：Archive/Full 启动显式 set_kad_server_mode（libp2p-kad 默认 Client 用 DeniedUpgrade 拒绝入站 kad），监听方跳过 ephemeral send_back_addr，新增跨节点 GET /api/v1/network/find；真实多进程 20 节点全 19 条（≥K=12）、50 节点 50/50 且 42–46 条（100% ≥K=20）。
+- 链上信任锚：新增 chain/{config,rlp,keys,tx,eip712,paymaster,rpc,http}.rs；私钥/RPC 仅环境/本地文件，主网 fail-closed（GSEN_CONFIRM_MAINNET）；新增依赖 sha3(Keccak256)/k256(ecdsa,arithmetic)，未引入 ethers/alloy；离线测试 60 个全绿，真实交易标未验证（待测试网凭据）。
+- 可观测/部署：真实 /health（硬查 storage）、/metrics（Prometheus）、gsn-daemon --healthcheck；多阶段 Dockerfile(distroless) + .dockerignore + docker-compose(3/5)；CI 改 Swatinem/rust-cache@v2、顺序 fmt→clippy→test→release；docs/DEPLOY.md、docs/ROLLBACK.md、deploy/systemd 单元、.env.example。
+- 真实多进程回归（云机 4 核/8GB）：3/5 节点发现/广播/CRDT/重启通过；分区 1+2 恢复 85ms 收敛（<30s）；10 节点 2 恶意到达率 100%（>95%）；5 节点广播延迟约 38ms。
+- 全量关卡：cargo build --release --workspace、clippy --workspace --all-targets -D warnings、cargo test --lib（741 passed/0 failed）、cargo test --workspace 全绿；check-version 3.9.9（npm 3.9.9 ↔ gsn 0.3.99）。
+- 诚实边界：链上真实交易未验证（待测试网凭据）；PoCV 仅证归属/未篡改、不证计算正确性（VCS 需 RISC0/Halo2）；密码学改动需外部审计；Docker/CI 未本地触发（云机无 docker）；24h CRDT/100+ 节点保留脚本；分片 GC/TTL/签名、链上支付验证、自动更新回滚、HTTPS 探针、跨节点治理共识为后续。
+
 ## [v3.9.8] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（9/9）——ZK 隐私支付意图 + OWS 统一钱包轨道路由 + 合规筛查的纯链下确定性决策（32B 承诺/空值符 hex 形状 + u128 checked 信用额度 + 披露标签白名单 + 宿主取证双花；stable→evm_x402_stable、btc 即时→闪电再 RGB、btc 非即时→RGB 再闪电确定性选轨 + 配置/隐私/跨链约束 fail-closed；调用方名单/辖区/整数阈值 allow/report_required/blocked；零新依赖仅 std+serde，只做链下 fail-closed 决策，不验 SNARK/zkML、不持钥不签名、不连证明器/钱包/节点/名单/合规 API、不冻结不上报不广播，三类执行方法恒 NOT_IMPLEMENTED/NOT_CONFIGURED 且不注册）（#131，patch）

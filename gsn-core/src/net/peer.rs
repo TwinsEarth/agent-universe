@@ -393,6 +393,50 @@ impl P2pPeer {
             .get_closest_peers(PeerId::random());
     }
 
+    /// P0-1: 运行 Kademlia 标准自举（bootstrap）。
+    ///
+    /// 仅仅 `add_address(boot)` 只会让本节点 kbucket 里有“引导节点”这一条；
+    /// 必须再调一次 `kademlia.bootstrap()`，它以本节点 PeerId 为目标发起
+    /// 迭代 FIND_NODE 查询：向引导节点问“离我最近的节点”，拿到更近的
+    /// 节点后继续追问，并把每一跳成功学到的节点纳入 kbucket——这才让
+    /// 每个新节点的路由表从“只认识 boot”扩展为“持有全网 K 个邻居”。
+    /// 须在 kbucket 已至少有 1 个 peer（add_address 之后）调用，否则返回
+    /// `NoKnownPeers`。这里把该错误转成字符串，调用方据此决定稍后重试。
+    pub fn dht_bootstrap(&mut self) -> Result<(), String> {
+        match self.swarm.behaviour_mut().kademlia.bootstrap() {
+            Ok(_qid) => Ok(()),
+            Err(e) => Err(format!("{e:?}")),
+        }
+    }
+
+    /// P0-1: 把 Kademlia 显式置为 Server 模式，使本节点接受入站 kad 查询并
+    /// 在 Identify 中广播 `/ipfs/kad/1.0.0`。
+    ///
+    /// libp2p-kad 0.46 默认是 **Client** 模式，只有在“确认了外部地址”
+    /// （`ExternalAddrConfirmed`）后才自动切换为 Server；Client 模式下
+    /// 所有 kad handler 的 `listen_protocol` 用 `DeniedUpgrade`——既不响应
+    /// 入站 FIND_NODE，也不向 Identify 注册 kad 协议，于是任何 DHT 查询都
+    /// 返回 "protocol not supported"，路由表永远无法在节点间扩散。
+    /// 对全节点/归档节点（应当服务 DHT），在启动时显式置 Server 是标准做法。
+    /// 轻/边缘节点可保持 Client（只发起查询、不服务）。
+    pub fn set_kad_server_mode(&mut self) {
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .set_mode(Some(kad::Mode::Server));
+    }
+
+    /// 对任意 key 发起迭代 Kademlia 查找（get_closest_peers），返回该查询的
+    /// QueryId。结果通过 kad::Event::OutboundQueryProgressed
+    /// （QueryResult::GetClosestPeers）异步返回。这是“跨节点查找”，会沿
+    /// kbucket 多跳迭代——Kademlia 查找的迭代次数对节点数 n 有 O(log n) 上界。
+    pub fn find_closest_peers(&mut self, key: &str) -> kad::QueryId {
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .get_closest_peers(key.as_bytes().to_vec())
+    }
+
     /// 轮询一次 swarm 事件（swarm 由 &mut self 持有，事件流结束仅理论上可能）
     pub async fn next_event(&mut self) -> Option<SwarmEvent<PeerEvent>> {
         self.swarm.next().await
@@ -700,6 +744,73 @@ mod p0_tests {
             "B 的 kbucket 应在 add_address 后包含 A，实际 size={}",
             b.routing_table_size()
         );
+    }
+
+    // ── P0-1(Server 模式): 两端均 Server，B 对 A 的 bootstrap 查询必须成功
+    //    （而非 Client 模式下的 "protocol not supported"）。
+    #[tokio::test]
+    async fn p01_server_mode_serves_inbound_kad_query() {
+        let mut a = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let mut b = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        // 两端都显式 Server（生产中 full/archive 节点在 run_daemon 里这样设置）。
+        a.set_kad_server_mode();
+        b.set_kad_server_mode();
+        let listen = wait_tcp_listen_addr(&mut a).await;
+        let port = tcp_port_of(&listen).unwrap();
+        let a_peer = a.peer_id;
+        let dial: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", port, a_peer)
+            .parse()
+            .unwrap();
+        b.add_bootstrap(dial).unwrap();
+
+        // 驱动连接，双方都把对端登记进 kbucket。
+        let conn_deadline = Instant::now() + Duration::from_secs(15);
+        while b.routing_table_size() < 1 && Instant::now() < conn_deadline {
+            if let Some(SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            }) = b.next_event().await
+            {
+                b.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+            }
+            if let Some(ev) = a.next_event().await {
+                if let SwarmEvent::ConnectionEstablished {
+                    peer_id, endpoint, ..
+                } = ev
+                {
+                    if endpoint.is_dialer() {
+                        a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                    }
+                }
+            }
+        }
+        assert!(b.routing_table_size() >= 1, "B 应先与 A 建立连接");
+
+        // B 发起 bootstrap 查询。
+        b.dht_bootstrap().unwrap();
+        // 轮询等待查询成功（PeerEvent::Kademlia → OutboundQueryProgressed
+        // → Bootstrap(Ok)）；Client 模式下这里永远收不到成功，只会有
+        // "Request to peer in query failed"。
+        let mut saw_success = false;
+        let q_deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < q_deadline {
+            // 同时驱动 A（让它响应查询）。
+            let _ = a.next_event().await;
+            if let Some(SwarmEvent::Behaviour(PeerEvent::Kademlia(
+                libp2p::kad::Event::OutboundQueryProgressed {
+                    result: libp2p::kad::QueryResult::Bootstrap(Ok(_)),
+                    ..
+                },
+            ))) = b.next_event().await
+            {
+                saw_success = true;
+                break;
+            }
+        }
+        assert!(saw_success, "Server 模式下 B 对 A 的 bootstrap 查询应成功");
     }
 
     // ── P0-2: 两个真实 swarm 互发 GossipSub，B 收到且 data 一致 ──

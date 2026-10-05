@@ -122,7 +122,7 @@ fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
 }
 
 /// 极简 URL 解码
-fn url_decode(s: &str) -> String {
+pub(crate) fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;

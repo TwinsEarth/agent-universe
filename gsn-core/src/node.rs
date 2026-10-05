@@ -4,6 +4,7 @@
 //! `gsn daemon` 子命令复用，避免逻辑重复。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::api::rest::url_decode;
 use crate::crdt::{CrdtMessage, CrdtOp, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC};
 use crate::net::peer::InboundGossipMessage;
 use crate::net::P2pPeer;
@@ -36,6 +37,9 @@ pub enum PeerCommand {
         topic: String,
         data: Vec<u8>,
     },
+    /// P0-1: 运行 Kademlia 标准自举（迭代 self-lookup），让 kbucket 从“只认识
+    /// boot”扩展为“持有全网 K 个邻居”。常在首个 bootstrap 连接建立后触发。
+    BootstrapDht,
     /// v2.5.3: 主动连接 bootstrap 节点
     AddBootstrap {
         addr: String,
@@ -89,6 +93,12 @@ pub enum PeerCommand {
     },
     /// v2.5.5: 触发 DHT 随机发现（扩充 hop 候选）
     DiscoverRelays,
+    /// 跨节点 DHT 查找：对任意 key 发起迭代 Kademlia 查找，返回全局最接近的
+    /// peer_id 列表（用于验证跨节点路由 / O(log n) 收敛）。
+    FindPeers {
+        key: String,
+        reply: oneshot::Sender<Result<Vec<String>, String>>,
+    },
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -445,6 +455,10 @@ async fn run_swarm_actor(
     let mut active_relay_addrs: HashMap<String, String> = HashMap::new();
     let mut pending_probes: HashMap<PeerId, oneshot::Sender<Result<bool, String>>> = HashMap::new();
     let mut connecting: HashSet<PeerId> = HashSet::new();
+    // 跨节点 DHT 查找：QueryId → 等待结果的回调（在 kad GetClosestPeers 结果
+    // 事件到达时 resolve）。
+    let mut pending_finds: HashMap<libp2p::kad::QueryId, oneshot::Sender<Result<Vec<String>, String>>> =
+        HashMap::new();
 
     loop {
         tokio::select! {
@@ -457,7 +471,7 @@ async fn run_swarm_actor(
                 let need_ensure = process_swarm_event(
                     &mut peer, &event, &store,
                     &mut active_relay_addrs, &mut pending_probes, &mut connecting,
-                    &inbound_tx,
+                    &inbound_tx, &mut pending_finds,
                 );
                 if need_ensure {
                     let held = ensure_channels(&mut peer, &store, &mut active_relay_addrs, &mut connecting);
@@ -469,7 +483,7 @@ async fn run_swarm_actor(
                     Some(cmd) => handle_peer_command(
                         &mut peer, cmd, &store,
                         &mut active_relay_addrs, &mut pending_probes, &mut connecting,
-                        &mut pending_publish,
+                        &mut pending_publish, &mut pending_finds,
                     ),
                     None => break,
                 }
@@ -627,6 +641,10 @@ fn process_swarm_event(
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
     inbound_tx: &mpsc::Sender<InboundGossipMessage>,
+    pending_finds: &mut HashMap<
+        libp2p::kad::QueryId,
+        oneshot::Sender<Result<Vec<String>, String>>,
+    >,
 ) -> bool {
     use libp2p::swarm::SwarmEvent::*;
     let mut need_ensure = false;
@@ -636,8 +654,17 @@ fn process_swarm_event(
         ConnectionEstablished {
             peer_id, endpoint, ..
         } => {
-            let addr = endpoint.get_remote_address().clone();
-            peer.add_kad_address(*peer_id, addr);
+            if endpoint.is_dialer() {
+                // 本节点是拨号方：被 dial 的地址就是对端的确定可用地址，加入 kbucket。
+                let addr = endpoint.get_remote_address().clone();
+                peer.add_kad_address(*peer_id, addr);
+            }
+            // 本节点是监听方（对端主动连入）：连接的对端地址是“回送地址”
+            // （send_back_addr，即对端发起本次连接的临时出站端口，不是它的
+            // 监听端口）。若把它加入 kbucket，后续 FIND_NODE 会让别的节点去
+            // dial 一个不通的临时端口（实测 "protocol not supported /
+            // ConnectionRefused"）。监听方的正确可 dial 地址由随后
+            // Identify.Received 用 info.listen_addrs 提供（见下方 Identify 臂）。
             // 连接建立后重放订阅，解决 GossipSub 冷启动死锁（详见
             // P2pPeer::refresh_gossipsub_subscriptions 的说明）。
             peer.refresh_gossipsub_subscriptions();
@@ -747,6 +774,29 @@ fn process_swarm_event(
                     }
                 }
                 Gossipsub(_) => {}
+                // 跨节点 DHT 查找结果到达：resolve 等待中的 FindPeers 回调。
+                Kademlia(libp2p::kad::Event::OutboundQueryProgressed {
+                    id,
+                    result: libp2p::kad::QueryResult::GetClosestPeers(outcome),
+                    ..
+                }) => {
+                    if let Some(tx) = pending_finds.remove(&id) {
+                        match outcome {
+                            Ok(ok) => {
+                                let peers: Vec<String> = ok
+                                    .peers
+                                    .iter()
+                                    .map(|p| p.peer_id.to_string())
+                                    .collect();
+                                let _ = tx.send(Ok(peers));
+                            }
+                            Err(err) => {
+                                let _ = tx.send(Err(format!("{err:?}")));
+                            }
+                        }
+                    }
+                }
+                Kademlia(_) => {}
                 _ => {}
             }
         }
@@ -926,6 +976,10 @@ fn handle_peer_command(
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
     pending_publish: &mut Vec<(String, Vec<u8>, u8)>,
+    pending_finds: &mut HashMap<
+        libp2p::kad::QueryId,
+        oneshot::Sender<Result<Vec<String>, String>>,
+    >,
 ) {
     match cmd {
         PeerCommand::GetInfo { reply } => {
@@ -958,6 +1012,12 @@ fn handle_peer_command(
                     pending_publish.push((topic, data, 1));
                 }
                 Err(e) => eprintln!("⚠️ publish 失败 [{topic}]: {e}"),
+            }
+        }
+        PeerCommand::BootstrapDht => {
+            match peer.dht_bootstrap() {
+                Ok(()) => eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）"),
+                Err(e) => eprintln!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
             }
         }
         PeerCommand::AddBootstrap { addr, reply } => {
@@ -1119,6 +1179,13 @@ fn handle_peer_command(
         PeerCommand::DiscoverRelays => {
             peer.discover_random_peers();
             eprintln!("🔍 触发 DHT relay 候选发现");
+        }
+        PeerCommand::FindPeers { key, reply } => {
+            match peer.find_closest_peers(&key) {
+                qid => {
+                    pending_finds.insert(qid, reply);
+                }
+            }
         }
     }
 }
@@ -1287,6 +1354,7 @@ pub(crate) fn render_prometheus_metrics(
 async fn handle_network_api(
     method: &str,
     net_path: &str,
+    query_string: &str,
     body: &str,
     cmd_tx: &PeerCmdTx,
     _start: &Instant,
@@ -1605,6 +1673,53 @@ async fn handle_network_api(
                 serde_json::json!({"active":chans,"count":chans.len()}).to_string(),
             ),
             Err(_) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+        }
+    }
+    // GET /find?key=... — 跨节点迭代 Kademlia 查找，返回全局最接近的 peers
+    // （用于验证跨节点路由；Kademlia 迭代查找的跳数对 n 有 O(log n) 上界）。
+    else if method == "GET" && (path == "/find" || path == "/find/") {
+        let key = query_string
+            .split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| *k == "key")
+            .map(|(_, v)| url_decode(v))
+            .unwrap_or_default();
+        if key.is_empty() {
+            return (
+                400,
+                serde_json::json!({"error":"missing_key"}).to_string(),
+            );
+        }
+        let (reply, rx) = oneshot::channel();
+        if cmd_tx
+            .send(PeerCommand::FindPeers {
+                key: key.clone(),
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return (
+                500,
+                serde_json::json!({"error":"peer_actor_unavailable"}).to_string(),
+            );
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(30), rx).await {
+            Ok(Ok(Ok(peers))) => (
+                200,
+                serde_json::json!({
+                    "key": key,
+                    "closest_peers": peers,
+                    "count": peers.len(),
+                })
+                .to_string(),
+            ),
+            Ok(Ok(Err(e))) => (502, serde_json::json!({"error": e}).to_string()),
+            Ok(Err(_)) => (500, serde_json::json!({"error":"no_response"}).to_string()),
+            Err(_) => (
+                504,
+                serde_json::json!({"error":"find_timeout"}).to_string(),
+            ),
         }
     } else {
         (
@@ -1940,7 +2055,8 @@ async fn run_api_server(
             let mut parts = request_line.split_whitespace();
             let method = parts.next().unwrap_or("GET").to_string();
             let raw_path = parts.next().unwrap_or("/").to_string();
-            let (path_part, _) = raw_path.split_once('?').unwrap_or((&raw_path, ""));
+            let (path_part, query_string) =
+                raw_path.split_once('?').unwrap_or((&raw_path, ""));
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = request[body_start..].to_string();
 
@@ -2070,8 +2186,15 @@ async fn run_api_server(
                     .trim_start_matches("/api/v1")
                     .trim_start_matches("/network")
                     .to_string();
-                let net_resp =
-                    handle_network_api(&method, &net_path, &body, &peer_cmd_tx, &start).await;
+                let net_resp = handle_network_api(
+                    &method,
+                    &net_path,
+                    query_string,
+                    &body,
+                    &peer_cmd_tx,
+                    &start,
+                )
+                .await;
                 let ct = if net_resp.1 == "application/json" {
                     "application/json"
                 } else {
@@ -2468,6 +2591,12 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel::<PeerCommand>(64);
     println!("   Peer ID: {}", peer.peer_id);
     println!("   模式: {:?}", node_mode);
+    // P0-1: 全节点 / 归档节点显式以 Kademlia Server 模式运行——否则节点默认
+    // Client 模式（无“已确认外部地址”），拒绝入站 kad 查询、不向 Identify
+    // 注册 kad，DHT 无法在节点间扩散。轻/边缘/浏览器节点保持 Client（只查询）。
+    if matches!(node_mode, NodeMode::Archive | NodeMode::Full) {
+        peer.set_kad_server_mode();
+    }
     // P0-2: 入站 GossipSub 消息通道（swarm actor 投递 → 此处消费，后续可路由到 market）
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundGossipMessage>(1024);
     if let Err(e) = peer.subscribe("gsn/agents") {
@@ -2574,6 +2703,21 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                     }
                     Err(e) => tracing::warn!("CRDT 周期快照序列化失败: {e}"),
                 }
+            }
+        });
+    }
+
+    // P0-1: 首个 bootstrap 连接建立后触发 Kademlia 自举（等 5s 让连接+add_address），
+    // 随后每 5 分钟重跑一次 self-lookup，保证 churn 下路由表持续被刷新。
+    {
+        let t = peer_cmd_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let _ = t.send(PeerCommand::BootstrapDht).await;
+            let mut refresh = tokio::time::interval(std::time::Duration::from_secs(300));
+            loop {
+                refresh.tick().await;
+                let _ = t.send(PeerCommand::BootstrapDht).await;
             }
         });
     }

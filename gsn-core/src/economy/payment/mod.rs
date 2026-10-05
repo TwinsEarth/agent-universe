@@ -33,11 +33,18 @@
 //! 外部报道的各项数字（x402 交易量、BlackRock 模型储蓄占比、ERC-8004 采用量、
 //! A402 性能等）均为**第三方报道口径，非本仓复测**；本内核不内置这些数字作为事实。
 
+pub mod erc8004;
 pub mod l402;
 pub mod router;
 pub mod signer;
 pub mod x402;
 
+pub use erc8004::{
+    aggregate_feedback, hash_token_uri, validate_did, validate_pubkey_hex, Erc8004Error, Feedback,
+    IdentityRecord, IdentityRegistry, ReputationAccumulator, ReputationDimension,
+    ReputationRegistry, ReputationSnapshot, ValidationDecision, ValidationMethod, ValidationTally,
+    ValidationVerdict, ValidationVote,
+};
 pub use l402::{
     parse_bolt11_amount_msat, verify_settlement as l402_verify_settlement, L402Challenge,
     L402Credential, L402Error, PaymentHash, Preimage, L402_SCHEME,
@@ -91,6 +98,15 @@ pub const METHOD_L402_VERIFY: &str = "l402_verify";
 
 /// PMB 方法：L402 闪电支付/开票（本版不连闪电节点，一律具名 fail-closed，不伪造 HTLC）。
 pub const METHOD_L402_PAY: &str = "l402_pay";
+
+/// PMB 方法：ERC-8004 身份句柄绑定校验（tokenId/DID/Ed25519/tokenURI 承诺，纯只读）。
+pub const METHOD_ERC8004_IDENTITY_CHECK: &str = "erc8004_identity_check";
+
+/// PMB 方法：ERC-8004 信誉反馈无状态聚合（整数守恒 + 重放/自评拦截，纯只读）。
+pub const METHOD_ERC8004_REPUTATION_AGGREGATE: &str = "erc8004_reputation_aggregate";
+
+/// PMB 方法：ERC-8004 独立验证 BFT-lite 裁决（n≥3f+1，纯只读，不写链）。
+pub const METHOD_ERC8004_VALIDATION_DECIDE: &str = "erc8004_validation_decide";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +222,7 @@ pub fn status_payload() -> serde_json::Value {
         "signing_introduced_in": "v3.9.1",
         "x402_introduced_in": "v3.9.2",
         "l402_introduced_in": "v3.9.3",
+        "erc8004_introduced_in": "v3.9.4",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -231,11 +248,13 @@ pub fn status_payload() -> serde_json::Value {
             "pay:route:read",
             "wallet:sign:host-restricted",
             "x402:protocol:read",
-            "l402:protocol:read"
+            "l402:protocol:read",
+            "erc8004:registry:read"
         ],
         "capabilities_reserved_later": [
             "pay:execute",
-            "chain:anchor:write"
+            "chain:anchor:write",
+            "erc8004:registry:write"
         ],
         "signing": {
             "introduced_in": "v3.9.1",
@@ -299,6 +318,28 @@ pub fn status_payload() -> serde_json::Value {
             "live_settlement": false,
             "note": "只解析 402 挑战头与 BOLT11 人类可读金额前缀（整数 msat）、校验凭证 macaroon 一致性与 SHA256(preimage)==payment_hash、按精确金额守恒；不解码 bech32 数据段/节点签名、不校验 macaroon 签名（需服务端 root key）、不连闪电节点、不创建或结算 HTLC、不持私钥。payment_hash 须由受信任发票解码服务取得后传入；本地哈希关系通过不代表 HTLC 路由层最终确认。"
         },
+        "erc8004": {
+            "introduced_in": "v3.9.4",
+            "standard": "ERC-8004 Trustless Agents (Identity / Reputation / Validation registries)",
+            "methods": [
+                "erc8004_identity_check",
+                "erc8004_reputation_aggregate",
+                "erc8004_validation_decide"
+            ],
+            "identity_handle": "ERC-721 tokenId <-> DID <-> Ed25519 pubkey <-> tokenURI SHA-256 commitment",
+            "reputation_dimensions": ["quality", "speed", "honesty", "availability"],
+            "reputation_score_range": "0..=1000 integer, neutral=500",
+            "validation_methods": ["stake_rerun", "tee_attestation", "zkml"],
+            "validation_rule": "BFT-lite n>=3f+1: a direction needs weight*3 >= total*2 and strictly more than the other",
+            "integer_only": true,
+            "self_feedback_blocked": true,
+            "feedback_nonce_replay_guard": true,
+            "onchain_mint_or_write": false,
+            "evm_rpc_connection": false,
+            "live_registry_read": false,
+            "fail_closed_on_bad_identity_or_quorum": true,
+            "note": "只做链下可验证决策面：身份绑定/tokenURI 承诺校验、带质押权重的整数信誉聚合（守恒+重放/自评拦截）、独立验证者 BFT-lite 多数裁决；不铸造 ERC-721、不连 RPC、不读取/写入链上注册表（链上状态由调用方取证后以快照传入）、不持私钥不广播。链上锚定写入在后续版本经宿主签名闸门单独授权。"
+        },
         "enforceable": {
             "deterministic_route_decision": true,
             "integer_thresholds": true,
@@ -310,6 +351,9 @@ pub fn status_payload() -> serde_json::Value {
             "x402_exact_amount_conservation": true,
             "l402_exact_amount_conservation": true,
             "fail_closed_when_lightning_not_configured": true,
+            "erc8004_integer_reputation_conservation": true,
+            "erc8004_bft_lite_two_thirds_quorum": true,
+            "erc8004_fail_closed_on_bad_binding_or_quorum": true,
             "fund_movement": false,
             "key_holding_in_sandbox": false,
             "transaction_signing": false,
@@ -328,12 +372,16 @@ pub fn status_payload() -> serde_json::Value {
             "l402_parse_challenge": true,
             "l402_verify": true,
             "l402_pay_when_lightning_configured": true,
+            "erc8004_identity_check": true,
+            "erc8004_reputation_aggregate": true,
+            "erc8004_validation_decide": true,
             "router_persistence": false,
             "lightning_node_connection": false,
             "evm_rpc_connection": false,
-            "btc_rgb_connection": false
+            "btc_rgb_connection": false,
+            "erc8004_onchain_registry_write": false
         },
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。ERC-8004 v3.9.4、Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
     })
 }
 
@@ -525,6 +573,192 @@ fn handle_l402_pay(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
     ))
 }
 
+/// 字节桥：`erc8004_identity_check`（链下身份绑定校验，纯只读）。
+///
+/// 调用方把从受信任索引/RPC 取证的注册表快照（身份条目数组）与待核四元组一并传入；
+/// 内核不连 RPC、不铸造、不写链。
+fn handle_erc8004_identity_check(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct IdentityEntry {
+        token_id: u64,
+        did: String,
+        pubkey_hex: String,
+        uri_hash_hex: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Req {
+        identities: Vec<IdentityEntry>,
+        token_id: u64,
+        did: String,
+        pubkey_hex: String,
+        uri_hash_hex: String,
+    }
+    let req: Req = parse_json("erc8004_identity_check", payload)?;
+    let mut reg = erc8004::IdentityRegistry::new();
+    for e in &req.identities {
+        reg.mint_with_hash(e.token_id, &e.did, &e.pubkey_hex, &e.uri_hash_hex)
+            .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    }
+    let bound = reg.verify_binding(req.token_id, &req.did, &req.pubkey_hex, &req.uri_hash_hex);
+    serde_json::to_vec(&serde_json::json!({
+        "token_id": req.token_id,
+        "did": req.did,
+        "binding_matches": bound,
+        "registry_entries": reg.len()
+    }))
+    .map_err(|e| PluginError::Runtime(format!("erc8004_identity_check 序列化失败: {e}")))
+}
+
+fn dim_from_str(s: &str) -> PluginResult<erc8004::ReputationDimension> {
+    match s {
+        "quality" => Ok(erc8004::ReputationDimension::Quality),
+        "speed" => Ok(erc8004::ReputationDimension::Speed),
+        "honesty" => Ok(erc8004::ReputationDimension::Honesty),
+        "availability" => Ok(erc8004::ReputationDimension::Availability),
+        other => Err(PluginError::Runtime(format!(
+            "ERC8004_INVALID_DIMENSION: {other}"
+        ))),
+    }
+}
+
+/// 字节桥：`erc8004_reputation_aggregate`（无状态整数聚合，纯只读）。
+fn handle_erc8004_reputation_aggregate(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct IdentityEntry {
+        token_id: u64,
+        did: String,
+        pubkey_hex: String,
+        uri_hash_hex: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct FeedbackEntry {
+        reviewer: u64,
+        subject: u64,
+        dimension: String,
+        score: i16,
+        weight: u64,
+        nonce: u64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Req {
+        identities: Vec<IdentityEntry>,
+        feedback: Vec<FeedbackEntry>,
+    }
+    let req: Req = parse_json("erc8004_reputation_aggregate", payload)?;
+    let mut ids = erc8004::IdentityRegistry::new();
+    for e in &req.identities {
+        ids.mint_with_hash(e.token_id, &e.did, &e.pubkey_hex, &e.uri_hash_hex)
+            .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    }
+    let mut fbs: Vec<erc8004::Feedback> = Vec::with_capacity(req.feedback.len());
+    for f in &req.feedback {
+        fbs.push(erc8004::Feedback {
+            reviewer: f.reviewer,
+            subject: f.subject,
+            dimension: dim_from_str(&f.dimension)?,
+            score: f.score,
+            weight: f.weight,
+            nonce: f.nonce,
+        });
+    }
+    let agg = erc8004::aggregate_feedback(&fbs, &ids)
+        .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    let subjects: serde_json::Value = serde_json::Value::Array(
+        agg.iter()
+            .map(|(subject, snap)| {
+                serde_json::json!({
+                    "subject": subject,
+                    "quality": snap.score_01k(erc8004::ReputationDimension::Quality).ok(),
+                    "speed": snap.score_01k(erc8004::ReputationDimension::Speed).ok(),
+                    "honesty": snap.score_01k(erc8004::ReputationDimension::Honesty).ok(),
+                    "availability": snap.score_01k(erc8004::ReputationDimension::Availability).ok(),
+                })
+            })
+            .collect(),
+    );
+    serde_json::to_vec(&serde_json::json!({ "subjects": subjects }))
+        .map_err(|e| PluginError::Runtime(format!("erc8004_reputation_aggregate 序列化失败: {e}")))
+}
+
+/// 字节桥：`erc8004_validation_decide`（独立验证者 BFT-lite 裁决，纯只读）。
+fn handle_erc8004_validation_decide(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct IdentityEntry {
+        token_id: u64,
+        did: String,
+        pubkey_hex: String,
+        uri_hash_hex: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct VoteEntry {
+        validator: u64,
+        method: String,
+        verdict: String,
+        weight: u64,
+        evidence_hash_hex: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Req {
+        identities: Vec<IdentityEntry>,
+        votes: Vec<VoteEntry>,
+    }
+    let req: Req = parse_json("erc8004_validation_decide", payload)?;
+    let mut ids = erc8004::IdentityRegistry::new();
+    for e in &req.identities {
+        ids.mint_with_hash(e.token_id, &e.did, &e.pubkey_hex, &e.uri_hash_hex)
+            .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    }
+    let mut tally = erc8004::ValidationTally::new();
+    for v in &req.votes {
+        let method = match v.method.as_str() {
+            "stake_rerun" => erc8004::ValidationMethod::StakeRerun,
+            "tee_attestation" => erc8004::ValidationMethod::TeeAttestation,
+            "zkml" => erc8004::ValidationMethod::Zkml,
+            other => {
+                return Err(PluginError::Runtime(format!(
+                    "ERC8004_INVALID_METHOD: {other}"
+                )))
+            }
+        };
+        let verdict = match v.verdict.as_str() {
+            "valid" => erc8004::ValidationVerdict::Valid,
+            "invalid" => erc8004::ValidationVerdict::Invalid,
+            other => {
+                return Err(PluginError::Runtime(format!(
+                    "ERC8004_INVALID_VERDICT: {other}"
+                )))
+            }
+        };
+        tally
+            .record_vote_checked(
+                erc8004::ValidationVote {
+                    validator: v.validator,
+                    method,
+                    verdict,
+                    weight: v.weight,
+                },
+                &ids,
+                &v.evidence_hash_hex,
+            )
+            .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    }
+    let decision = tally
+        .decide()
+        .map_err(|err| PluginError::Runtime(err.to_string()))?;
+    let d = match decision {
+        erc8004::ValidationDecision::ConfirmedValid => "confirmed_valid",
+        erc8004::ValidationDecision::ConfirmedInvalid => "confirmed_invalid",
+        erc8004::ValidationDecision::Inconclusive => "inconclusive",
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "decision": d,
+        "valid_weight": tally.valid_weight.to_string(),
+        "invalid_weight": tally.invalid_weight.to_string(),
+        "total_weight": tally.total_weight.to_string()
+    }))
+    .map_err(|e| PluginError::Runtime(format!("erc8004_validation_decide 序列化失败: {e}")))
+}
+
 fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
     if payload.is_empty() {
         return Err(PluginError::Runtime(format!(
@@ -584,6 +818,21 @@ pub fn register(rt: &mut NativeRuntime) {
         handle_l402_verify,
     );
     rt.register_handler(PAYMENT_ROUTER_PLUGIN, METHOD_L402_PAY, handle_l402_pay);
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_ERC8004_IDENTITY_CHECK,
+        handle_erc8004_identity_check,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_ERC8004_REPUTATION_AGGREGATE,
+        handle_erc8004_reputation_aggregate,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_ERC8004_VALIDATION_DECIDE,
+        handle_erc8004_validation_decide,
+    );
 }
 
 #[cfg(test)]
@@ -643,10 +892,14 @@ mod tests {
         assert_eq!(s["provided"]["l402_parse_challenge"], true);
         assert_eq!(s["provided"]["l402_verify"], true);
         assert_eq!(s["provided"]["l402_pay_when_lightning_configured"], true);
+        assert_eq!(s["provided"]["erc8004_identity_check"], true);
+        assert_eq!(s["provided"]["erc8004_reputation_aggregate"], true);
+        assert_eq!(s["provided"]["erc8004_validation_decide"], true);
+        assert_eq!(s["provided"]["erc8004_onchain_registry_write"], false);
         assert_eq!(s["provided"]["lightning_node_connection"], false);
         assert_eq!(s["tracks"].as_array().unwrap().len(), 3);
-        // v3.9.1 两个 + v3.9.2 x402 只读协议 + v3.9.3 l402 只读协议能力。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 4);
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 只读协议能力。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 5);
         assert_eq!(
             s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
             true
@@ -664,6 +917,15 @@ mod tests {
         assert_eq!(s["l402"]["live_settlement"], false);
         assert_eq!(s["l402"]["lightning_node_connection"], false);
         assert_eq!(s["l402"]["l402_pay_fail_closed"], true);
+        assert_eq!(s["erc8004"]["introduced_in"], "v3.9.4");
+        assert_eq!(s["erc8004"]["onchain_mint_or_write"], false);
+        assert_eq!(s["erc8004"]["evm_rpc_connection"], false);
+        assert_eq!(s["erc8004"]["self_feedback_blocked"], true);
+        assert_eq!(s["enforceable"]["erc8004_bft_lite_two_thirds_quorum"], true);
+        assert_eq!(
+            s["enforceable"]["erc8004_fail_closed_on_bad_binding_or_quorum"],
+            true
+        );
         assert_eq!(s["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(s["signing"]["seed_enters_sandbox"], false);
         assert_eq!(
@@ -774,5 +1036,111 @@ mod tests {
         // 空负载拒绝。
         assert!(handle_l402_parse_challenge(METHOD_L402_PARSE_CHALLENGE, &[]).is_err());
         assert!(handle_l402_verify(METHOD_L402_VERIFY, &[]).is_err());
+    }
+
+    #[test]
+    fn erc8004_handlers_identity_reputation_validation_roundtrip() {
+        let pk1 = "11".repeat(32);
+        let pk2 = "22".repeat(32);
+        let pk3 = "33".repeat(32);
+        let uh1 = erc8004::hash_token_uri("ipfs://card-alpha");
+        let uh2 = erc8004::hash_token_uri("ipfs://card-beta");
+        let uh3 = erc8004::hash_token_uri("ipfs://card-gamma");
+        let identities = serde_json::json!([
+            {"token_id": 1, "did": "did:tw:alpha", "pubkey_hex": pk1, "uri_hash_hex": uh1},
+            {"token_id": 2, "did": "did:tw:beta", "pubkey_hex": pk2, "uri_hash_hex": uh2},
+            {"token_id": 3, "did": "did:tw:gamma", "pubkey_hex": pk3, "uri_hash_hex": uh3}
+        ]);
+
+        // identity_check：匹配 true。
+        let idp = serde_json::to_vec(&serde_json::json!({
+            "identities": identities,
+            "token_id": 1,
+            "did": "did:tw:alpha",
+            "pubkey_hex": pk1,
+            "uri_hash_hex": uh1
+        }))
+        .unwrap();
+        let idout: serde_json::Value = serde_json::from_slice(
+            &handle_erc8004_identity_check(METHOD_ERC8004_IDENTITY_CHECK, &idp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(idout["binding_matches"], true);
+        assert_eq!(idout["registry_entries"], 3);
+
+        // identity_check：公钥不符 -> false（非错误，正常校验结论）。
+        let mut badid = serde_json::from_slice::<serde_json::Value>(&idp).unwrap();
+        badid["pubkey_hex"] = serde_json::json!(pk3);
+        let badidp = serde_json::to_vec(&badid).unwrap();
+        let badidout: serde_json::Value = serde_json::from_slice(
+            &handle_erc8004_identity_check(METHOD_ERC8004_IDENTITY_CHECK, &badidp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(badidout["binding_matches"], false);
+
+        // 非法身份快照（重复 DID）-> 具名 fail-closed。
+        let dup = serde_json::json!({
+            "identities": [
+                {"token_id": 1, "did": "did:x", "pubkey_hex": pk1, "uri_hash_hex": uh1},
+                {"token_id": 2, "did": "did:x", "pubkey_hex": pk2, "uri_hash_hex": uh2}
+            ],
+            "token_id": 1, "did": "did:x", "pubkey_hex": pk1, "uri_hash_hex": uh1
+        });
+        let dupp = serde_json::to_vec(&dup).unwrap();
+        assert!(handle_erc8004_identity_check(METHOD_ERC8004_IDENTITY_CHECK, &dupp).is_err());
+
+        // reputation_aggregate：两正一负加权 -> quality=750。
+        let rp = serde_json::to_vec(&serde_json::json!({
+            "identities": identities,
+            "feedback": [
+                {"reviewer": 1, "subject": 2, "dimension": "quality", "score": 100, "weight": 30, "nonce": 1},
+                {"reviewer": 3, "subject": 2, "dimension": "quality", "score": -100, "weight": 10, "nonce": 1}
+            ]
+        }))
+        .unwrap();
+        let rout: serde_json::Value = serde_json::from_slice(
+            &handle_erc8004_reputation_aggregate(METHOD_ERC8004_REPUTATION_AGGREGATE, &rp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rout["subjects"][0]["subject"], 2);
+        assert_eq!(rout["subjects"][0]["quality"], 750);
+
+        // 自评 -> 具名拒绝。
+        let selfp = serde_json::to_vec(&serde_json::json!({
+            "identities": identities,
+            "feedback": [
+                {"reviewer": 2, "subject": 2, "dimension": "quality", "score": 10, "weight": 1, "nonce": 1}
+            ]
+        }))
+        .unwrap();
+        assert!(
+            handle_erc8004_reputation_aggregate(METHOD_ERC8004_REPUTATION_AGGREGATE, &selfp)
+                .is_err()
+        );
+
+        // validation_decide：2 valid + 1 invalid（总权重 3）-> confirmed_valid。
+        let ev = "aa".repeat(32);
+        let vp = serde_json::to_vec(&serde_json::json!({
+            "identities": identities,
+            "votes": [
+                {"validator": 1, "method": "stake_rerun", "verdict": "valid", "weight": 1, "evidence_hash_hex": ev},
+                {"validator": 2, "method": "tee_attestation", "verdict": "valid", "weight": 1, "evidence_hash_hex": ev},
+                {"validator": 3, "method": "zkml", "verdict": "invalid", "weight": 1, "evidence_hash_hex": ev}
+            ]
+        }))
+        .unwrap();
+        let vout: serde_json::Value = serde_json::from_slice(
+            &handle_erc8004_validation_decide(METHOD_ERC8004_VALIDATION_DECIDE, &vp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(vout["decision"], "confirmed_valid");
+
+        // 空投票 -> 非法计账 fail-closed。
+        let empty =
+            serde_json::to_vec(&serde_json::json!({ "identities": identities, "votes": [] }))
+                .unwrap();
+        assert!(
+            handle_erc8004_validation_decide(METHOD_ERC8004_VALIDATION_DECIDE, &empty).is_err()
+        );
     }
 }

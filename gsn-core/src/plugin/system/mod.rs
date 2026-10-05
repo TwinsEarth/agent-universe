@@ -478,6 +478,10 @@ mod tests {
         assert_eq!(st["provided"]["l402_parse_challenge"], true);
         assert_eq!(st["provided"]["l402_verify"], true);
         assert_eq!(st["provided"]["l402_pay_when_lightning_configured"], true);
+        assert_eq!(st["provided"]["erc8004_identity_check"], true);
+        assert_eq!(st["provided"]["erc8004_reputation_aggregate"], true);
+        assert_eq!(st["provided"]["erc8004_validation_decide"], true);
+        assert_eq!(st["provided"]["erc8004_onchain_registry_write"], false);
         assert_eq!(st["provided"]["lightning_node_connection"], false);
         assert_eq!(st["x402"]["produces_onchain_signature"], false);
         assert_eq!(st["x402"]["evm_signer_configured_by_default"], false);
@@ -486,13 +490,16 @@ mod tests {
         assert_eq!(st["l402"]["introduced_in"], "v3.9.3");
         assert_eq!(st["l402"]["lightning_node_connection"], false);
         assert_eq!(st["l402"]["l402_pay_fail_closed"], true);
+        assert_eq!(st["erc8004"]["introduced_in"], "v3.9.4");
+        assert_eq!(st["erc8004"]["onchain_mint_or_write"], false);
+        assert_eq!(st["erc8004"]["evm_rpc_connection"], false);
         assert_eq!(st["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(
             st["signing"]["production_default_host_key_configured"],
             false
         );
-        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 只读协议能力（共 4 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 4);
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 只读协议能力（共 5 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 5);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -627,6 +634,58 @@ mod tests {
             lpay_err.contains("L402_LIGHTNING_NOT_CONFIGURED"),
             "got {lpay_err}"
         );
+
+        // v3.9.4 ERC-8004：三注册表纯内核经真实系统插件 spawn→call 可用（不写链）。
+        let pk1 = "11".repeat(32);
+        let pk2 = "22".repeat(32);
+        let pk3 = "33".repeat(32);
+        let uh1 = "ab".repeat(32);
+        let uh2 = "cd".repeat(32);
+        let uh3 = "ef".repeat(32);
+        let ids = serde_json::json!([
+            {"token_id": 1, "did": "did:tw:alpha", "pubkey_hex": pk1, "uri_hash_hex": uh1},
+            {"token_id": 2, "did": "did:tw:beta", "pubkey_hex": pk2, "uri_hash_hex": uh2},
+            {"token_id": 3, "did": "did:tw:gamma", "pubkey_hex": pk3, "uri_hash_hex": uh3}
+        ]);
+
+        let eid = serde_json::to_vec(&serde_json::json!({
+            "identities": ids,
+            "token_id": 1, "did": "did:tw:alpha", "pubkey_hex": pk1, "uri_hash_hex": uh1
+        }))
+        .unwrap();
+        let eidout: serde_json::Value =
+            serde_json::from_slice(&inst.call("erc8004_identity_check", &eid).unwrap()).unwrap();
+        assert_eq!(eidout["binding_matches"], true);
+
+        let erep = serde_json::to_vec(&serde_json::json!({
+            "identities": ids,
+            "feedback": [
+                {"reviewer": 1, "subject": 2, "dimension": "honesty", "score": 100, "weight": 1, "nonce": 1},
+                {"reviewer": 3, "subject": 2, "dimension": "honesty", "score": 100, "weight": 1, "nonce": 1}
+            ]
+        }))
+        .unwrap();
+        let erepout: serde_json::Value =
+            serde_json::from_slice(&inst.call("erc8004_reputation_aggregate", &erep).unwrap())
+                .unwrap();
+        assert_eq!(erepout["subjects"][0]["honesty"], 1000);
+
+        let ev = "aa".repeat(32);
+        let eval = serde_json::to_vec(&serde_json::json!({
+            "identities": ids,
+            "votes": [
+                {"validator": 1, "method": "stake_rerun", "verdict": "invalid", "weight": 1, "evidence_hash_hex": ev},
+                {"validator": 2, "method": "tee_attestation", "verdict": "invalid", "weight": 1, "evidence_hash_hex": ev},
+                {"validator": 3, "method": "zkml", "verdict": "valid", "weight": 1, "evidence_hash_hex": ev}
+            ]
+        }))
+        .unwrap();
+        let evalout: serde_json::Value =
+            serde_json::from_slice(&inst.call("erc8004_validation_decide", &eval).unwrap())
+                .unwrap();
+        assert_eq!(evalout["decision"], "confirmed_invalid");
+        // 链上写入方法未接线（NotFound），不伪造可写。
+        assert!(inst.call("erc8004_registry_write", b"{}").is_err());
 
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());

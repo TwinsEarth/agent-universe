@@ -4,15 +4,23 @@
 >
 > **一句话简介：群众化的 AGI 路线，去中心化的智能体共享 & 开源网络。**
 
-[![CI](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml/badge.svg)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
+**构建与发布**
+
+[![CI](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/ci.yml?label=CI)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Client Build](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/client-build.yml?label=client%20build)](https://github.com/TwinsEarth/agent-universe/actions/workflows/client-build.yml)
 [![Release Pipeline](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/release.yml?label=release%20pipeline)](https://github.com/TwinsEarth/agent-universe/actions/workflows/release.yml)
 [![Publish Pipeline](https://img.shields.io/github/actions/workflow/status/TwinsEarth/agent-universe/publish.yml?label=publish%20pipeline)](https://github.com/TwinsEarth/agent-universe/actions/workflows/publish.yml)
 
+**版本**
+
 [![Release](https://img.shields.io/github/v/release/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
 [![Release Date](https://img.shields.io/github/release-date/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/releases)
+[![Last Commit](https://img.shields.io/github/last-commit/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/commits/main)
+[![Commit Activity](https://img.shields.io/github/commit-activity/m/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/commit-activity)
 [![npm](https://img.shields.io/npm/v/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
 [![npm downloads](https://img.shields.io/npm/dm/@twinsearth/agent-universe?color=red)](https://www.npmjs.com/package/@twinsearth/agent-universe)
+
+**平台与运行时**
 
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Rust](https://img.shields.io/badge/rust-2021%20edition-orange.svg)](https://www.rust-lang.org/)
@@ -20,13 +28,30 @@
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Node](https://img.shields.io/badge/node-18%2B-green.svg)](https://nodejs.org/)
 
+**质量与社区**
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Safety Gates](https://img.shields.io/badge/safety-no%20panic%20%E2%80%A2%20unsafe%20contained-success)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/stargazers)
 [![Forks](https://img.shields.io/github/forks/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/network/members)
+[![Watchers](https://img.shields.io/github/watchers/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/watchers)
 [![Contributors](https://img.shields.io/github/contributors/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/contributors)
 [![Issues](https://img.shields.io/github/issues/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues)
+[![Issues Closed](https://img.shields.io/github/issues-closed/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues?q=is%3Aissue+is%3Aclosed)
+[![Pull Requests](https://img.shields.io/github/issues-pr/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/pulls)
+[![Repo Size](https://img.shields.io/github/repo-size/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe)
+[![Languages](https://img.shields.io/github/languages/count/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+## 三层愿景
+
+Agent Universe 的全部技术决策，都由三个层层递进的命题驱动：
+
+| 层次 | 命题 | 内涵 | 对应版本 |
+|------|------|------|----------|
+| **初衷** | **让资源流动** | 每个人手里闲置的网络、算力、存储、数据、Agent 能力，被安全地共享与流动，把碎片资源聚合成一张全球网络 | v3.7.x · v3.8.x |
+| **载体** | **让价值流动** | Agent 经济体——比特币与以太坊的现象级应用，让每一次资源贡献可定价、可结算、可治理 | v3.9.x |
+| **目标** | **让智能流动** | 网络结构的 Scaling Law——从 token 网络结构演进到 Agent 网络结构，通往 AGI 与 ASI | v2.3.1 起，贯穿始终 |
 
 ## 核心理念
 
@@ -53,30 +78,25 @@
 ## 系统架构
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Agent Universe 网络                       │
-│                                                               │
-│   ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐       │
-│   │ Mac mini│  │ Windows │  │ Android │  │ 服务器   │       │
-│   │ 根种子   │  │ 全节点   │  │ 轻节点   │  │ 全节点   │       │
-│   └────┬────┘  └────┬────┘  └────┬────┘  └────┬────┘       │
-│        └────────────┴────────────┴────────────┘             │
-│                         │                                    │
-│              ┌──────────┴──────────┐                        │
-│              │  Kademlia DHT 路由表  │                        │
-│              │  （每个节点持有切片）  │                        │
-│              └──────────┬──────────┘                        │
-│                         │                                    │
-│         ┌───────────────┼───────────────┐                   │
-│         ▼               ▼               ▼                   │
-│   ┌──────────┐   ┌──────────┐   ┌──────────┐               │
-│   │ GossipSub │   │  CRDT    │   │ 纠删码    │               │
-│   │ 消息广播  │   │ 状态同步  │   │ 数据冗余  │               │
-│   └──────────┘   └──────────┘   └──────────┘               │
-│                                                               │
-│   链上信任锚（Base / Arbitrum）                                │
-│   · 身份  · 质押  · 结算  · 治理                              │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                         应用层 Applications                           │
+│   Agent Market · 资源市场 · Agent 协作 · 桌面工作台 / 跨平台客户端       │
+├──────────────────────────────────────────────────────────────────────┤
+│                 v3.0.0 插件内核 Host Kernel                           │
+│   生命周期管理 · PMB 通信总线 · 权限仲裁 · 安全策略引擎 · 黑名单          │
+├──────────────────────────────────────────────────────────────────────┤
+│                 AUSec 弹性计算基础设施（sys.ausec）                    │
+│   镜像按需加载 · 内存共享 · CPU 调度 · pack_diff 快照 · 轨迹分叉          │
+├──────────────────────────────────────────────────────────────────────┤
+│                 四级隔离 × 四执行后端                                   │
+│   T0 FnCall · T1 Container · T2 MicroVM · T3 FullVM                   │
+├──────────────────────────────────────────────────────────────────────┤
+│   网络层：Kademlia DHT · GossipSub · CRDT · 纠删码 · Relay / DCUtR      │
+│   存储层：UDOS 分布式文件系统 · SQLite WAL                              │
+├──────────────────────────────────────────────────────────────────────┤
+│   链上信任锚：Base / Arbitrum（身份 · 质押 · 结算 · 治理）               │
+│   支付三轨：闪电 L402 · EVM x402（USDC）· BTC RGB / HTLC                │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 核心模块
@@ -88,21 +108,37 @@
 | `identity/` | DID 身份、Ed25519 密钥对、签名、平台安全存储 |
 | `agent/` | AgentCard 身份卡、Skill 注册、任务生命周期 |
 | `net/` | Kademlia DHT、GossipSub、libp2p 节点、根种子 |
-| `chain/` | PoCV 可验证计算、EVM 轻客户端 |
-| `storage/` | SQLite 本地存储 |
+| `nat/` | Circuit Relay v2、AutoNAT、DCUtR、NAT 穿透 |
+| `relay_pool/` | Relay 节点池、多通道智能切换 |
+| `chain/` | PoCV 可验证计算、EVM 轻客户端、RLP、EIP-1559、EIP-712、EIP-3009 |
+| `ausec/` | **AUSec 弹性计算**：四执行后端、镜像按需加载、内存共享、CPU 调度 |
+| `sandbox/` | 沙箱类型、隔离级别、资源限制、进程级运行时 |
+| `crdt/` | CRDT 无冲突复制数据类型（LWW 键值） |
+| `erasure/` | Reed-Solomon 纠删码、分布式分片放置与重建 |
+| `memory/` | 个体/群体记忆库（library-only） |
+| `storage/` | SQLite 本地持久化、WAL、重启恢复 |
 | `verifier/` | Verifier HTTP 客户端 |
-| `swarm/` | **群体智能层**：涌现检测、轻量共识 |
-| `economy/` | **信誉经济系统**：信誉分、贡献证明、动态定价 |
-| `scheduler/` | **任务调度器**：任务路由、负载均衡 |
-| `topology/` | **网络拓扑**：邻居管理、拓扑图 |
+| `swarm/` | **群体智能层**：涌现检测、轻量共识（library-only） |
+| `topology/` | **网络拓扑**：邻居管理、拓扑图（library-only） |
+| `economy/` | **信誉经济系统**：信誉分、贡献证明、动态定价、资源市场、支付路由与签名 |
+| `marketplace/` | **智能体市场 Agent Market**：注册/发现/匹配/BFT 验证/结算/信誉 |
+| `scheduler/` | **任务调度器**：任务路由、负载均衡（library-only） |
 | `proof/` | **贡献证明**（Proof of Contribution） |
+| `collaboration/` | Agent 协作分层（MCP/Route/End Agent）、异构 LLM 协作 |
+| `crowdsource/` | 去中心化任务众包、"以工换工"自我维持 |
+| `inference/` | 分布式推理、分散 GPU 算力调度、KV Cache 分片 |
+| `llm/` | 多模型 LLM 适配层（OpenAI / Gemini / Anthropic / 国内模型） |
+| `deepseek/` | DeepSeek 模型适配、协议互转、token 编解码 |
+| `security/` | P2P 安全防御：Sybil / Eclipse / 污染攻击、随机邻居选择 |
+| `api/` | MarketActor + REST API 统一暴露 |
+| `mcp/` | **MCP 兼容层** |
+| `aca/` | **ACA 兼容 API** |
+| `plugin/` | **一切插件化内核**：注册中心、能力令牌、PMB、仲裁、黑名单 |
+| `update/` | daemon 自动更新（minor / patch 双通道、sha256 校验） |
+| `mesh/` | Mesh 自组网（library-only） |
 | `mode/` | 节点模式：Archive / Full / Light / Edge / Browser |
-| `crdt/` | CRDT 无冲突复制数据类型 |
-| `erasure/` | Reed-Solomon 纠删码 |
-| `mcp/` | **MCP 兼容层**（v2.3.2） |
-| `aca/` | **ACA 兼容 API**（v2.3.2） |
-| `marketplace/` | **智能体市场 Agent Market**（v2.3.4）：注册/发现/匹配/BFT验证/结算/信誉 |
-| `bin/` | **gsn-daemon** 守护进程 |
+| `ffi/` | Tauri / UniFFI 跨语言绑定 |
+| `bin/` | **gsn-daemon** 守护进程与 **gsn** 运维 CLI |
 
 > **库面模块与运行面的区分（v3.5.9，DOC-05 / 自审 F-4）**：上表是 **gsn-core 代码库的
 > 模块清单**，不等于「守护进程实际构造运行的能力」。其中 `topology/`、`scheduler/`、
@@ -113,11 +149,60 @@
 > 还是收敛删除」的待决记录与能力边界现状见
 > [`docs/CAPABILITY-STATUS.md`](docs/CAPABILITY-STATUS.md)。
 
-### Python SDK（aip-sdk-py）
+### AUSec 弹性计算（v3.7.x）
 
-- Agent Interop Protocol 客户端
-- 任务提交与查询
-- 本地开发与测试
+AUSec（Agent Universe Elastic Compute）是插件的运行底座，作为第 5 个 T0 系统插件
+`com.twinsearth.sys.ausec` 接入内核。它把「在什么后端、以什么隔离强度运行」与「镜像、
+内存、CPU 如何弹性供给」标准化：
+
+| 能力 | 机制 | 版本 |
+|------|------|------|
+| 四执行后端 | `FnCall / Container / MicroVm / FullVm`，分级×风险 → 后端映射，黑名单不可调度 | v3.7.0 |
+| 镜像按需加载 | 内容寻址块清单、每块 SHA-256、按需取块校验 | v3.7.1 |
+| 本地块存储 | BlockStore 元数据 + 按需取块 + 只读共享 | v3.7.2 |
+| P2P 种子健康 | 种子健康度确定性计算 + 每块 Ed25519 发布者锚定 | v3.7.3 |
+| 内存共享 | 配额池共享额度、两级超卖准入、等待期保内存、空闲优先回收 | v3.7.4–v3.7.6 |
+| CPU 调度 | 两级时延优先级、竞争下配额分配、突发涌入准入 | v3.7.7–v3.7.9 |
+
+> **诚实边界**：v3.7.0 只交付「选择 + 平台可用性声明 + 权限令牌」，不交付真实容器/虚拟机
+> 执行器；探测到 docker/KVM 但执行器未接线即 fail-closed，绝不谎报「容器沙箱已能安全执行」。
+> 方案见 [`docs/ausec/AUSEC-DESIGN.md`](docs/ausec/AUSEC-DESIGN.md)。
+
+### 面向 Agent 的资源市场（v3.8.x）
+
+第一性原理：**未来每个人都会有多个 Agent，它们闲置时，算力、存储、网络、Agent 能力都是
+被浪费的资源。** 资源市场把这些闲置资源变成可挂单、可撮合、可结算、可治理的供给。
+
+| 资源形态 | 计量维度 |
+|----------|----------|
+| 算力 compute | `cpu_millis` / `gpu_millis` |
+| 存储 storage | `storage_gb_sec` |
+| 网络 network | `network_bytes` |
+| Agent 能力 agent_capability | `invocation` / `snapshot_restore` / `memory_mb_sec` |
+
+十连版逐块落地：领域类型与订单状态机（v3.8.0）→ 注册容量账本（v3.8.1）→ 计量账本
+（v3.8.2）→ 撮合编排器（v3.8.3）→ 质押冻结/罚没（v3.8.4）→ 托管结算守恒（v3.8.5）→
+快照商品化版税（v3.8.6）→ 四维信誉（v3.8.7）→ BFT-lite QA（v3.8.8）→ 动态定价 +
+冷启动开关（v3.8.9）。全程零浮点、整数 `u128` checked 记账，绝不超卖、绝不伪造资金。
+
+### 比特币 / 以太坊 Agent 经济体（v3.9.x）
+
+把资源市场接到真实数字货币基础设施，形成三层货币体系：
+
+| 结算轨道 | 定位 | 适用 |
+|----------|------|------|
+| `lightning_l402` | 比特币闪电网络，即时、极低费 | 小额即时高频微支付 |
+| `evm_x402` | 以太坊 L2 x402 + 稳定币 / ERC-4337（默认轨道） | 可编程条件支付、DeFi 组合、日常中额 |
+| `btc_rgb_htlc` | 比特币主链 RGB / Taproot / HTLC（最终性） | 大额或跨周期最终结算 |
+
+九连版：结算路由（v3.9.0，只决策不动钱）→ 宿主签名服务与私钥隔离（v3.9.1）→ EVM x402 /
+USDC（v3.9.2）→ L402 / 闪电（v3.9.3）→ ERC-8004 三注册表（v3.9.4）→ ERC-4337 Paymaster
+（v3.9.5）→ BTC HTLC / RGB（v3.9.6）→ 锚定最终性与跨链桥风控（v3.9.7）→ ZK 隐私支付 /
+OWS 统一钱包 / 合规筛查（v3.9.8）→ 主网就绪加固（v3.9.9）。
+
+> **铁律**：签名是宿主能力，不是沙盒能力——私钥绝不下发沙盒；生产默认 `SignerNotConfigured`
+> / `X402_EVM_SIGNER_NOT_CONFIGURED` / `L402_LIGHTNING_NOT_CONFIGURED` / `HTLC_NODE_NOT_CONFIGURED`
+> / `BRIDGE_NOT_CONFIGURED` fail-closed，绝不返回伪造签名或假装划转。
 
 ### 智能体市场（Agent Market · v2.3.4）
 
@@ -139,6 +224,12 @@
 | 多维信誉 | quality/speed/honesty/availability，**不可转让** |
 | 质押罚没 | 作恶扣除质押，信誉同步下降 |
 | 证据分级 | verified / cpu-proto / unverified |
+
+### Python SDK（aip-sdk-py）
+
+- Agent Interop Protocol 客户端
+- 任务提交与查询、AgentCard / ShardedIndex
+- 本地开发与测试
 
 ### Smart Contracts
 
@@ -193,7 +284,11 @@ cargo run --release --bin gsn-daemon -- \
 | `GET /tasks` | 任务列表 |
 | `POST /agents` | 注册 AgentCard（同时落 SQLite 与 DHT） |
 
-> **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 618 个 Rust 测试 + 19 个 Python 测试 + 22 个 JS 测试守护（随版本增长，以发布时 cargo test / pytest / node 实测为准），跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
+> **当前实现状态**：gsn-daemon 是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT +
+> GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实
+> 落盘并在重启后恢复。v3.9.9 发布时实测：**741 个 lib 测试 / 1051 个 workspace 测试全部通过**，
+> clippy `-D warnings` 零告警，fmt 干净；真实多节点 3/5/10/20/50 回归通过。链上真实交易、
+> Docker 构建、24h CRDT 增长等长时/外部项为**未验证**（见文末「诚实边界」）。
 
 ### 多节点本地组网（3 / 5 节点）
 
@@ -209,8 +304,10 @@ ONLY=5 scripts/regression-3and5.sh
 scripts/regression-partition.sh
 # 20% 恶意节点（10 节点 / 2 不转发）：消息到达率应 > 95%
 scripts/regression-malicious.sh
+# 纠删码：ingest → 分发 → 缺失分片靠校验片重建
+scripts/regression-erasure.sh
 # 50 节点规模：检查每节点路由表 ≥ K=20（资源不足时会如实报未达标）
-scripts/regression-scale.sh
+GSN_N=50 K=20 scripts/regression-scale.sh
 ```
 
 **手动起 3 节点**（每节点独立 data-dir；身份密钥按 data-dir 首次生成，故 PeerId 互不相同）：
@@ -245,6 +342,8 @@ docker compose -f deploy/docker-compose.5nodes.yml up
 PeerId 独立；非 root 运行（`65532`）。端口：每节点暴露 P2P `4001/tcp`、`4001/udp`（QUIC）、
 API `4002/tcp`。健康检查执行 `gsn-daemon --healthcheck` 真实探测 `/health`。
 
+> 云机环境无 Docker，以上构建/组网命令为**未验证**；请在装有 Docker 的机器上据实执行。
+
 ### 健康检查与指标
 
 | 路径 | 说明 |
@@ -252,12 +351,13 @@ API `4002/tcp`。健康检查执行 `gsn-daemon --healthcheck` 真实探测 `/he
 | `GET /health` | **真实依赖检查**：硬检查 storage（失败→503）；软检查连接数 / DHT 路由条目 / CRDT 键数与字节 |
 | `GET /metrics` | Prometheus 指标：DHT 路由表、连接数、GossipSub 吞吐、CRDT 键数 / 应用 Op / 字节数、信誉分布 |
 | `GET /api/v1/crdt` | CRDT 状态（GET 汇总 / `POST` 写入；另有 `/stats`、`/{key}`、`/crdt-snapshot`） |
+| `GET /api/v1/erasure/{ingest,reconstruct}` | 纠删码写入与重建 |
+| `GET /api/v1/network/find` | 跨节点 DHT 查找 |
 
 容器/进程存活探针可用 `gsn-daemon --healthcheck`（读 `GSN_HEALTHCHECK_URL`，
 默认 `http://127.0.0.1:4002/health`，2xx→exit 0 否则 1；当前仅支持 `http://`）。
 
 ### 自动更新（v3.6.1 引入，v3.6.2 修复联网，v3.6.3 支持代理/老 glibc）
-
 
 daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-universe` 的完整版本表）
 检查是否最新，检查失败只告警、不影响启动。更新对象同时包含 **daemon 二进制**与 **npm 包**。
@@ -291,9 +391,6 @@ glibc 版本，不再依赖老镜像。更新器按自身编译时 libc 自动�
 安全：daemon 二进制安装前强制校验随 Release 发布的 `.sha256`（不符即拒绝），同目录原子替换；
 安装后**下次启动生效**，不强制重启。平台支持矩阵与诚实边界（如 macOS 仅 aarch64 有资产、
 Windows exe 占用需先停节点）见 [`releases/v3.6.1.md`](releases/v3.6.1.md)。
-v3.6.2 修复了 v3.6.1 更新器把域名当 IP 字面量解析、导致对所有真实域名连不上的 critical
-缺陷（详见 [`releases/v3.6.2.md`](releases/v3.6.2.md)）；v3.6.3 补齐代理与老 glibc 兼容
-（详见 [`releases/v3.6.3.md`](releases/v3.6.3.md)）。
 
 ### 三大连接层：CLI · API · MCP（v2.3.5 引入，v2.3.6 深化）
 
@@ -320,6 +417,10 @@ gsn market get <agent_id>               # 查询智能体
 gsn market discover translation         # 按技能发现
 gsn market search 关键词                # 搜索
 gsn market stats                        # 市场统计
+
+# 运维只读子命令
+gsn ledger verify                       # 账本哈希链/坏行/重放守恒离线核验
+gsn doctor                              # 一键诊断
 ```
 
 **② REST API（`/api/v1/*`，同时兼容旧版 `/agents` `/tasks`）**
@@ -342,6 +443,8 @@ gsn market stats                        # 市场统计
 | `GET /api/v1/conservation` | 结算守恒检查 |
 | `GET /api/v1/leaderboard?limit=` / `/stats` | 排行榜 / 统计 |
 | `POST`·`GET /api/v1/mcp` | MCP（无状态 JSON-RPC / SSE） |
+| `POST /api/v1/chain/{send-tx,authorize}` | 链上交易 / 授权（fail-closed） |
+| `GET /api/v1/chain/status` | 链上网络状态 |
 
 业务错误返回 `422`，资源不存在返回 `404`，注册类成功返回 `201`，`OPTIONS` 返回 `204`。
 
@@ -351,8 +454,6 @@ gsn market stats                        # 市场统计
 - HTTP：`POST /api/v1/mcp` 无状态 JSON-RPC，`GET /api/v1/mcp` 返回 `text/event-stream` 初始化帧。
 
 工具命名 `market_*`，覆盖：`market_register_agent`、`market_discover_agents`、`market_publish_task`、`market_submit_bid`、`market_match_task`、`market_submit_result`、`market_verify_result`、`market_settle_task`、`market_open_dispute`、`market_arbitrate`、`market_deposit`、`market_balance`、`market_conservation`、`market_leaderboard`、`market_stats` 等共 20 个。`tools/call` 全部路由到市场 actor **真实执行**（非占位）。
-
-> 三层均已真机验证：daemon 真实 bind P2P/API 端口，curl 走通「充值→注册→发布→投标→匹配→结果→验证→结算→守恒」完整闭环；MCP stdio 完成 `initialize` / `tools/list`（20 工具）/ `tools/call`；CLI 各子命令连接节点返回真实数据。由 618 个 Rust 测试守护，跨语言签名测试保证 Rust/Python/JS 三端身份、规范载荷与签名逐字节一致、可互验。
 
 ### Python SDK 使用
 
@@ -399,7 +500,55 @@ npm config set @twinsearth:registry https://npm.pkg.github.com
 npm install @twinsearth/agent-universe
 ```
 
-已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 / 2.4.0 ~ 2.9.2（v2.8.8 跳过）/ 3.0.0 / 3.1.0 ~ 3.6.4，详见 [Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+## 客户端与桌面工作台
+
+### 跨平台客户端（v2.3.5，Tauri 2）
+
+客户端**源码**在仓库内，**安装包为构建产物、不入库**：在推送版本 tag 时由
+[`.github/workflows/client-build.yml`](.github/workflows/client-build.yml) 在对应系统的 runner
+上自动构建，并发布到 GitHub Release 下载。
+
+- 客户端工程：`client/`（前端 Vite + HTML/JS 在 `client/src/`，Rust 壳 `client/src-tauri/`，
+  Android 工程 `client/src-tauri/gen/android`）；各平台本地构建说明在 `client/platforms/`。
+
+| 平台 | 产物 | 说明 |
+|------|------|------|
+| macOS | `.dmg` / `.app` | Apple Silicon（Intel 可本地自行构建） |
+| Windows | `.msi` / `-setup.exe`（NSIS） | x64 |
+| Linux | `.deb` / `.AppImage` | x64 |
+| Android | `.apk` | universal / 分 ABI |
+| iOS | 见 `client/ios/README.md` | 需 Apple Developer 证书与描述文件，开源仓库不内置签名成品 |
+
+```bash
+cd client
+npm install
+npm run build                       # 前端
+npx tauri build                     # 桌面安装包（需在对应系统上，并装好平台依赖）
+npx tauri android build --apk       # Android（需 JDK + Android SDK/NDK）
+```
+
+### 桌面工作台 Workbench（v2.9.0，继续 Tauri 2）
+
+v2.9.0 把客户端从极简演示升级为真正「工作台」，深度参考 DeepSeek Harness 桌面版；**继续用
+Tauri 2，不迁移 Electron**。
+
+- **工作台工程**：`desktop/`（前端 Vite + 9 视图在 `desktop/src/`，Rust 壳 `desktop/src-tauri/`）；
+  旧精简客户端 `client/` 保留。
+- **9 大视图**：工作区总览、任务、智能体（卡片/团队）、终端、文件（Excel/CSV/TSV 预览）、
+  工具（沙箱执行）、模型提供商、插件、设置。
+- **产品形态**：默认工作区（免选文件夹，`~/.agent-universe/workspaces/default`）、过程展示分级、
+  托盘常驻 + 单实例、关闭隐藏、后台任务、模型提供商统一入口。
+- **daemon 托管**：桌面端查找/启动/健康检查/停止/重启 gsn-daemon，仅绑 loopback，不暴露局域网。
+- **构建节奏**：客户端不随每个版本构建，仅在大版本（约每 9 个小版本）手动 `workflow_dispatch`
+  构建一次；Android 仍由 client 产出。
+- **边界**：LLM 仍为 mock、插件为实验开关、沙箱依赖可执行后端、实时性为轮询。
+
+```bash
+cd desktop
+npm install
+npm run build
+npx tauri build      # 工作台桌面安装包（需在对应系统并装好平台依赖）
+```
 
 ## 版本谱系
 
@@ -466,8 +615,8 @@ npm install @twinsearth/agent-universe
 | v2.8.7 | **Sandbox Auth** | **沙箱变更接口统一认证（401）+ 所有权绑定（非所有者 403）；随机 id（sb- + 16 hex）不可猜、重启不复用；输出截断 1 MiB；请求体 env/初始文件/超时/域名/资源真正生效；Windows Job Object 强制资源/进程树；启动清扫孤儿沙箱（GAP §3.3）** |
 | v2.8.9 | **Claim Verification** | **弱公钥拒绝接入 register_peer/委员/贡献验证；贡献验证 DID↔公钥绑定（一把密钥不能伪造 DID 绕去重）；审计点名生产 panic 全部类型化；NAT 守卫锁值 Unknown、纠删码测试真丢数据片靠校验片重建；锁毒化 into_inner 恢复全部告警（GAP §2.2）。v2.8.8 按指示跳过** |
 | v2.9.0 | **Workbench** | **桌面工作台大版本（继续 Tauri 2，参考 DeepSeek Harness）：9 大视图、默认工作区、过程展示分级、托盘常驻/单实例、后台任务、Excel/CSV/TSV 预览、模型提供商统一入口、终端、Subagent/团队、插件管理；`?all=1` 真实任务/智能体列表；client-build 三平台构建工作台、ci 增 workbench-check** |
-| v2.9.1 | **Sandbox Capability** | **沙箱能力声明闸门：边界要么强制执行、要么显式 waiver（带理由），否则拒绝；默认不执行（NullExecutor/后端禁用）；`trusted_local` 平台感知 waiver（Linux 网络/FS/磁盘，macOS 额外内存）；内存/CPU 跨平台（Linux ulimit -v、macOS 无 RLIMIT_AS 诚实标 unenforced、Node --max-old-space-size 全平台）；生产代码 panic 归零（静态关卡验证，v2.9.2 接入 CI）；快照持久化错误改为告警；cargo fmt 关卡** |
-| v2.9.2 | **CI Engineering** | **rust-test 矩阵接入 Windows（fmt/build/test/clippy，winjob 等专属代码首次有 CI）；新增 static-gates job：check-no-panics（生产 panic 站点必为 0）+ check-unsafe-containment（每个 unsafe 有 SAFETY 理由）；两个静态检查脚本正式入库** |
+| v2.9.1 | **Sandbox Capability** | **沙箱能力声明闸门：边界要么强制执行、要么显式 waiver（带理由），否则拒绝；默认不执行（NullExecutor/后端禁用）；`trusted_local` 平台感知 waiver；生产代码 panic 归零；cargo fmt 关卡** |
+| v2.9.2 | **CI Engineering** | **rust-test 矩阵接入 Windows；新增 static-gates job：check-no-panics + check-unsafe-containment** |
 | v3.0.0 | **Plugin Kernel（大版本）** | **一切插件化架构重构：插件内核（注册中心/插件总线 PMB/权限仲裁/生命周期/能力模型/黑名单）、热更新·热插拔·热兼容（原子切换+失败回滚+ABI 协商）、五级插件体系（系统/官方/认证/第三方/黑名单）、T1/T2/T3 独立进程隔离 + 能力闸门、T0 系统插件真实运行、`/api/v1/plugins` REST API；crate 版本映射规则升级（0.X.YZ，3.0.0→0.3.0）；WASM 为可选 feature（当前类型化拒绝）。详见 [PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md)** |
 | v3.1.0 | **Business Plugins** | **业务插件化：官方插件真正承载业务逻辑（entry 模块 + 随内核自动装配）** |
 | v3.2.0 | **More Business Plugins** | **业务插件化深化：再 3 个核心官方插件（shard/bridge/crdt 等）承载真实业务 entry** |
@@ -485,27 +634,108 @@ npm install @twinsearth/agent-universe
 | v3.5.7 | **MSRV Honesty** | **MSRV 诚实化：显式声明并实测最低工具链 1.88.0（#75 / W-01）** |
 | v3.5.8 | **Real Benchmark** | **守护进程真实端到端吞吐/延迟基准 + 历史无测量性能小节诚实化（#76 / DOC-07）** |
 | v3.5.9 | **Capability Status** | **能力边界状态登记 + 库面模块诚实标注 + 历史条目勘误指针（#77 / DEV-01~05、DOC-05/F-4、DOC-08）** |
-| v3.6.0 | **Ops CLI** | **新增运维只读 CLI：`gsn ledger verify`（账本哈希链/坏行/重放守恒离线核验）与 `gsn doctor`（一键诊断）** |
+| v3.6.0 | **Ops CLI** | **新增运维只读 CLI：`gsn ledger verify`（账本哈希链/坏行/重放守恒离线核验）与 `gsn doctor`（诊断）** |
 | v3.6.1 | **Auto Update** | **daemon 自动更新：npm registry 权威源（不盲信 dist-tags）+ 默认 minor/白名单 patch 双通道 + 手动可跨大版本；daemon 二进制 sha256 fail-closed 原子替换 + npm 包同步；release.yml 三平台增原始二进制+.sha256 资产** |
 | v3.6.2 | **Updater DNS Fix** | **修复 v3.6.1 更新器把 `host:port` 当 IP 字面量 parse、对所有真实域名连不上的 critical：改走 `to_socket_addrs` DNS 解析 + 多地址连接，补在旧实现会失败的 DNS 回归测试；存量 v3.6.1 需重装 npm 包/手动覆盖二进制到本版后自动更新才恢复** |
 | v3.6.3 | **Updater Proxy + Linux Compat** | **更新器支持 `HTTPS_PROXY`/`NO_PROXY`（http 正向代理 CONNECT 隧道，TLS 端到端，代理认证，非法配置显式报错），直连与强制代理双路径真实联网验证；CI Linux gnu 基线降到 ubuntu-22.04/glibc 2.35 并新增 x86_64 musl 静态二进制，更新器按自身 libc 选资产；新增 `scripts/recover-update.sh` 存量带外一键恢复** |
 | v3.6.4 | **gnu via zigbuild** | **修复 v3.6.3 gnu 资产缺失（根因：ubuntu-22.04 hosted runner 退役、无法分配，非代码问题）：gnu 构建改在 ubuntu-latest 上用 cargo-zigbuild 以 `x86_64-unknown-linux-gnu.2.35` 定位 glibc 2.35，不再依赖老镜像；musl/mac/Win 保持已验证路径不变；纯 CI 补丁，无运行时代码改动** |
+| v3.7.0 | **AUSec Base** | **AUSec 基座：四执行后端枚举 + 分级×风险→后端映射 + 平台三态就绪模型（fail-closed）+ `com.twinsearth.sys.ausec` 第 5 个 T0 系统插件 + 8 个 `sandbox:*` 能力令牌；只交付选择/声明/权限，不交付真实执行器** |
+| v3.7.1 | **Image Manifest** | **镜像按需加载（1/9）：内容寻址块清单 + 每块 SHA-256 + 严格连续布局基线 + 按需取块校验** |
+| v3.7.2 | **BlockStore** | **镜像按需加载（2/9）：本地 BlockStore 元数据 + 按需取块 + 只读共享** |
+| v3.7.3 | **Seed Health** | **镜像按需加载（3/9）：P2P 种子健康度确定性计算 + 每块 Ed25519 发布者锚定** |
+| v3.7.4 | **Memory Pool** | **内存共享（1/3）：配额池共享额度记账 + 两级超卖准入** |
+| v3.7.5 | **Memory Reclaim** | **内存共享（2/3）：等待期保内存 + 空闲优先回收** |
+| v3.7.6 | **Memory Stats** | **内存共享（3/3）：回收/超卖统计 + 越界拒绝 + Linux 专有原语诚实门** |
+| v3.7.7 | **CPU Priority** | **CPU 调度（1/3）：两级时延优先级 + 优先级与权重** |
+| v3.7.8 | **CPU Quota** | **CPU 调度（2/3）：竞争下确定性配额分配仿真（敏感先保障、剩余给容忍）** |
+| v3.7.9 | **CPU Burst** | **CPU 调度（3/3）：突发涌入准入控制 + 统一 ausec status** |
+| v3.8.0 | **Resource Market** | **资源市场基座（1/10）：四类资源领域模型 + 七维计量 + `Credits` 整数记账（u128）+ 11 态订单状态机 + 5 个 `market:resource:*` 能力** |
+| v3.8.1 | **Capacity** | **资源市场（2/10）：注册容量账本（register/hold/release/deregister，绝不超卖）+ 挂单容量闸门** |
+| v3.8.2 | **Metering** | **资源市场（3/10）：append-only 计量账本（consumed≤allocated）+ 整数实耗/待退结算视图** |
+| v3.8.3 | **Matcher** | **资源市场（4/10）：撮合编排器（订单状态机↔容量 hold/release↔计量联动，一次 hold 恰好一次 release）** |
+| v3.8.4 | **Stake** | **资源市场（5/10）：准入质押冻结/罚没 StakeLedger（四桶资金守恒，罚没只来自己冻结保证金）** |
+| v3.8.5 | **Escrow** | **资源市场（6/10）：托管结算守恒 EscrowLedger（五桶分账、整数千分点费率）** |
+| v3.8.6 | **Royalty** | **资源市场（7/10）：快照商品化版税账本（pack_diff 快照注册为商品，按次/复用版税）** |
+| v3.8.7 | **Reputation** | **资源市场（8/10）：四维信誉账本（quality/speed/honesty/availability，不可转让）** |
+| v3.8.8 | **QA** | **资源市场（9/10）：BFT-lite QA 抽样验证（n≥3f+1、2f+1 超多数、equivocation 整轮作废）** |
+| v3.8.9 | **Pricing** | **资源市场（10/10，收尾）：动态定价（三因子、不破买方限价）+ 订单 FIFO 聚合 + 冷启动自举开关** |
+| v3.9.0 | **Payment Router** | **BTC/ETH 经济体（1/9）：结算路由（闪电 L402 / EVM x402 / BTC RGB·HTLC 三轨，确定性选路，只决策不动钱，缺轨 fail-closed）** |
+| v3.9.1 | **Host Signer** | **BTC/ETH 经济体（2/9）：宿主签名服务与私钥隔离（HostSignerGate，preview 只预览不碰密钥，生产默认 SignerNotConfigured fail-closed）** |
+| v3.9.2 | **EVM x402** | **BTC/ETH 经济体（3/9）：EVM x402 / USDC 纯协议内核（402 challenge + EIP-3009 EIP-712 授权载荷 + facilitator 守恒，自实现 Keccak-256，只构造不广播）** |
+| v3.9.3 | **L402 Lightning** | **BTC/ETH 经济体（4/9）：L402 / 闪电纯协议内核（BOLT11 金额前缀 + preimage/hash 关系，只校验不连节点）** |
+| v3.9.4 | **ERC-8004** | **BTC/ETH 经济体（5/9）：ERC-8004 三注册表纯协议内核（Identity / Reputation / Validation，链下决策不铸造）** |
+| v3.9.5 | **ERC-4337** | **BTC/ETH 经济体（6/9）：ERC-4337 Paymaster 赞助决策内核（UserOperation 校验、gas 上估、SponsorPolicy fail-closed，不垫付 gas）** |
+| v3.9.6 | **BTC HTLC/RGB** | **BTC/ETH 经济体（7/9）：BTC HTLC 链下校验（P2WSH/hashlock/CLTV/整数 sats）+ RGB 承诺位置校验，不连节点不持钥** |
+| v3.9.7 | **Anchor / Bridge** | **BTC/ETH 经济体（8/9）：链上锚定最终性 + 跨链桥风控（确认数/重组深度、方向/额度/速率白名单 fail-closed）** |
+| v3.9.8 | **ZK / OWS** | **BTC/ETH 经济体（9/9）：ZK 隐私支付意图 + OWS 统一钱包路由 + 合规筛查纯链下决策（不验 SNARK、不持钥）** |
+| v3.9.9 | **Mainnet Ready** | **主网就绪加固版：CRDT 状态同步接线 + 纠删码分布式分片接线 + 链上信任锚完整代码路径（Base/Arbitrum 测试网+主网双就绪）+ DHT Server 模式规模修复（真实多节点 3/5/10/20/50 回归 + 分区/恶意节点 + Docker/Compose/CI/可观测/部署运维手册）** |
 
 详见 [RELEASES.md](RELEASES.md) 和 [releases/](releases/) 目录。
 
+已发布版本：1.0.0 / 2.0.0 / 2.2.0 / 2.3.0 / 2.3.1 / 2.3.4 / 2.3.5 / 2.3.6 /
+2.4.0 ~ 2.9.2（**v2.8.8 按指示跳过**）/ 3.0.0 / 3.1.0 ~ 3.9.9 各版本，详见
+[Releases](https://github.com/TwinsEarth/agent-universe/releases)。
+
 ## 技术栈
 
-- **语言**: Rust 2021 Edition + Python 3.10+
-- **P2P**: libp2p（Kademlia DHT + GossipSub + QUIC）
-- **加密**: Ed25519 + SHA256 + X25519
-- **存储**: SQLite + DHT + IPFS Bitswap
-- **合约**: Solidity（Base / Arbitrum 主网）
-- **部署**: Mac mini M4 + launchd / Docker / systemd
-- **CI/CD**: GitHub Actions（矩阵构建 + 自动测试）
+- **语言**: Rust 2021 Edition（MSRV 1.88）+ Python 3.10+ + Solidity + JavaScript
+- **P2P**: libp2p（Kademlia DHT + GossipSub + QUIC + Noise）
+- **数据**: CRDT（LWW）+ Reed-Solomon 纠删码 + SQLite WAL
+- **加密**: Ed25519 + secp256k1（k256）+ SHA-256 + Keccak-256 + X25519
+- **存储**: SQLite + UDOS 分布式文件系统 + DHT
+- **合约**: Solidity（Base / Arbitrum；测试网默认，主网 fail-closed）
+- **支付**: 闪电 L402 · EVM x402（USDC / EIP-3009）· BTC RGB / HTLC · ERC-4337
+- **客户端**: Tauri 2（macOS / Windows / Linux / Android）
+- **部署**: Docker / docker-compose / systemd / macOS launchd
+- **CI/CD**: GitHub Actions（矩阵构建 + 缓存 + 自动测试 + 发布）
+
+## 路线图
+
+| 版本 | 目标 | 状态 |
+|------|------|------|
+| v3.7.x | AUSec 弹性计算（镜像/内存/CPU） | 已发布 |
+| v3.8.x | 面向 Agent 的资源市场 | 已发布 |
+| v3.9.x | BTC/ETH Agent 经济体 | 已发布 |
+| **v4.0.0** | **资源市场 MVP +「一切面向智能体开发」架构** | **预留（尚未开发）** |
+| v4.1.0 | 跨区域调度、延迟感知路由 | 规划 |
+| v4.2.0 | Agent 市场、技能与快照交易 | 规划 |
+
+> **v4.0.0 是刻意预留的下一个大版本**，当前不开发、不发布；大版本用于架构重构，不与
+> 小版本功能混用。
+
+## 诚实边界（未验证 / 需外部审计）
+
+以下项目**尚未在真实环境验证**，README 不将其表述为已落地：
+
+1. **链上真实交易未验证**：云机无真实 RPC / 私钥 / 资金，`eth_sendRawTransaction`、
+   `getTransactionReceipt`、`estimateGas`、`getTransactionCount` 未对真实节点跑。
+2. **EIP-3009 与真实 USDC 合约兼容性**未在真实 Base / Arbitrum 验证；Paymaster / x402
+   真实端点未对接；EIP-1559 费用暂固定（未接 feeHistory）。
+3. **Docker 镜像构建 / compose up** 未验证（云机无 Docker）。
+4. **24h CRDT 增长、100 节点 Sybil、100+ 节点退化**等长时/大规模项：50 节点 DHT 已实跑，
+   其余保留脚本（`crdt-24h-growth.sh`、`regression-sybil-100.sh`），未跑标未验证。
+5. 所有密码学实现（Ed25519 / secp256k1 / EIP-712 / EIP-3009 / 地址派生 / nonce /
+   域分离 / 分片放置）**需外部专业审计**。
+6. **PoCV 仅证明归属 + 未篡改**，不证明计算正确性（计算正确性需 RISC0 / Halo2 等）。
+
+## 文档
+
+- **部署运维手册**：[docs/DEPLOY.md](docs/DEPLOY.md) — 构建、Docker/Compose、systemd、主网部署
+- **回滚方案**：[docs/ROLLBACK.md](docs/ROLLBACK.md) — 发布回滚、版本恢复
+- **插件开发指南**：[docs/PLUGIN_GUIDE.md](docs/PLUGIN_GUIDE.md) — 插件清单、五级体系、能力令牌
+- **AUSec 技术方案**：[docs/ausec/AUSEC-DESIGN.md](docs/ausec/AUSEC-DESIGN.md)
+- **能力边界状态**：[docs/CAPABILITY-STATUS.md](docs/CAPABILITY-STATUS.md)
+- **版本号登记表（发版必读）**：[docs/version-checklist.md](docs/version-checklist.md) — 全仓版本声明点 + 发版 SOP
+- **架构文档 v2.5.5**：[docs/architecture-v2.5.5.md](docs/architecture-v2.5.5.md)
+- **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md)
+- **部署与验证报告**：[docs/部署与验证报告-2026-09-23.md](docs/%E9%83%A8%E7%BD%B2%E4%B8%8E%E9%AA%8C%E8%AF%81%E6%8A%A5%E5%94%8A-2026-09-23.md)
+- **旗舰论文归档**：[docs/papers/](docs/papers/) — 论文多语言 PDF
+- **变更日志**：[CHANGELOG.md](CHANGELOG.md) · [RELEASES.md](RELEASES.md)
 
 ## 贡献
 
-欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发流程。
+欢迎贡献！请阅读 [CONTRIBUTING.md](CONTRIBUTING.md) 了解开发流程，
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) 了解社区准则。
 
 ## 安全
 
@@ -520,92 +750,3 @@ npm install @twinsearth/agent-universe
 **Agent Universe · 智能体宇宙**
 
 *让科技造福全人类！*
-
-## v2.3.5 跨平台客户端
-
-v2.3.5 新增基于 Tauri 2 的跨平台客户端。客户端**源码**在仓库内，**安装包为构建产物、不入库**：在推送版本 tag 时由 [`.github/workflows/client-build.yml`](.github/workflows/client-build.yml) 在对应系统的 runner 上自动构建，并发布到 GitHub Release 下载。
-
-**源码位置**
-
-- 客户端工程：`client/`（前端 Vite + HTML/JS 在 `client/src/`，Rust 壳 `client/src-tauri/`，Android 工程 `client/src-tauri/gen/android`）
-- 桌面端源码目录：`desktop/`
-- 各平台本地构建说明：`client/platforms/`
-
-**安装包（在 GitHub Release 下载，非仓库内路径）**
-
-| 平台 | 产物 | 说明 |
-|------|------|------|
-| macOS | `.dmg` / `.app` | Apple Silicon（Intel 可本地自行构建） |
-| Windows | `.msi` / `-setup.exe`（NSIS） | x64 |
-| Linux | `.deb` / `.AppImage` | x64 |
-| Android | `.apk` | universal / 分 ABI |
-| iOS | 见 `client/ios/README.md` | 需 Apple Developer 证书与描述文件，开源仓库不内置签名成品 |
-
-Release 下载：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.5
-
-**本地手动构建**
-
-```bash
-cd client
-npm install
-npm run build        # 前端
-npx tauri build      # 桌面安装包（需在对应系统上，并装好平台依赖）
-npx tauri android build --apk   # Android（需 JDK + Android SDK/NDK）
-```
-
-## v2.9.0 桌面工作台（Workbench）
-
-v2.9.0 把客户端从极简演示升级为真正「工作台」，深度参考 DeepSeek Harness 桌面版；**继续用 Tauri 2，不迁移 Electron**。
-
-- **工作台工程**：`desktop/`（前端 Vite + 9 视图在 `desktop/src/`，Rust 壳 `desktop/src-tauri/`）；旧精简客户端 `client/` 保留。
-- **9 大视图**：工作区总览、任务、智能体（卡片/团队）、终端、文件（Excel/CSV/TSV 预览）、工具（沙箱执行）、模型提供商、插件、设置。
-- **产品形态**：默认工作区（免选文件夹，`~/.agent-universe/workspaces/default`）、过程展示分级（results/steps/full）、托盘常驻 + 单实例、关闭隐藏、后台任务、模型提供商统一入口。
-- **daemon 托管**：桌面端查找/启动/健康检查/停止/重启 gsn-daemon，仅绑 loopback，不暴露局域网。
-- **构建节奏**：客户端不随每个版本构建，仅在大版本（约每 9 个小版本）手动 `workflow_dispatch` 构建一次（见 `client-build.yml`）；Android 仍由 client 产出。
-- **边界**：LLM 仍为 mock、插件为实验开关、沙箱依赖可执行后端、实时性为轮询。
-
-```bash
-cd desktop
-npm install
-npm run build
-npx tauri build      # 工作台桌面安装包（需在对应系统并装好平台依赖）
-```
-
-## v2.3.6 MCP/ACA 深化与跨语言可信对齐
-
-v2.3.6 把 MCP 从占位门面重写为真实工具协议，把 ACA 的身份与规范签名补全，并让 Rust/Python/JavaScript 三端在身份、规范载荷与签名层面逐字节对齐、可互验。
-
-**统一身份与规范签名**
-
-三端身份口径一致：Ed25519 原始 32 字节公钥 → SHA256 前 8 字节 → `did:aip:<16hex>`；规范载荷为移除 `signature` 键后紧凑、键按字典序、非 ASCII 不转义的 JSON 字节。
-
-```js
-const { AipIdentity, buildManifest } = require('@twinsearth/agent-universe');
-const id = AipIdentity.generate();
-const manifest = buildManifest(id, 'MyAgent', ['text-generation'], { stake: 100 });
-AipIdentity.verifyObject(manifest, id.publicKey);   // true
-```
-
-**MCP 客户端连接节点**
-
-```js
-const { McpHttpClient } = require('@twinsearth/agent-universe');
-const mcp = new McpHttpClient('http://127.0.0.1:4002');
-await mcp.initialize();
-const tools = await mcp.listTools();        // 20 个工具，字段为规范 inputSchema
-await mcp.callTool('market_stats', {});    // 经 daemon 真实路由执行
-```
-
-Python 侧对应 `aip.AipIdentity`、`aip.build_manifest`、`aip.McpHttpClient`、`aip.MarketClient`，与 JS/Rust 同口径。固定种子（32 字节 `0x01`）下三端公钥、DID、签名逐字节一致，篡改载荷或使用他人公钥即被拒绝。
-
-Release 说明：https://github.com/TwinsEarth/agent-universe/releases/tag/v2.3.6
-
-## 文档
-
-- **版本号登记表（发版必读）**：[docs/version-checklist.md](docs/version-checklist.md) — 全仓所有版本声明点清单 + 发版 SOP；一键改版本见 `scripts/bump-version.sh`。
-- **架构文档 v2.5.5**：[docs/architecture-v2.5.5.md](docs/architecture-v2.5.5.md) — v2.5.x 全量：Lv1–Lv7 分层拓扑、三层记忆共享、异构 LLM 适配层、网络分区降级、Mesh 自组网、Relay 池与多通道、三端跨网真机实测。
-- **架构文档 v2.3.6**：[docs/architecture-v2.3.6.md](docs/architecture-v2.3.6.md) — 技术架构与系统框架、网络结构与安全机制、功能模块与产品功能（含分层图）。
-- **设计文档 v2.4.0–v2.4.1**：[docs/design-v2.4.0-v2.4.1.md](docs/design-v2.4.0-v2.4.1.md) — CPU 治理轻量化与 Lv1–Lv7 分层拓扑设计。
-- 深度分析 v2.3.4：[docs/v2.3.4-deep-analysis.md](docs/v2.3.4-deep-analysis.md)
-- 部署与验证报告：[docs/部署与验证报告-2026-09-23.md](docs/%E9%83%A8%E7%BD%B2%E4%B8%8E%E9%AA%8C%E8%AF%81%E6%8A%A5%E5%91%8A-2026-09-23.md)
-- 旗舰论文归档：[docs/papers/](docs/papers/) — 46 篇 × 三语言（zh / zhen / en）共 138 篇 PDF，含 P0d 群体智能旗舰。

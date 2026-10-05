@@ -4,6 +4,7 @@
 //! `gsn daemon` 子命令复用，避免逻辑重复。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::crdt::{CrdtMessage, CrdtOp, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC};
 use crate::net::peer::InboundGossipMessage;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
@@ -102,6 +103,111 @@ pub struct PeerInfo {
 }
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
+
+/// 当前 unix 毫秒墙钟时间（CRDT LWW 时间戳）。
+pub(crate) fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// 取 CRDT 存储锁；遇毒化锁按仓库既有约定恢复并继续（绝不 panic）。
+fn crdt_guard(store: &Arc<std::sync::Mutex<CrdtStore>>) -> std::sync::MutexGuard<'_, CrdtStore> {
+    store.lock().unwrap_or_else(|e| {
+        eprintln!("⚠️ CRDT: 存储锁曾毒化，恢复后继续（请人工核查）");
+        e.into_inner()
+    })
+}
+
+/// 可 clone 的 CRDT 句柄：持有共享 LWW 存储 + 网络发布通道。
+///
+/// 由 run_daemon 构造一次，每连接 clone 给 REST/管理面使用；写操作经
+/// `local_put` 本地应用后，把 `CrdtMessage::Op` 经 GossipSub 广播给对端。
+#[derive(Clone)]
+pub struct CrdtHandle {
+    store: Arc<std::sync::Mutex<CrdtStore>>,
+    peer: PeerCmdTx,
+}
+
+impl CrdtHandle {
+    pub fn new(store: Arc<std::sync::Mutex<CrdtStore>>, peer: PeerCmdTx) -> Self {
+        Self { store, peer }
+    }
+
+    /// 本地写入（推进本节点计数器 + LWW 应用），成功后把 Op 广播出去。
+    ///
+    /// 广播用 `try_send`（非阻塞）：通道满时只告警，不阻塞 REST 请求，也不丢本地写入。
+    pub fn put(&self, key: &str, value: &str) -> Result<CrdtOp, String> {
+        let now = now_millis();
+        let op = crdt_guard(&self.store).local_put(key, value, now)?;
+        match serde_json::to_vec(&CrdtMessage::Op(op.clone())) {
+            Ok(data) => {
+                if let Err(e) = self.peer.try_send(PeerCommand::Publish {
+                    topic: CRDT_TOPIC.into(),
+                    data,
+                }) {
+                    tracing::warn!("CRDT Op 广播 try_send 失败（已本地写入）: {e}");
+                }
+            }
+            Err(e) => tracing::warn!("CRDT Op 序列化失败（已本地写入）: {e}"),
+        }
+        Ok(op)
+    }
+
+    /// 立即广播一次全量快照（管理/测试/反熵手动触发用）。
+    pub fn broadcast_snapshot(&self) -> Result<(), String> {
+        let snap = crdt_guard(&self.store).snapshot(now_millis());
+        let data = serde_json::to_vec(&CrdtMessage::Snapshot(snap))
+            .map_err(|e| format!("快照序列化失败: {e}"))?;
+        self.peer
+            .try_send(PeerCommand::Publish {
+                topic: CRDT_TOPIC.into(),
+                data,
+            })
+            .map_err(|e| format!("快照广播 try_send 失败: {e}"))?;
+        Ok(())
+    }
+
+    /// 读取一个键的最新值。
+    pub fn get(&self, key: &str) -> Option<String> {
+        crdt_guard(&self.store).get(key).map(|s| s.to_string())
+    }
+
+    /// 读取一个键的完整物化条目（含 ts/origin）。
+    pub fn entry(&self, key: &str) -> Option<LwwEntry> {
+        crdt_guard(&self.store).entry(key).cloned()
+    }
+
+    /// 当前键数。
+    pub fn len(&self) -> usize {
+        crdt_guard(&self.store).len()
+    }
+
+    /// 是否为空。
+    pub fn is_empty(&self) -> bool {
+        crdt_guard(&self.store).is_empty()
+    }
+
+    /// 全部条目（按 key 排序）。
+    pub fn all(&self) -> Vec<LwwEntry> {
+        crdt_guard(&self.store)
+            .all_entries()
+            .into_iter()
+            .cloned()
+            .collect()
+    }
+
+    /// 运行统计快照。
+    pub fn stats(&self) -> CrdtStats {
+        crdt_guard(&self.store).stats()
+    }
+
+    /// 估算状态字节数。
+    pub fn size_bytes(&self) -> usize {
+        crdt_guard(&self.store).size_bytes()
+    }
+}
 
 // ───────────────────────── 参数 ─────────────────────────
 
@@ -232,6 +338,77 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
     }
     d.data_dir = expand_tilde(d.data_dir);
     d
+}
+
+// ───────────────────────── --healthcheck（Docker 健康探针） ─────────────────────────
+
+/// 是否请求了 `--healthcheck`（只识别标志本身，不解析其余参数）。
+pub fn wants_healthcheck(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--healthcheck")
+}
+
+/// 执行一次健康探针：GET `GSN_HEALTHCHECK_URL`（默认 http://127.0.0.1:4002/health），
+/// 3 秒超时；HTTP 2xx 返回退出码 0，否则（含连接失败/超时/非 2xx）返回 1。
+///
+/// 不启动节点，只做一次轻量 HTTP GET，供 Docker HEALTHCHECK 调用。
+/// 用手写 TCP HTTP/1.1（不引新依赖），解析 host:port 后发 `GET <path>`。
+pub async fn run_healthcheck_now() -> i32 {
+    let url = std::env::var("GSN_HEALTHCHECK_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:4002/health".to_string());
+    let url = url.trim_end_matches('/').to_string();
+
+    // 解析 scheme://host:port/path
+    let after_proto = match url.split_once("://") {
+        Some((_, rest)) => rest,
+        None => &url,
+    };
+    let (host_port, path) = match after_proto.split_once('/') {
+        Some((hp, p)) => (hp, format!("/{p}")),
+        None => (after_proto, "/health".to_string()),
+    };
+    let (host, port) = host_port
+        .split_once(':')
+        .map(|(h, p)| (h.to_string(), p.parse::<u16>().unwrap_or(80)))
+        .unwrap_or_else(|| (host_port.to_string(), 80));
+
+    let fut = async {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(req.as_bytes()).await?;
+        stream.flush().await?;
+        let mut resp = Vec::new();
+        stream.read_to_end(&mut resp).await?;
+        Ok::<u16, std::io::Error>({
+            let text = String::from_utf8_lossy(&resp);
+            text.lines()
+                .next()
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(0)
+        })
+    };
+
+    match tokio::time::timeout(std::time::Duration::from_secs(3), fut).await {
+        Ok(Ok(status)) if (200..300).contains(&status) => {
+            println!("healthcheck OK: {url} -> {status}");
+            0
+        }
+        Ok(Ok(status)) => {
+            eprintln!("healthcheck FAIL: {url} -> HTTP {status}");
+            1
+        }
+        Ok(Err(e)) => {
+            eprintln!("healthcheck FAIL: {url} 连接/读取失败: {e}");
+            1
+        }
+        Err(_) => {
+            eprintln!("healthcheck FAIL: {url} 超时（3s）");
+            1
+        }
+    }
 }
 
 // ───────────────────────── swarm actor ─────────────────────────
@@ -1035,6 +1212,35 @@ async fn fetch_peer_info(cmd_tx: &PeerCmdTx) -> Option<PeerInfo> {
     rx.await.ok()
 }
 
+/// 渲染 Prometheus 文本 exposition（# HELP/#TYPE + 值）。纯函数，便于单测。
+pub(crate) fn render_prometheus_metrics(
+    uptime_seconds: f64,
+    connected_peers: usize,
+    dht_routing_entries: usize,
+    s: &CrdtStats,
+    crdt_keys: usize,
+    crdt_size_bytes: usize,
+) -> String {
+    format!(
+        "# HELP gsn_uptime_seconds 节点运行时长（秒）\n# TYPE gsn_uptime_seconds gauge\ngsn_uptime_seconds {uptime:.3}\n\
+         # HELP gsn_connected_peers 当前已连接对等节点数\n# TYPE gsn_connected_peers gauge\ngsn_connected_peers {connected}\n\
+         # HELP gsn_dht_routing_entries Kademlia 路由表条目数\n# TYPE gsn_dht_routing_entries gauge\ngsn_dht_routing_entries {routing}\n\
+         # HELP gsn_crdt_keys CRDT 当前键数\n# TYPE gsn_crdt_keys gauge\ngsn_crdt_keys {keys}\n\
+         # HELP gsn_crdt_size_bytes CRDT 估算状态字节数\n# TYPE gsn_crdt_size_bytes gauge\ngsn_crdt_size_bytes {size}\n\
+         # HELP gsn_crdt_inbound_ops_total CRDT 入站同步报文累计数\n# TYPE gsn_crdt_inbound_ops_total counter\ngsn_crdt_inbound_ops_total {inbound}\n\
+         # HELP gsn_crdt_applied_ops_total CRDT 实际应用的写操作累计数\n# TYPE gsn_crdt_applied_ops_total counter\ngsn_crdt_applied_ops_total {applied}\n\
+         # HELP gsn_crdt_dropped_capped_total CRDT 因达键数上限被丢弃的入站新键累计数\n# TYPE gsn_crdt_dropped_capped_total counter\ngsn_crdt_dropped_capped_total {dropped}\n",
+        uptime = uptime_seconds,
+        connected = connected_peers,
+        routing = dht_routing_entries,
+        keys = crdt_keys,
+        size = crdt_size_bytes,
+        inbound = s.inbound_ops,
+        applied = s.applied_ops,
+        dropped = s.dropped_capped,
+    )
+}
+
 /// v2.5.3: 网络增强 API
 ///
 /// 端点：
@@ -1567,7 +1773,7 @@ fn handle_plugin_api(
     }
 }
 
-// 顶层 HTTP 服务器的依赖注入参数（9 个），聚合为 struct 反而割裂可读性，允许多参数。
+// 顶层 HTTP 服务器的依赖注入参数（10 个），聚合为 struct 反而割裂可读性，允许多参数。
 #[allow(clippy::too_many_arguments)]
 async fn run_api_server(
     listen: String,
@@ -1579,6 +1785,7 @@ async fn run_api_server(
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
     plugin_host: Arc<std::sync::Mutex<crate::plugin::PluginHost>>,
+    crdt: CrdtHandle,
 ) -> anyhow::Result<()> {
     use crate::api::rest;
     use crate::mcp::sse;
@@ -1612,6 +1819,7 @@ async fn run_api_server(
         let sandbox_mgr = sandbox_mgr.clone();
         let plugin_host = plugin_host.clone();
         let orchestrator = orchestrator.clone();
+        let crdt = crdt.clone();
 
         tokio::spawn(async move {
             // 读取完整请求（v2.8.5：加读超时与请求体上限，防 slow-loris / 内存 DoS）
@@ -1794,6 +2002,31 @@ async fn run_api_server(
                 return;
             }
 
+            // ───── Prometheus /metrics（纯文本 exposition，GET 只读，已过认证闸门） ─────
+            if method == "GET" && (path_part == "/metrics" || path_part == "/api/v1/metrics") {
+                let peer_info = fetch_peer_info(&peer_cmd_tx).await;
+                let uptime = start.elapsed().as_secs_f64();
+                let body = render_prometheus_metrics(
+                    uptime,
+                    peer_info.as_ref().map(|i| i.connected).unwrap_or(0),
+                    peer_info.as_ref().map(|i| i.routing_entries).unwrap_or(0),
+                    &crdt.stats(),
+                    crdt.len(),
+                    crdt.size_bytes(),
+                );
+                let resp = http_response(
+                    200,
+                    "OK",
+                    body,
+                    "text/plain; version=0.0.4",
+                    &cors_headers,
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (metrics 200)", method, path_part);
+                return;
+            }
+
             // ───── v2.5.3 网络增强端点 ─────
             if path_part.starts_with("/api/v1/network/") || path_part.starts_with("/network/") {
                 let net_path = path_part
@@ -1919,11 +2152,14 @@ async fn run_api_server(
 
             let peer_info = fetch_peer_info(&peer_cmd_tx).await;
             let connected = peer_info.as_ref().map(|i| i.connected).unwrap_or(0);
+            let dht_routing_entries =
+                peer_info.as_ref().map(|i| i.routing_entries).unwrap_or(0);
             let info = rest::NodeInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 mode: mode.clone(),
                 p2p_port,
                 connected_peers: connected,
+                dht_routing_entries,
                 uptime_ms: start.elapsed().as_millis(),
             };
 
@@ -1933,6 +2169,7 @@ async fn run_api_server(
                 &body,
                 &market,
                 Some(&orchestrator),
+                Some(&crdt),
                 &info,
             )
             .await;
@@ -2172,10 +2409,15 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
             }
         }
     }
-    // v2.5.5: dial 社区 relay 候选（无 /p2p），Identify 发现 hop 即自动入池
-    for cand in COMMUNITY_RELAY_CANDIDATES {
-        if let Err(e) = peer.probe_relay(cand) {
-            eprintln!("⚠️ 社区候选 {} dial 失败: {}", cand, e);
+    // v2.5.5: dial 社区 relay 候选（无 /p2p），Identify 发现 hop 即自动入池。
+    // GSN_DISABLE_PUBLIC_RELAY=1：本地/规模化测试只走本地 bootstrap，不冲击公共 relay。
+    if std::env::var("GSN_DISABLE_PUBLIC_RELAY").as_deref() == Ok("1") {
+        println!("⏭️ GSN_DISABLE_PUBLIC_RELAY=1：跳过公共社区 relay 候选 probe");
+    } else {
+        for cand in COMMUNITY_RELAY_CANDIDATES {
+            if let Err(e) = peer.probe_relay(cand) {
+                eprintln!("⚠️ 社区候选 {} dial 失败: {}", cand, e);
+            }
         }
     }
 
@@ -2190,6 +2432,30 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     if let Err(e) = peer.subscribe("gsn/tasks") {
         eprintln!("⚠️ subscribe gsn/tasks 失败: {e}");
     }
+    // CRDT：订阅同步主题（Op 低延迟 + Snapshot 反熵）。失败必须告警，绝不静默。
+    if let Err(e) = peer.subscribe(CRDT_TOPIC) {
+        eprintln!("⚠️ subscribe {CRDT_TOPIC} 失败: {e}");
+    } else {
+        println!("✅ CRDT 同步主题已订阅: {CRDT_TOPIC}");
+    }
+
+    // CRDT 状态存储（LWW-Map），origin = 本节点 PeerId。
+    // GSN_CRDT_MAX_KEYS：测试用小上限验证膨胀走平；解析失败回退默认 100_000。
+    let crdt_store: Arc<std::sync::Mutex<CrdtStore>> = {
+        let origin = peer.peer_id.to_string();
+        let store = match std::env::var("GSN_CRDT_MAX_KEYS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            Some(n) if n >= 1 => {
+                println!("✅ CRDT 键数上限（GSN_CRDT_MAX_KEYS）: {n}");
+                CrdtStore::with_max_keys(origin, n)
+            }
+            _ => CrdtStore::new(origin),
+        };
+        Arc::new(std::sync::Mutex::new(store))
+    };
+
     tokio::spawn(run_swarm_actor(
         peer,
         peer_cmd_rx,
@@ -2197,18 +2463,76 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         inbound_tx,
     ));
 
-    // P0-2: 应用层消费者——把真实收到的入站 gossip 消息记录下来（这是从 swarm 事件
-    // 投递到应用层的终点；后续可按 topic 路由到 market 等子系统）。
-    tokio::spawn(async move {
-        while let Some(msg) = inbound_rx.recv().await {
-            tracing::info!(
-                topic = %msg.topic,
-                source = %msg.source,
-                len = msg.data.len(),
-                "📥 inbound gossip delivered to application layer"
-            );
+    // 应用层消费者：除既有 info 日志外，把 CRDT_TOPIC 报文路由到 LWW 存储。
+    // 解析失败只 warn 并 continue——绝不能 panic/杀消费者（单个坏包不能拖垮节点）。
+    tokio::spawn({
+        let crdt_store = crdt_store.clone();
+        async move {
+            while let Some(msg) = inbound_rx.recv().await {
+                if msg.topic == CRDT_TOPIC {
+                    match serde_json::from_slice::<CrdtMessage>(&msg.data) {
+                        Ok(CrdtMessage::Op(op)) => {
+                            match crdt_guard(&crdt_store).apply_op(op) {
+                                Ok(changed) => tracing::debug!(
+                                    changed,
+                                    source = %msg.source,
+                                    "📥 CRDT op applied"
+                                ),
+                                Err(e) => tracing::warn!(error = %e, source = %msg.source, "CRDT apply_op 失败"),
+                            }
+                        }
+                        Ok(CrdtMessage::Snapshot(snap)) => {
+                            let changed = crdt_guard(&crdt_store).merge_snapshot(snap);
+                            tracing::debug!(changed, source = %msg.source, "📥 CRDT snapshot merged");
+                        }
+                        Err(e) => tracing::warn!(
+                            topic = %msg.topic,
+                            source = %msg.source,
+                            len = msg.data.len(),
+                            error = %e,
+                            "CRDT 报文解析失败，已跳过"
+                        ),
+                    }
+                } else {
+                    tracing::info!(
+                        topic = %msg.topic,
+                        source = %msg.source,
+                        len = msg.data.len(),
+                        "📥 inbound gossip delivered to application layer"
+                    );
+                }
+            }
         }
     });
+
+    // 周期快照广播（反熵）：间隔由 env GSN_CRDT_SNAPSHOT_INTERVAL_SECS 决定，默认 15s。
+    {
+        let crdt_store = crdt_store.clone();
+        let peer_cmd_tx = peer_cmd_tx.clone();
+        tokio::spawn(async move {
+            let secs = std::env::var("GSN_CRDT_SNAPSHOT_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(15);
+            let mut ticker =
+                tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
+            loop {
+                ticker.tick().await;
+                let snap = crdt_guard(&crdt_store).snapshot(now_millis());
+                match serde_json::to_vec(&CrdtMessage::Snapshot(snap)) {
+                    Ok(data) => {
+                        if let Err(e) = peer_cmd_tx.try_send(PeerCommand::Publish {
+                            topic: CRDT_TOPIC.into(),
+                            data,
+                        }) {
+                            tracing::warn!("CRDT 周期快照广播 try_send 失败: {e}");
+                        }
+                    }
+                    Err(e) => tracing::warn!("CRDT 周期快照序列化失败: {e}"),
+                }
+            }
+        });
+    }
 
     // v2.5.5: 启动后初始化维护（等 8s 让 bootstrap 连接），随后每小时巡检一轮
     {
@@ -2306,6 +2630,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     let plugin_host = Arc::new(std::sync::Mutex::new(plugin_host));
     println!("✅ gsn-daemon 启动完成");
 
+    // CRDT REST/管理面句柄：持有共享存储 + 网络发布通道（每连接 clone）。
+    let crdt_handle = CrdtHandle::new(crdt_store, peer_cmd_tx.clone());
+
     run_api_server(
         args.listen.clone(),
         args.api_port,
@@ -2316,6 +2643,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         market,
         sandbox_mgr,
         plugin_host,
+        crdt_handle,
     )
     .await?;
 
@@ -2494,5 +2822,114 @@ mod http_security_tests {
         // 非 root → 放行（无论 allow 与否）。
         assert!(ensure_not_root(false, 1000).is_ok());
         assert!(ensure_not_root(true, 1000).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod crdt_wiring_tests {
+    //! CRDT 接线单测：用一个未连接的 PeerCmd channel + 真实 CrdtStore，
+    //! 验证 CrdtHandle 的本地写入 → Op 广播、快照广播、以及 metrics 渲染。
+    use super::*;
+    use crate::crdt::{CrdtMessage, CrdtStore, CRDT_TOPIC};
+
+    fn test_handle() -> (CrdtHandle, mpsc::Receiver<PeerCommand>) {
+        let (tx, rx) = mpsc::channel::<PeerCommand>(8);
+        let store = Arc::new(std::sync::Mutex::new(CrdtStore::new("peer-test")));
+        (CrdtHandle::new(store, tx), rx)
+    }
+
+    #[test]
+    fn crdt_put_locally_applies_and_broadcasts_op() {
+        let (h, mut rx) = test_handle();
+        assert_eq!(h.len(), 0);
+        let op = h.put("greeting", "hello").expect("put ok");
+        assert_eq!(op.origin, "peer-test");
+        assert_eq!(op.counter, 1);
+        assert_eq!(h.get("greeting").as_deref(), Some("hello"));
+        assert_eq!(h.len(), 1);
+
+        // 通道里应收到一条 Publish 到 CRDT_TOPIC，载荷可解析为 CrdtMessage::Op。
+        let cmd = rx.try_recv().expect("expected a published command");
+        match cmd {
+            PeerCommand::Publish { topic, data } => {
+                assert_eq!(topic, CRDT_TOPIC);
+                let msg: CrdtMessage = serde_json::from_slice(&data).expect("parse envelope");
+                match msg {
+                    CrdtMessage::Op(o) => {
+                        assert_eq!(o.key, "greeting");
+                        assert_eq!(o.value, "hello");
+                    }
+                    CrdtMessage::Snapshot(_) => panic!("expected Op, got Snapshot"),
+                }
+            }
+            _ => panic!("expected Publish command"),
+        }
+    }
+
+    #[test]
+    fn crdt_broadcast_snapshot_publishes_snapshot_envelope() {
+        let (h, mut rx) = test_handle();
+        h.put("k1", "v1").unwrap();
+        // put 已产生一条 Op；先 drained 掉
+        let _ = rx.try_recv();
+        h.broadcast_snapshot().unwrap();
+        let cmd = rx.try_recv().expect("expected snapshot publish");
+        match cmd {
+            PeerCommand::Publish { topic, data } => {
+                assert_eq!(topic, CRDT_TOPIC);
+                let msg: CrdtMessage = serde_json::from_slice(&data).unwrap();
+                match msg {
+                    CrdtMessage::Snapshot(snap) => {
+                        assert_eq!(snap.entries.len(), 1);
+                        assert_eq!(snap.entries[0].key, "k1");
+                        assert!(snap.seq >= 1);
+                    }
+                    CrdtMessage::Op(_) => panic!("expected Snapshot, got Op"),
+                }
+            }
+            _ => panic!("expected Publish command"),
+        }
+    }
+
+    #[test]
+    fn crdt_entry_reports_ts_and_origin_and_missing_is_none() {
+        let (h, _rx) = test_handle();
+        h.put("k", "v").unwrap();
+        let e = h.entry("k").expect("entry exists");
+        assert_eq!(e.value, "v");
+        assert_eq!(e.origin, "peer-test");
+        assert!(e.ts > 0);
+        assert!(h.entry("missing").is_none());
+        assert_eq!(h.stats().applied_ops, 1);
+        assert!(h.size_bytes() > 0);
+    }
+
+    #[test]
+    fn prometheus_metrics_renders_all_metric_lines() {
+        let s = CrdtStats {
+            inbound_ops: 3,
+            applied_ops: 2,
+            dropped_capped: 1,
+            snapshot_seq: 4,
+        };
+        let body = render_prometheus_metrics(12.5, 5, 7, &s, 9, 1024);
+        for name in [
+            "gsn_uptime_seconds",
+            "gsn_connected_peers",
+            "gsn_dht_routing_entries",
+            "gsn_crdt_keys",
+            "gsn_crdt_size_bytes",
+            "gsn_crdt_inbound_ops_total",
+            "gsn_crdt_applied_ops_total",
+            "gsn_crdt_dropped_capped_total",
+        ] {
+            assert!(body.contains(&format!("# TYPE {name}")), "missing TYPE for {name}");
+            assert!(body.contains(&format!("# HELP {name}")), "missing HELP for {name}");
+        }
+        assert!(body.contains("gsn_connected_peers 5"));
+        assert!(body.contains("gsn_crdt_keys 9"));
+        assert!(body.contains("gsn_crdt_inbound_ops_total 3"));
+        assert!(body.contains("gsn_crdt_applied_ops_total 2"));
+        assert!(body.contains("gsn_crdt_dropped_capped_total 1"));
     }
 }

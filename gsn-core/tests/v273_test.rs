@@ -49,12 +49,13 @@ fn info() -> NodeInfo {
         mode: "full".to_string(),
         p2p_port: 4001,
         connected_peers: 0,
+        dht_routing_entries: 0,
         uptime_ms: 0,
     }
 }
 
 async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let r = route(method, path, body, market, None, &info()).await;
+    let r = route(method, path, body, market, None, None, &info()).await;
     (r.status, r.body)
 }
 

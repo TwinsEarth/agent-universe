@@ -48,6 +48,9 @@ pub mod verifier;
 pub use agent::{AgentCard, Task, TaskStatus};
 pub use chain::{PoCVVerifier, ProofOfComputation};
 pub use crdt::VersionVector;
+pub use crdt::{
+    CrdtMessage, CrdtOp, CrdtSnapshot, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC,
+};
 pub use economy::{
     ContributionProof, ContributionType, DifficultyLevel, ReputationSystem, TaskPricing,
     UrgencyLevel,

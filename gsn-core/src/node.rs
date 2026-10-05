@@ -6,6 +6,11 @@
 use crate::api::market_actor::MarketActorHandle;
 use crate::api::rest::url_decode;
 use crate::crdt::{CrdtMessage, CrdtOp, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC};
+use crate::erasure::distributed::{
+    DistributedShardNode, ShardTransport, DEFAULT_DATA_SHARDS, DEFAULT_PARITY_SHARDS,
+};
+use crate::erasure::wire::{GossipShardTransport, ShardWire, SHARD_TOPIC};
+use crate::erasure::ErasureCoder;
 use crate::net::peer::InboundGossipMessage;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
@@ -113,6 +118,25 @@ pub struct PeerInfo {
 }
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
+
+/// 纠删码分片驱动的控制命令（REST → 分片驱动）。
+#[allow(dead_code)]
+pub enum ShardControl {
+    /// 编码并分发一个 blob（成功返回 blob_id）。
+    Ingest {
+        blob_id: String,
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    /// 重建一个 blob（不足时返回 pending 错误，由调用方稍后重试）。
+    Reconstruct {
+        blob_id: String,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
+    },
+}
+
+/// 纠删码分片驱动控制句柄。
+pub type ShardCtrlTx = mpsc::Sender<ShardControl>;
 
 /// 当前 unix 毫秒墙钟时间（CRDT LWW 时间戳）。
 pub(crate) fn now_millis() -> u64 {
@@ -633,6 +657,10 @@ fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: 
 }
 
 /// 处理 swarm 事件中的关键状态变更；返回 true 表示有通道掉线、需要重新 ensure
+///
+/// 参数为各子系统的共享状态表（连接/重放/pending 集合等），显式允许较多参数：
+/// 这些是 actor 内独立状态，强行合并会降低可读性。
+#[allow(clippy::too_many_arguments)]
 fn process_swarm_event(
     peer: &mut P2pPeer,
     event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent>,
@@ -780,7 +808,7 @@ fn process_swarm_event(
                     result: libp2p::kad::QueryResult::GetClosestPeers(outcome),
                     ..
                 }) => {
-                    if let Some(tx) = pending_finds.remove(&id) {
+                    if let Some(tx) = pending_finds.remove(id) {
                         match outcome {
                             Ok(ok) => {
                                 let peers: Vec<String> = ok
@@ -968,6 +996,9 @@ fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent
         _ => {}
     }
 }
+// 内部命令分发器：参数为各类共享状态（peer / store / 连接与重放/pending 集合）。
+// 显式允许较多参数：这些都是 actor 内的独立状态表，强行合并会降低可读性。
+#[allow(clippy::too_many_arguments)]
 fn handle_peer_command(
     peer: &mut P2pPeer,
     cmd: PeerCommand,
@@ -1181,11 +1212,8 @@ fn handle_peer_command(
             eprintln!("🔍 触发 DHT relay 候选发现");
         }
         PeerCommand::FindPeers { key, reply } => {
-            match peer.find_closest_peers(&key) {
-                qid => {
-                    pending_finds.insert(qid, reply);
-                }
-            }
+            let qid = peer.find_closest_peers(&key);
+            pending_finds.insert(qid, reply);
         }
     }
 }
@@ -1314,6 +1342,137 @@ async fn fetch_peer_info(cmd_tx: &PeerCmdTx) -> Option<PeerInfo> {
     let (reply, rx) = oneshot::channel();
     cmd_tx.send(PeerCommand::GetInfo { reply }).await.ok()?;
     rx.await.ok()
+}
+
+/// 拉取已连接 peer_id 列表（分片驱动周期性刷新确定性放置的节点集合）。
+async fn fetch_peer_ids(cmd_tx: &PeerCmdTx) -> Option<Vec<String>> {
+    let (reply, rx) = oneshot::channel();
+    cmd_tx.send(PeerCommand::ListPeers { reply }).await.ok()?;
+    let ids = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+        .await
+        .ok()?
+        .ok()?;
+    Some(ids)
+}
+
+/// 纠删码 REST 端点：ingest / reconstruct。
+///
+/// - `POST /erasure/ingest`：body `{"blob_id":"...(可选)","data":"UTF-8 文本"}`，
+///   成功返回 blob_id；blob_id 缺省时用时间戳生成。
+/// - `POST /erasure/reconstruct`：body `{"blob_id":"..."}`，成功返回重建数据（hex +
+///   UTF-8 文本，若可解码）；数据不足时返回 409 + pending 提示。
+async fn handle_erasure_api(
+    method: &str,
+    path: &str,
+    body: &str,
+    shard_ctrl: &ShardCtrlTx,
+) -> (u16, String) {
+    use serde_json::Value;
+    fn json_err(status: u16, code: &str, msg: impl Into<String>) -> (u16, String) {
+        (
+            status,
+            serde_json::json!({"error": code, "message": msg.into()}).to_string(),
+        )
+    }
+    if method != "POST" {
+        return json_err(404, "NOT_FOUND", format!("仅支持 POST: {method} {path}"));
+    }
+    let req: Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, "BAD_BODY", format!("请求体非 JSON: {e}")),
+    };
+    let p = path.split('?').next().unwrap_or(path);
+    match p {
+        "/ingest" => {
+            // 支持 data(UTF-8) 或 data_hex(十六进制)。
+            let data: Vec<u8> = if let Some(s) = req.get("data_hex").and_then(|v| v.as_str()) {
+                let h = s.strip_prefix("0x").unwrap_or(s);
+                match hex::decode(h) {
+                    Ok(b) => b,
+                    Err(e) => return json_err(400, "BAD_BODY", format!("data_hex 非法: {e}")),
+                }
+            } else {
+                req.get("data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .as_bytes()
+                    .to_vec()
+            };
+            if data.is_empty() {
+                return json_err(400, "BAD_BODY", "data 不能为空");
+            }
+            let blob_id = req
+                .get("blob_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("blob-{}", now_millis()));
+            let (tx, rx) = oneshot::channel();
+            if shard_ctrl
+                .send(ShardControl::Ingest {
+                    blob_id: blob_id.clone(),
+                    data,
+                    reply: tx,
+                })
+                .await
+                .is_err()
+            {
+                return json_err(500, "DRIVER", "分片驱动不可用");
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+                Ok(Ok(Ok(id))) => (
+                    200,
+                    serde_json::json!({
+                        "status": "ingested",
+                        "blob_id": id,
+                        "note": "已编码并按确定性放置分发；重建请 POST /erasure/reconstruct。",
+                    })
+                    .to_string(),
+                ),
+                Ok(Ok(Err(e))) => json_err(500, "INGEST", e),
+                Ok(Err(_)) => json_err(500, "INGEST", "驱动回执丢失"),
+                Err(_) => json_err(500, "INGEST", "ingest 超时"),
+            }
+        }
+        "/reconstruct" => {
+            let blob_id = match req.get("blob_id").and_then(|v| v.as_str()) {
+                Some(s) if !s.is_empty() => s.to_string(),
+                _ => return json_err(400, "BAD_BODY", "缺少 blob_id"),
+            };
+            let (tx, rx) = oneshot::channel();
+            if shard_ctrl
+                .send(ShardControl::Reconstruct {
+                    blob_id: blob_id.clone(),
+                    reply: tx,
+                })
+                .await
+                .is_err()
+            {
+                return json_err(500, "DRIVER", "分片驱动不可用");
+            }
+            match tokio::time::timeout(std::time::Duration::from_secs(3), rx).await {
+                Ok(Ok(Ok(bytes))) => (
+                    200,
+                    serde_json::json!({
+                        "blob_id": blob_id,
+                        "data_hex": format!("0x{}", hex::encode(&bytes)),
+                        "data_utf8": String::from_utf8_lossy(&bytes).to_string(),
+                    })
+                    .to_string(),
+                ),
+                Ok(Ok(Err(e))) => {
+                    if e.contains("pending") {
+                        json_err(409, "PENDING", format!("{e}；请稍后重试。"))
+                    } else {
+                        json_err(500, "RECONSTRUCT", e)
+                    }
+                }
+                Ok(Err(_)) => json_err(500, "RECONSTRUCT", "驱动回执丢失"),
+                Err(_) => json_err(500, "RECONSTRUCT", "reconstruct 超时"),
+            }
+        }
+        _ => json_err(404, "NOT_FOUND", format!("未知 erasure 路径: {path}")),
+    }
 }
 
 /// 渲染 Prometheus 文本 exposition（# HELP/#TYPE + 值）。纯函数，便于单测。
@@ -1938,6 +2097,7 @@ async fn run_api_server(
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
     plugin_host: Arc<std::sync::Mutex<crate::plugin::PluginHost>>,
     crdt: CrdtHandle,
+    shard_ctrl: ShardCtrlTx,
 ) -> anyhow::Result<()> {
     use crate::api::rest;
     use crate::mcp::sse;
@@ -1972,6 +2132,7 @@ async fn run_api_server(
         let plugin_host = plugin_host.clone();
         let orchestrator = orchestrator.clone();
         let crdt = crdt.clone();
+        let shard_ctrl = shard_ctrl.clone();
 
         tokio::spawn(async move {
             // 读取完整请求（v2.8.5：加读超时与请求体上限，防 slow-loris / 内存 DoS）
@@ -2218,6 +2379,64 @@ async fn run_api_server(
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
+                return;
+            }
+
+            // ───── 链上信任锚端点（/api/v1/chain/*，写操作已过 rest_authorize 闸门） ─────
+            // 真实广播在未配置凭据/主网开关时 fail-closed（由 handle_chain_api 内部保证）。
+            if path_part.starts_with("/api/v1/chain/") || path_part.starts_with("/chain/") {
+                let chain_path = path_part
+                    .trim_start_matches("/api/v1")
+                    .trim_start_matches("/chain")
+                    .to_string();
+                // 内部模块约定 path 形如 /chain/status；这里重新拼回 /chain 前缀。
+                let chain_path_full = format!("/chain{}", chain_path);
+                let (chain_status, chain_body) =
+                    crate::chain::handle_chain_api(&method, &chain_path_full, &body).await;
+                let resp = http_response(
+                    chain_status,
+                    match chain_status {
+                        200 => "OK",
+                        201 => "Created",
+                        400 => "Bad Request",
+                        403 => "Forbidden",
+                        404 => "Not Found",
+                        500 => "Internal Server Error",
+                        502 => "Bad Gateway",
+                        _ => "Error",
+                    },
+                    chain_body,
+                    "application/json",
+                    &cors_headers,
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (chain {})", method, path_part, chain_status);
+                return;
+            }
+
+            // ───── 纠删码分布式存储端点（/api/v1/erasure/*，已过 rest_authorize 写闸门） ─────
+            if path_part.starts_with("/api/v1/erasure/") {
+                let erasure_path = path_part.trim_start_matches("/api/v1/erasure").to_string();
+                let (er_status, er_body) =
+                    handle_erasure_api(&method, &erasure_path, &body, &shard_ctrl).await;
+                let resp = http_response(
+                    er_status,
+                    match er_status {
+                        200 => "OK",
+                        201 => "Created",
+                        400 => "Bad Request",
+                        404 => "Not Found",
+                        500 => "Internal Server Error",
+                        _ => "Error",
+                    },
+                    er_body,
+                    "application/json",
+                    &cors_headers,
+                );
+                let _ = stream.write_all(resp.as_bytes()).await;
+                let _ = stream.flush().await;
+                eprintln!("← {} {} (erasure {})", method, path_part, er_status);
                 return;
             }
 
@@ -2611,6 +2830,16 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     } else {
         println!("✅ CRDT 同步主题已订阅: {CRDT_TOPIC}");
     }
+    // 纠删码：订阅分片主题（分片分发 StoreShard / 拉取 NeedShards / ShardReply）。
+    if let Err(e) = peer.subscribe(crate::erasure::wire::SHARD_TOPIC) {
+        eprintln!("⚠️ subscribe {} 失败: {e}", crate::erasure::wire::SHARD_TOPIC);
+    } else {
+        println!("✅ 纠删码分片主题已订阅: {}", crate::erasure::wire::SHARD_TOPIC);
+    }
+
+    // 纠删码分片：原始报文通道（inbound consumer 转发）+ 控制通道（REST ingest/reconstruct）。
+    let (shard_raw_tx, mut shard_raw_rx) = mpsc::channel::<Vec<u8>>(512);
+    let (shard_ctrl_tx, mut shard_ctrl_rx) = mpsc::channel::<ShardControl>(32);
 
     // CRDT 状态存储（LWW-Map），origin = 本节点 PeerId。
     // GSN_CRDT_MAX_KEYS：测试用小上限验证膨胀走平；解析失败回退默认 100_000。
@@ -2629,6 +2858,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         Arc::new(std::sync::Mutex::new(store))
     };
 
+    // 本节点 PeerId 字符串（peer 随后 move 进 swarm actor，这里先捕获）。
+    let self_peer_id = peer.peer_id.to_string();
+
     tokio::spawn(run_swarm_actor(
         peer,
         peer_cmd_rx,
@@ -2640,6 +2872,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // 解析失败只 warn 并 continue——绝不能 panic/杀消费者（单个坏包不能拖垮节点）。
     tokio::spawn({
         let crdt_store = crdt_store.clone();
+        let shard_raw_tx = shard_raw_tx.clone();
         async move {
             while let Some(msg) = inbound_rx.recv().await {
                 if msg.topic == CRDT_TOPIC {
@@ -2665,6 +2898,11 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                             error = %e,
                             "CRDT 报文解析失败，已跳过"
                         ),
+                    }
+                } else if msg.topic == crate::erasure::wire::SHARD_TOPIC {
+                    // 原始报文转发给分片驱动；通道满只告警丢弃（不阻塞/不 panic）。
+                    if let Err(e) = shard_raw_tx.try_send(msg.data.clone()) {
+                        tracing::warn!(source = %msg.source, "分片报文转发失败: {e}");
                     }
                 } else {
                     tracing::info!(
@@ -2702,6 +2940,110 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                         }
                     }
                     Err(e) => tracing::warn!("CRDT 周期快照序列化失败: {e}"),
+                }
+            }
+        });
+    }
+
+    // 纠删码分片驱动：把 GossipSub 报文（shard_raw_rx）与控制命令（shard_ctrl_rx）
+    // 桥接到 DistributedShardNode，按 500ms tick 推进：投递入站 → 处理 → 重建重试 → 发布出站。
+    {
+        let self_id = self_peer_id.clone();
+        let peer_cmd = peer_cmd_tx.clone();
+        tokio::spawn(async move {
+            let coder = match ErasureCoder::new(DEFAULT_DATA_SHARDS, DEFAULT_PARITY_SHARDS) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("⚠️ 分片驱动初始化失败（纠删码构造）: {e}");
+                    return;
+                }
+            };
+            let mut shard_node = DistributedShardNode::new(self_id.clone(), coder);
+            let mut transport = GossipShardTransport::new(self_id.clone(), vec![self_id.clone()]);
+            let mut ticker = tokio::time::interval(std::time::Duration::from_millis(500));
+            let mut pending_recon: Vec<String> = Vec::new();
+            let mut refresh_ticks: u32 = 0;
+            loop {
+                ticker.tick().await;
+
+                // 1) 排空原始入站报文，解析后投递（目标匹配才入队）。
+                while let Ok(bytes) = shard_raw_rx.try_recv() {
+                    match ShardWire::from_bytes(&bytes) {
+                        Ok(wire) => transport.deliver(&wire),
+                        Err(e) => tracing::warn!(error = %e, "分片报文解析失败，已跳过"),
+                    }
+                }
+
+                // 2) 每 ~2s（4 ticks）刷新已知 peer 列表。
+                refresh_ticks = refresh_ticks.saturating_add(1);
+                if refresh_ticks.is_multiple_of(4) {
+                    if let Some(ids) = fetch_peer_ids(&peer_cmd).await {
+                        transport.set_peers(ids);
+                    }
+                }
+
+                // 3) 处理控制命令。
+                while let Ok(ctrl) = shard_ctrl_rx.try_recv() {
+                    match ctrl {
+                        ShardControl::Ingest {
+                            blob_id,
+                            data,
+                            reply,
+                        } => {
+                            let r = shard_node
+                                .ingest_blob(&blob_id, &data, &mut transport)
+                                .map(|_| blob_id.clone());
+                            if let Err(e) = reply.send(r) {
+                                tracing::warn!("ingest 回执丢失: {e:?}");
+                            }
+                        }
+                        ShardControl::Reconstruct { blob_id, reply } => {
+                            let r = shard_node.reconstruct_blob(&blob_id, &mut transport);
+                            if r.is_err()
+                                && !pending_recon.contains(&blob_id)
+                                && !r.as_ref().unwrap_err().contains("硬失败")
+                            {
+                                pending_recon.push(blob_id.clone());
+                            }
+                            if let Err(e) = reply.send(r) {
+                                tracing::warn!("reconstruct 回执丢失: {e:?}");
+                            }
+                        }
+                    }
+                }
+
+                // 4) 处理入站信封（可能产生出站，如 NeedShards→ShardReply）。
+                while let Some((from, env)) = transport.next() {
+                    shard_node.handle(env, &mut transport);
+                    let _ = from;
+                }
+
+                // 5) 自动重试 pending 重建；硬失败的放弃（不再重试）。
+                let mut still_pending = Vec::new();
+                for bid in pending_recon.drain(..) {
+                    match shard_node.reconstruct_blob(&bid, &mut transport) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            if e.contains("硬失败") {
+                                tracing::warn!("blob {bid} 重建硬失败: {e}");
+                            } else {
+                                still_pending.push(bid);
+                            }
+                        }
+                    }
+                }
+                pending_recon = still_pending;
+
+                // 6) 排空出站，经 GossipSub 发布（目标由 ShardWire.to 携带）。
+                while let Some((to, env)) = transport.take_outbound() {
+                    let wire = ShardWire::direct(to, self_id.clone(), env);
+                    let bytes = wire.to_bytes();
+                    if let Err(e) = peer_cmd.try_send(PeerCommand::Publish {
+                        topic: SHARD_TOPIC.into(),
+                        data: bytes,
+                    }) {
+                        tracing::warn!("分片报文 publish 失败: {e}");
+                    }
                 }
             }
         });
@@ -2832,6 +3174,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         sandbox_mgr,
         plugin_host,
         crdt_handle,
+        shard_ctrl_tx,
     )
     .await?;
 

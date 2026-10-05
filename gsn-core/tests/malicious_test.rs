@@ -148,11 +148,9 @@ fn handle_event(
             propagation_source,
             message,
             ..
-        })) => {
-            if message.data == payload && !node.malicious && !received[node.idx] {
-                received[node.idx] = true;
-                prop_source[node.idx] = Some(propagation_source);
-            }
+        })) if message.data == payload && !node.malicious && !received[node.idx] => {
+            received[node.idx] = true;
+            prop_source[node.idx] = Some(propagation_source);
         }
         _ => {}
     }

@@ -776,14 +776,12 @@ mod p0_tests {
             {
                 b.add_kad_address(peer_id, endpoint.get_remote_address().clone());
             }
-            if let Some(ev) = a.next_event().await {
-                if let SwarmEvent::ConnectionEstablished {
-                    peer_id, endpoint, ..
-                } = ev
-                {
-                    if endpoint.is_dialer() {
-                        a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
-                    }
+            if let Some(SwarmEvent::ConnectionEstablished {
+                peer_id, endpoint, ..
+            }) = a.next_event().await
+            {
+                if endpoint.is_dialer() {
+                    a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
                 }
             }
         }

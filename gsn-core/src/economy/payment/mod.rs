@@ -42,6 +42,7 @@ pub mod rgb;
 pub mod router;
 pub mod signer;
 pub mod x402;
+pub mod zkwallet;
 
 pub use anchorguard::{
     decide_bridge_transfer as bridge_transfer_decide,
@@ -84,6 +85,13 @@ pub use signer::{
 pub use x402::{
     keccak256, verify_settlement, EvmAddress, Nonce32, TransferAuthorization, X402Asset,
     X402Challenge, X402Domain, X402Error,
+};
+pub use zkwallet::{
+    enforce_compliance_decision as compliance_enforce_fail_closed,
+    execute_ows_payment as ows_execute_fail_closed, route_ows_wallet, screen_compliance,
+    verify_zk_payment_intent, verify_zk_proof as zk_proof_fail_closed, ComplianceError,
+    CompliancePolicy, ComplianceSubject, OwsError, OwsIntent, OwsPolicy, OwsRoute, OwsTrack,
+    ScreeningDecision, ScreeningVerdict, WalletCapability, ZkError, ZkIntent, ZkPolicy, ZkReceipt,
 };
 
 use crate::plugin::error::{PluginError, PluginResult};
@@ -158,6 +166,15 @@ pub const METHOD_BRIDGE_TRANSFER_DECIDE: &str = "bridge_transfer_decide";
 
 /// PMB 方法：真实跨链中继（锁仓/铸造/广播）。本版无桥后端，一律 BRIDGE_NOT_CONFIGURED。
 pub const METHOD_BRIDGE_RELAY: &str = "bridge_relay";
+
+/// PMB 方法：ZK 隐私支付意图结构/额度/空值符/披露标签校验（不做 SNARK 验证，proof 恒不验）。
+pub const METHOD_ZK_PAYMENT_INTENT_CHECK: &str = "zk_payment_intent_check";
+
+/// PMB 方法：OWS 统一钱包确定性选轨（只决策，缺轨/未配置 fail-closed）。
+pub const METHOD_OWS_WALLET_ROUTE: &str = "ows_wallet_route";
+
+/// PMB 方法：合规筛查（仅用调用方名单/阈值，allow/report/block；不联网不执行）。
+pub const METHOD_COMPLIANCE_SCREEN: &str = "compliance_screen";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -365,6 +382,53 @@ pub fn status_payload() -> serde_json::Value {
         "clock_read_in_kernel": false,
         "note": "只做链下确定性跨链风控决策：总开关/紧急暂停/方向与资产白名单（空默认全拒）/可选目的白名单/最小额/单笔上限/速率窗口笔数/累计额度（u128 checked，恰好花完允许、cumulative_cap=0 首笔即拒）逐条短路判定；策略非法（单笔上限 0、窗口上限 0、最小额>单笔上限）具名 BRIDGE_BAD_POLICY。window_prior_count/cumulative_prior/now 均由调用方传入，内核不持久化、不连桥与锁仓/铸造合约、不构造签名广播跨链消息、不锁定/铸造/释放资产；bridge_relay 一律 BRIDGE_NOT_CONFIGURED fail-closed。"
     });
+    let zk_status = serde_json::json!({
+        "introduced_in": "v3.9.8",
+        "methods": ["zk_payment_intent_check"],
+        "checks": ["32B commitment/nullifier hex shape", "integer credit line (u128 checked)", "selective-disclosure tag whitelist", "host-attested nullifier double-spend flag", "proof-present gate (structural only)"],
+        "credit_line_edge_inclusive": true,
+        "nullifier_double_spend_enforced_when_policy_on": true,
+        "proof_present_check_only": true,
+        "proof_verified": false,
+        "zk_proof_verification_implemented": false,
+        "recursive_snark_or_zkml_verify": false,
+        "privacy_ready_meaning": "仅表示结构/额度/空值符/披露标签自洽且按需随附证明，不代表零知识证明密码学成立",
+        "key_or_proof_materialized_in_kernel": false,
+        "external_verifier_connection": false,
+        "clock_or_persistence_in_kernel": false,
+        "note": "只做隐私支付意图的链下结构/额度校验：32B 承诺与空值符 hex 形状、u128 checked 信用额度（恰好花完允许）、选择性披露标签白名单、宿主取证的空值符双花标志、按策略要求证明是否随附（只看在不在，绝不验证）。verify_zk_proof 永远 ZK_PROOF_VERIFICATION_NOT_IMPLEMENTED fail-closed；双花查重、证明密码学验证均需有状态宿主/外部验证器，内核不联网、不持久化、不读时钟、不持钥。"
+    });
+    let ows_status = serde_json::json!({
+        "introduced_in": "v3.9.8",
+        "methods": ["ows_wallet_route"],
+        "tracks_supported": ["btc_lightning", "evm_x402_stable", "btc_rgb_htlc"],
+        "asset_families": ["btc", "stable"],
+        "deterministic_precedence": "stable->evm_x402_stable; btc+instant->btc_lightning then btc_rgb_htlc; btc+cross_epoch->btc_rgb_htlc then btc_lightning",
+        "capabilities_host_attested": true,
+        "require_configured_gate": true,
+        "privacy_and_crosschain_constraints_enforced": true,
+        "allowed_tracks_empty_denies_all": true,
+        "wallet_execute_executed": false,
+        "key_held_in_sandbox": false,
+        "wallet_or_node_connection": false,
+        "note": "只做 OWS 统一钱包层的链下确定性选轨：按资产族/即时性给出优先序，再在宿主显式声明的轨道能力快照（configured/privacy/cross_chain）与白名单交集内取第一个满足隐私与跨链要求的轨道；白名单为空默认无轨道、强制已配置而未配置、或隐私/跨链要求无轨道满足时 OWS_NO_AVAILABLE_TRACK fail-closed，未知资产族/未知轨道名具名拒绝。内核不探测真实钱包、不连节点、不持私钥；execute_ows_payment 一律 OWS_WALLET_NOT_CONFIGURED fail-closed。"
+    });
+    let compliance_status = serde_json::json!({
+        "introduced_in": "v3.9.8",
+        "methods": ["compliance_screen"],
+        "verdicts": ["allow", "report_required", "blocked"],
+        "address_kinds": ["evm (0x+20B, lowercase hex normalized)", "other (trimmed exact)"],
+        "decision_chain": ["enabled", "jurisdiction non-empty", "address normalized", "amount>0", "address blocklist", "blocked jurisdiction", "allowed jurisdiction (empty=deny when required)", "hard block threshold (inclusive)", "report threshold (inclusive)"],
+        "lists_provided_by_caller": true,
+        "builtin_sanctions_list": false,
+        "allowed_jurisdiction_empty_denies_all_when_required": true,
+        "threshold_zero_disables_check": true,
+        "integer_only": true,
+        "enforcement_executed": false,
+        "external_list_or_regulator_connection": false,
+        "screening_pass_is_not_legal_advice": true,
+        "note": "只依据调用方显式传入的地址/辖区名单与整数阈值做链下确定性筛查：地址按 evm(去0x、40hex、小写) 或 other(去空白精确) 归一化，命中地址名单/阻断辖区/（要求时）不在允许辖区/达硬阻断阈值即 blocked，达上报阈值即 report_required，否则 allow；阈值 0 关闭对应档；要求允许辖区而名单为空默认全拒。内核不内置任何国家或地址名单、不联网拉取制裁库、不解释法律含义；enforce_compliance_decision 一律 COMPLIANCE_ENFORCEMENT_NOT_CONFIGURED，不冻结不上报。"
+    });
     let enforceable = serde_json::json!({
         "deterministic_route_decision": true,
         "integer_thresholds": true,
@@ -397,6 +461,17 @@ pub fn status_payload() -> serde_json::Value {
         "bridge_default_deny_non_whitelisted_direction_asset": true,
         "bridge_integer_checked_cumulative": true,
         "bridge_relay_not_configured_fail_closed": true,
+        "zk_integer_checked_credit_line": true,
+        "zk_nullifier_double_spend_enforced": true,
+        "zk_disclosure_tag_whitelist": true,
+        "zk_snark_verification_honestly_not_claimed": true,
+        "ows_deterministic_track_routing": true,
+        "ows_fail_closed_when_no_configured_track": true,
+        "ows_privacy_crosschain_constraints_enforced": true,
+        "compliance_integer_thresholds": true,
+        "compliance_lists_caller_provided_fail_closed": true,
+        "compliance_allowed_jurisdiction_empty_denies": true,
+        "compliance_enforcement_not_configured_fail_closed": true,
         "fund_movement": false,
         "key_holding_in_sandbox": false,
         "transaction_signing": false,
@@ -427,6 +502,12 @@ pub fn status_payload() -> serde_json::Value {
         "anchor_finality_check": true,
         "bridge_transfer_decide": true,
         "bridge_relay_when_bridge_configured": true,
+        "zk_payment_intent_check": true,
+        "ows_wallet_route": true,
+        "compliance_screen": true,
+        "zk_proof_verify": false,
+        "ows_wallet_execute": false,
+        "compliance_enforce": false,
         "router_persistence": false,
         "lightning_node_connection": false,
         "evm_rpc_connection": false,
@@ -441,7 +522,11 @@ pub fn status_payload() -> serde_json::Value {
         "anchor_merkle_or_lightclient_proof": false,
         "bridge_or_contract_connection": false,
         "crosschain_message_relay": false,
-        "asset_locking_minting_or_release": false
+        "asset_locking_minting_or_release": false,
+        "zk_external_verifier_connection": false,
+        "zk_recursive_snark_verify": false,
+        "ows_wallet_or_node_connection": false,
+        "compliance_external_list_connection": false
     });
     serde_json::json!({
         "plugin": PAYMENT_ROUTER_PLUGIN,
@@ -457,6 +542,9 @@ pub fn status_payload() -> serde_json::Value {
         "rgb_introduced_in": "v3.9.6",
         "anchor_finality_introduced_in": "v3.9.7",
         "bridge_risk_introduced_in": "v3.9.7",
+        "zk_payment_introduced_in": "v3.9.8",
+        "ows_wallet_introduced_in": "v3.9.8",
+        "compliance_introduced_in": "v3.9.8",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -488,7 +576,10 @@ pub fn status_payload() -> serde_json::Value {
             "btc:htlc:read",
             "rgb:commitment:read",
             "chain:anchor:read",
-            "bridge:risk:decide"
+            "bridge:risk:decide",
+            "zk:payment-intent:decide",
+            "ows:wallet:route",
+            "compliance:screen:decide"
         ],
         "capabilities_reserved_later": [
             "pay:execute",
@@ -500,7 +591,11 @@ pub fn status_payload() -> serde_json::Value {
             "btc:htlc:execute",
             "btc:node:connect",
             "rgb:state-transition:validate",
-            "rgb:tapret:derive"
+            "rgb:tapret:derive",
+            "zk:proof:verify",
+            "ows:wallet:execute",
+            "compliance:list:fetch",
+            "compliance:enforce"
         ],
         "signing": {
             "introduced_in": "v3.9.1",
@@ -591,9 +686,12 @@ pub fn status_payload() -> serde_json::Value {
         "rgb": rgb_status,
         "anchor_finality": anchor_status,
         "bridge_risk": bridge_status,
+        "zk_payment": zk_status,
+        "ows_wallet": ows_status,
+        "compliance": compliance_status,
         "enforceable": enforceable,
         "provided": provided,
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。v3.9.5：ERC-4337 Paymaster 纯决策面——校验 UserOperation 气体/费用字段、解析并对齐 v0.6 paymasterAndData 与 v0.7 paymaster/paymasterData、按五类气体上限之和×maxFeePerGas 整数 checked 上估 gas 成本，在显式赞助策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不链上质押。v3.9.6：BTC HTLC + RGB 纯校验面——HTLC 做 SHA256 哈希锁、BIP65 CLTV 超时（高度/秒由阈值区分，规范最小编码，当前值调用方传入）、整数 sats 守恒（offered+fee==total）、P2WSH witnessProgram=SHA256(witnessScript) 与标准 IF/ELSE 模板逐字节校验；RGB 做 opret-first（唯一 OP_RETURN<32 commitment>）与 tapret-first（第一个 OP_1<32> Taproot 输出）锚定位置/形状校验，tapret tweak 推导诚实标注未实现；不连比特币节点、不读 UTXO/区块、不构造/签名/广播交易、不持私钥、不做 RGB 状态转换、不结算 HTLC（btc_htlc_finalize 一律 HTLC_NODE_NOT_CONFIGURED fail-closed）。v3.9.7：锚定最终性 + 跨链桥风控纯决策面——anchor_finality_check 按重组深度（超容忍先拒）、require_finalized（未给 finalized 即拒，不以确认数代替最终性）、确认数严格门槛（恰好达门槛通过）、32B 锚点/声明承诺逐字节一致判定可否据以行动，策略无任何安全闸门（既不要求 finalized 又 required_confirmations=0）直接拒；bridge_transfer_decide 按总开关/紧急暂停/方向与资产白名单（空默认全拒）/可选目的白名单/最小额/单笔上限/速率窗口笔数/累计额度（u128 checked，恰好花完允许、cumulative_cap=0 首笔即拒）逐条短路放行；确认数/重组深度/窗口计数/累计已用均由调用方取证传入，内核不读区块与时钟、不连 RPC/桥/锁仓或铸造合约、不做默克尔或轻客户端证明、不构造签名广播跨链消息、不锁定/铸造/释放资产，bridge_relay 一律 BRIDGE_NOT_CONFIGURED fail-closed；anchor_safe/approved 仅表取证快照按策略自洽，不代表链上真实不可回滚或桥已执行。ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。",
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。v3.9.5：ERC-4337 Paymaster 纯决策面——校验 UserOperation 气体/费用字段、解析并对齐 v0.6 paymasterAndData 与 v0.7 paymaster/paymasterData、按五类气体上限之和×maxFeePerGas 整数 checked 上估 gas 成本，在显式赞助策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不链上质押。v3.9.6：BTC HTLC + RGB 纯校验面——HTLC 做 SHA256 哈希锁、BIP65 CLTV 超时（高度/秒由阈值区分，规范最小编码，当前值调用方传入）、整数 sats 守恒（offered+fee==total）、P2WSH witnessProgram=SHA256(witnessScript) 与标准 IF/ELSE 模板逐字节校验；RGB 做 opret-first（唯一 OP_RETURN<32 commitment>）与 tapret-first（第一个 OP_1<32> Taproot 输出）锚定位置/形状校验，tapret tweak 推导诚实标注未实现；不连比特币节点、不读 UTXO/区块、不构造/签名/广播交易、不持私钥、不做 RGB 状态转换、不结算 HTLC（btc_htlc_finalize 一律 HTLC_NODE_NOT_CONFIGURED fail-closed）。v3.9.7：锚定最终性 + 跨链桥风控纯决策面——anchor_finality_check 按重组深度（超容忍先拒）、require_finalized（未给 finalized 即拒，不以确认数代替最终性）、确认数严格门槛（恰好达门槛通过）、32B 锚点/声明承诺逐字节一致判定可否据以行动，策略无任何安全闸门（既不要求 finalized 又 required_confirmations=0）直接拒；bridge_transfer_decide 按总开关/紧急暂停/方向与资产白名单（空默认全拒）/可选目的白名单/最小额/单笔上限/速率窗口笔数/累计额度（u128 checked，恰好花完允许、cumulative_cap=0 首笔即拒）逐条短路放行；确认数/重组深度/窗口计数/累计已用均由调用方取证传入，内核不读区块与时钟、不连 RPC/桥/锁仓或铸造合约、不做默克尔或轻客户端证明、不构造签名广播跨链消息、不锁定/铸造/释放资产，bridge_relay 一律 BRIDGE_NOT_CONFIGURED fail-closed；anchor_safe/approved 仅表取证快照按策略自洽，不代表链上真实不可回滚或桥已执行。v3.9.8：ZK 隐私支付意图 + OWS 统一钱包选轨 + 合规筛查三段纯链下决策面——zk_payment_intent_check 只校验 32B 承诺/空值符 hex 形状、u128 checked 信用额度（恰好花完允许）、选择性披露标签白名单、宿主取证的空值符双花标志与按策略要求的证明是否随附（只看在不在，绝不验证，proof_verified/zk_proof_verification_implemented 恒 false，verify_zk_proof 永远 ZK_PROOF_VERIFICATION_NOT_IMPLEMENTED）；ows_wallet_route 按 stable→evm_x402_stable、btc 即时→btc_lightning 再 btc_rgb_htlc、btc 非即时→btc_rgb_htlc 再 btc_lightning 的确定性优先序，在宿主显式声明的轨道能力（configured/privacy/cross_chain）与白名单交集内取首个满足隐私与跨链要求的轨道，白名单空默认全拒、未配置/隐私/跨链不满足即 OWS_NO_AVAILABLE_TRACK，execute_ows_payment 一律 OWS_WALLET_NOT_CONFIGURED；compliance_screen 只用调用方传入的 evm/other 归一化地址名单、阻断辖区、允许辖区（要求时名单空默认全拒）、整数上报/硬阻断阈值（含边界，0 关闭）产出 allow/report_required/blocked，不内置名单不联网不解释法律，enforce_compliance_decision 一律 COMPLIANCE_ENFORCEMENT_NOT_CONFIGURED 不冻结不上报。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。",
     })
 }
 
@@ -1149,6 +1247,33 @@ fn handle_bridge_relay(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> 
     ))
 }
 
+/// v3.9.8 字节桥：`zk_payment_intent_check`（ZK 隐私意图链下结构/额度校验，不验 SNARK）。
+fn handle_zk_payment_intent_check(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let req: ZkIntentRequest = parse_json("zk_payment_intent_check", payload)?;
+    let receipt = verify_zk_payment_intent(&req.policy, &req.intent)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&receipt)
+        .map_err(|e| PluginError::Runtime(format!("zk_payment_intent_check 序列化失败: {e}")))
+}
+
+/// v3.9.8 字节桥：`ows_wallet_route`（OWS 统一钱包确定性选轨，fail-closed）。
+fn handle_ows_wallet_route(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let req: OwsRouteRequest = parse_json("ows_wallet_route", payload)?;
+    let route = route_ows_wallet(&req.policy, &req.capabilities, &req.intent)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&route)
+        .map_err(|e| PluginError::Runtime(format!("ows_wallet_route 序列化失败: {e}")))
+}
+
+/// v3.9.8 字节桥：`compliance_screen`（仅用调用方名单/阈值，allow/report/block）。
+fn handle_compliance_screen(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let req: ComplianceScreenRequest = parse_json("compliance_screen", payload)?;
+    let decision = screen_compliance(&req.policy, &req.subject)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&decision)
+        .map_err(|e| PluginError::Runtime(format!("compliance_screen 序列化失败: {e}")))
+}
+
 /// `anchor_finality_check` 请求体：策略 + 取证快照均由调用方传入。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 struct AnchorFinalityRequest {
@@ -1161,6 +1286,28 @@ struct AnchorFinalityRequest {
 struct BridgeTransferRequest {
     policy: BridgePolicy,
     transfer: BridgeTransfer,
+}
+
+/// `zk_payment_intent_check` 请求体：策略 + 意图取证均由调用方传入。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct ZkIntentRequest {
+    policy: ZkPolicy,
+    intent: ZkIntent,
+}
+
+/// `ows_wallet_route` 请求体：策略 + 宿主能力快照 + 归一化意图均由调用方传入。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct OwsRouteRequest {
+    policy: OwsPolicy,
+    capabilities: Vec<WalletCapability>,
+    intent: OwsIntent,
+}
+
+/// `compliance_screen` 请求体：名单/阈值策略 + 待筛查主体均由调用方传入。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct ComplianceScreenRequest {
+    policy: CompliancePolicy,
+    subject: ComplianceSubject,
 }
 
 fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
@@ -1285,6 +1432,23 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_BRIDGE_RELAY,
         handle_bridge_relay,
     );
+    // v3.9.8 ZK 隐私意图 / OWS 统一钱包选轨 / 合规筛查：三段链下纯决策 fail-closed。
+    // SNARK 验证不注册（verify_zk_proof 恒 NOT_IMPLEMENTED）；钱包执行与合规外部执行不注册。
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_ZK_PAYMENT_INTENT_CHECK,
+        handle_zk_payment_intent_check,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_OWS_WALLET_ROUTE,
+        handle_ows_wallet_route,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_COMPLIANCE_SCREEN,
+        handle_compliance_screen,
+    );
 }
 
 #[cfg(test)]
@@ -1361,7 +1525,12 @@ mod tests {
         // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster 只读协议能力。
         // v3.9.6 再 + btc:htlc:read + rgb:commitment:read = 8。
         // v3.9.7 再 + chain:anchor:read + bridge:risk:decide = 10。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 10);
+        // v3.9.8 再 + zk:payment-intent:decide + ows:wallet:route + compliance:screen:decide = 13。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 13);
+        assert_eq!(
+            s["capabilities_reserved_later"].as_array().unwrap().len(),
+            14
+        );
         assert_eq!(
             s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
             true
@@ -1473,6 +1642,51 @@ mod tests {
         assert_eq!(s["provided"]["crosschain_message_relay"], false);
         assert_eq!(s["anchor_finality_introduced_in"], "v3.9.7");
         assert_eq!(s["bridge_risk_introduced_in"], "v3.9.7");
+        // v3.9.8 ZK 隐私意图 / OWS 统一钱包 / 合规筛查纯链下决策面。
+        assert_eq!(s["zk_payment"]["introduced_in"], "v3.9.8");
+        assert_eq!(s["zk_payment"]["proof_verified"], false);
+        assert_eq!(s["zk_payment"]["zk_proof_verification_implemented"], false);
+        assert_eq!(s["zk_payment"]["recursive_snark_or_zkml_verify"], false);
+        assert_eq!(s["zk_payment"]["external_verifier_connection"], false);
+        assert_eq!(
+            s["zk_payment"]["key_or_proof_materialized_in_kernel"],
+            false
+        );
+        assert_eq!(s["zk_payment"]["credit_line_edge_inclusive"], true);
+        assert_eq!(s["ows_wallet"]["introduced_in"], "v3.9.8");
+        assert_eq!(s["ows_wallet"]["wallet_execute_executed"], false);
+        assert_eq!(s["ows_wallet"]["key_held_in_sandbox"], false);
+        assert_eq!(s["ows_wallet"]["wallet_or_node_connection"], false);
+        assert_eq!(s["ows_wallet"]["allowed_tracks_empty_denies_all"], true);
+        assert_eq!(s["compliance"]["introduced_in"], "v3.9.8");
+        assert_eq!(s["compliance"]["builtin_sanctions_list"], false);
+        assert_eq!(s["compliance"]["enforcement_executed"], false);
+        assert_eq!(
+            s["compliance"]["external_list_or_regulator_connection"],
+            false
+        );
+        assert_eq!(s["compliance"]["lists_provided_by_caller"], true);
+        assert_eq!(s["zk_payment_introduced_in"], "v3.9.8");
+        assert_eq!(s["ows_wallet_introduced_in"], "v3.9.8");
+        assert_eq!(s["compliance_introduced_in"], "v3.9.8");
+        assert_eq!(s["provided"]["zk_payment_intent_check"], true);
+        assert_eq!(s["provided"]["ows_wallet_route"], true);
+        assert_eq!(s["provided"]["compliance_screen"], true);
+        assert_eq!(s["provided"]["zk_proof_verify"], false);
+        assert_eq!(s["provided"]["ows_wallet_execute"], false);
+        assert_eq!(s["provided"]["compliance_enforce"], false);
+        assert_eq!(
+            s["enforceable"]["zk_snark_verification_honestly_not_claimed"],
+            true
+        );
+        assert_eq!(
+            s["enforceable"]["ows_fail_closed_when_no_configured_track"],
+            true
+        );
+        assert_eq!(
+            s["enforceable"]["compliance_enforcement_not_configured_fail_closed"],
+            true
+        );
     }
 
     #[test]

@@ -550,8 +550,10 @@ mod tests {
         );
         // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster
         // 只读协议能力；v3.9.6 再 + btc:htlc:read / rgb:commitment:read（共 8 个）；
-        // v3.9.7 再 + chain:anchor:read / bridge:risk:decide（共 10 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 10);
+        // v3.9.7 再 + chain:anchor:read / bridge:risk:decide（共 10 个）；
+        // v3.9.8 再 + zk:payment-intent:decide / ows:wallet:route / compliance:screen:decide
+        // （共 13 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 13);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -938,6 +940,108 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("BRIDGE_NOT_CONFIGURED"));
+
+        // v3.9.8 ZK 隐私意图：结构/额度自洽且随附证明 -> privacy_ready，但绝不声称 SNARK 成立。
+        let hex32 = "ab".repeat(32);
+        let zk_ok = serde_json::to_vec(&serde_json::json!({
+            "policy": {"require_proof_present": true, "credit_line_micro": 1_000_000, "block_seen_nullifier": true},
+            "intent": {
+                "chain": "base", "asset": "USDC",
+                "spend_micro": 400_000, "credit_used_prior_micro": 100_000,
+                "commitment_hex": format!("0x{hex32}"),
+                "nullifier_hex": format!("0x{hex32}"),
+                "nullifier_seen": false,
+                "selective_disclosure": ["payee", "amount_range"],
+                "proof_present": true
+            }
+        }))
+        .unwrap();
+        let zk_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("zk_payment_intent_check", &zk_ok).unwrap()).unwrap();
+        assert_eq!(zk_out["privacy_ready"], true);
+        assert_eq!(zk_out["proof_verified"], false);
+        assert_eq!(zk_out["zk_proof_verification_implemented"], false);
+        assert_eq!(zk_out["within_credit_line"], true);
+        assert_eq!(zk_out["external_verifier_connection"], false);
+        // 超信用额度具名拒绝。
+        let zk_over = serde_json::to_vec(&serde_json::json!({
+            "policy": {"require_proof_present": false, "credit_line_micro": 1_000, "block_seen_nullifier": true},
+            "intent": {
+                "chain": "base", "asset": "USDC",
+                "spend_micro": 900, "credit_used_prior_micro": 200,
+                "commitment_hex": format!("0x{hex32}"),
+                "nullifier_hex": format!("0x{hex32}"),
+                "nullifier_seen": false,
+                "selective_disclosure": [],
+                "proof_present": false
+            }
+        }))
+        .unwrap();
+        assert!(inst
+            .call("zk_payment_intent_check", &zk_over)
+            .unwrap_err()
+            .to_string()
+            .contains("ZK_EXCEEDS_CREDIT_LINE"));
+
+        // v3.9.8 OWS 选轨：stable 选 evm_x402_stable；btc 即时但无闪电能力 -> 无可用轨道 fail-closed。
+        let ows_stable = serde_json::to_vec(&serde_json::json!({
+            "policy": {"enabled": true, "allowed_tracks": ["evm_x402_stable", "btc_lightning", "btc_rgb_htlc"], "require_configured": true},
+            "capabilities": [
+                {"track": "evm_x402_stable", "configured": true, "privacy": true, "cross_chain": false},
+                {"track": "btc_lightning", "configured": false, "privacy": false, "cross_chain": false}
+            ],
+            "intent": {"asset_family": "stable", "amount_micro": 1000, "instant": true, "privacy_required": true, "cross_chain_required": false}
+        }))
+        .unwrap();
+        let ows_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("ows_wallet_route", &ows_stable).unwrap()).unwrap();
+        assert_eq!(ows_out["selected_track"], "evm_x402_stable");
+        assert_eq!(ows_out["wallet_execute_executed"], false);
+        assert_eq!(ows_out["key_held_in_sandbox"], false);
+        let ows_btc = serde_json::to_vec(&serde_json::json!({
+            "policy": {"enabled": true, "allowed_tracks": ["btc_lightning", "btc_rgb_htlc"], "require_configured": true},
+            "capabilities": [
+                {"track": "btc_lightning", "configured": false, "privacy": false, "cross_chain": false},
+                {"track": "btc_rgb_htlc", "configured": false, "privacy": false, "cross_chain": false}
+            ],
+            "intent": {"asset_family": "btc", "amount_micro": 1000, "instant": true, "privacy_required": false, "cross_chain_required": false}
+        }))
+        .unwrap();
+        assert!(inst
+            .call("ows_wallet_route", &ows_btc)
+            .unwrap_err()
+            .to_string()
+            .contains("OWS_NO_AVAILABLE_TRACK"));
+
+        // v3.9.8 合规：普通地址放行，达硬阻断阈值 blocked；纯链下、不执行外部动作。
+        let evm_addr = "0x".to_string() + &"ab".repeat(20);
+        let comp_allow = serde_json::to_vec(&serde_json::json!({
+            "policy": {
+                "enabled": true, "blocked_addresses": [], "blocked_jurisdictions": [],
+                "require_allowed_jurisdiction": false, "allowed_jurisdictions": [],
+                "report_threshold_micro": 0, "hard_block_threshold_micro": 0
+            },
+            "subject": {"address_kind": "evm", "address": evm_addr, "jurisdiction": "SG", "amount_micro": 1000}
+        }))
+        .unwrap();
+        let comp_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("compliance_screen", &comp_allow).unwrap()).unwrap();
+        assert_eq!(comp_out["verdict"], "allow");
+        assert_eq!(comp_out["enforcement_executed"], false);
+        assert_eq!(comp_out["external_list_connection"], false);
+        assert_eq!(comp_out["list_provided_by_caller"], true);
+        let comp_block = serde_json::to_vec(&serde_json::json!({
+            "policy": {
+                "enabled": true, "blocked_addresses": [], "blocked_jurisdictions": [],
+                "require_allowed_jurisdiction": false, "allowed_jurisdictions": [],
+                "report_threshold_micro": 500, "hard_block_threshold_micro": 1000
+            },
+            "subject": {"address_kind": "evm", "address": evm_addr, "jurisdiction": "SG", "amount_micro": 1000}
+        }))
+        .unwrap();
+        let blocked_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("compliance_screen", &comp_block).unwrap()).unwrap();
+        assert_eq!(blocked_out["verdict"], "blocked");
 
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());

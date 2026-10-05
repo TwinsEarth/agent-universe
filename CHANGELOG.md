@@ -1,3 +1,18 @@
+## [v3.9.5] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（6/9）——ERC-4337 账户抽象 Paymaster 纯确定性赞助决策内核（UserOperation 气体/费用校验 + v0.6 paymasterAndData/v0.7 paymaster+paymasterData 解析对齐 + 五类气体 checked 求和×maxFee 整数上估 + SponsorPolicy 开关/链/时间窗/白名单/单笔上限/累计预算 fail-closed；零新依赖复用 hex+x402::EvmAddress，只决策是否代付 gas，不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥、不垫付 gas、不链上质押）（#128，patch）
+
+- 新增 `gsn-core/src/economy/payment/paymaster.rs`：零新依赖（复用仓内 hex 0.4 + std serde/collections，地址复用 x402::EvmAddress 不复制 keccak），零浮点/零 syscall/零 unsafe/零 IO/无生产 panic。
+- hex_decode（剥 0x/0X + 偶数 ASCII hex）；parse_paymaster_and_data（v0.6 前 20B 地址+tail，data 可空；<20B PaymasterDataTooShort、坏 hex BadPaymasterDataHex）；UserOperation::effective_paymaster 兼容 v0.6/v0.7，两者冲突 PaymasterMismatch、只给 data 无地址 NoPaymasterProvided。
+- UserOperationGas 七 u128 字段 validate（callGas 允许 0，其余零具名拒；maxFee 零/priority 零/priority>max 具名拒）；total_gas 五类气体 checked 求和；estimated_max_gas_cost=total×maxFee checked 相乘只上估，溢出 ArithmeticOverflow 无 panic。
+- SponsorPolicy.decide_sponsorship(uo,spent_before,now) fail-closed 短路链：开关/零 sender/零 paymaster/链不符/气体/限额非法/时间窗非法与未到已过/paymaster 不一致/单笔上估上限/白名单（空默认全拒，allow_any_sender 放开）/累计预算 checked 守恒（恰好花完允许、再超 BudgetExceeded）；now/chainId/spent 显式传入内核不读时钟。
+- SponsorshipApproval 恒 produces_paymaster_signature=false/relays_user_operation=false；preview 恒无签名、sign_paymaster_data 恒 PaymasterSignerNotConfigured，绝不伪造担保签名。
+- PaymasterError 23 变体全 PAYMASTER_* 前缀 Display+Error；生产全具名返回不 panic。
+- T0 系统插件 payment-router 新注册 paymaster_userop_validate/paymaster_decide_sponsorship/paymaster_sign（decide 白名单 Vec<String> 转 BTreeSet，坏地址 PAYMASTER_BAD_WHITELIST_ADDRESS），连旧共 16 handler；status 增 paymaster_introduced_in=v3.9.5 与完整 paymaster 诚实块（不连 bundler/不广播/不持钥/不垫付/不质押/不校链上 nonce 存款/不读时钟/整数 checked/默认 fail-closed/白名单空默认拒），enforceable 增 3 位，provided 增 3 true + bundler_relay/stake_write 两 false，capabilities_declared 5→6（加 erc4337:paymaster:decide），reserved 登记 bundler:relay、paymaster:stake:write；status_payload 把 paymaster/enforceable/provided 抽局部 json! 变量消除 serde_json 宏递归限。
+- 全量 gsn-core lib **595/0**（较 580 净增 15：paymaster 15；payment handler E2E 1 与系统插件 spawn E2E 在既有用例内扩 validate/decide 成功 + sign fail-closed + bundler/stake NotFound）、fmt --check、clippy --all-targets -D warnings（bool 断言改 assert!(!)、doc 列表缩进，无 allow 掩盖）、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、js test(22)、check-version 3.9.x 全绿；release daemon --version=0.3.95。
+- 版本 npm 3.9.5 ↔ gsn-core/gsn-daemon 0.3.95。
+- 诚实边界：交付纯链下决策内核非 Paymaster 合约/Bundler 集成——不聚合/不提交/不广播 UserOp、不模拟链上执行、不校 EntryPoint 地址/链上 nonce/存款；approved 仅表在传入策略与上估成本内合规非链上必付；gas 为上限×maxFee 最大上估非实际扣费（不含 L2 L1 fee）；不持钥不产 validatePaymasterUserOp 签名、bundler 中继/质押写 NotFound；now/chainId/spent/余额显式传入。BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；外部协议采用量/规模数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.4] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（5/9）——ERC-8004 三注册表纯协议内核（Identity 身份句柄绑定 + Reputation 带质押权重整数信誉聚合 + Validation 独立验证者 BFT-lite（n≥3f+1）裁决；零新依赖仅复用 sha2/hex，只做链下可验证决策面，不铸造 ERC-721/不连 RPC/不读写链上注册表/不持私钥）（#127，patch）

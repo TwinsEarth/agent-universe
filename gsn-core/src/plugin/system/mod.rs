@@ -514,8 +514,31 @@ mod tests {
             st["signing"]["production_default_host_key_configured"],
             false
         );
-        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster 只读协议能力（共 6 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 6);
+        // v3.9.6 BTC HTLC / RGB 纯校验面（状态自描述，只读不结算）。
+        assert_eq!(st["btc_htlc"]["introduced_in"], "v3.9.6");
+        assert_eq!(st["btc_htlc"]["btc_node_connection"], false);
+        assert_eq!(st["btc_htlc"]["transaction_broadcast"], false);
+        assert_eq!(st["btc_htlc"]["full_bitcoin_script_interpreter"], false);
+        assert_eq!(st["btc_htlc"]["integer_sat_amount_conservation"], true);
+        assert_eq!(st["btc_htlc"]["htlc_finalize_fail_closed"], true);
+        assert_eq!(st["rgb"]["introduced_in"], "v3.9.6");
+        assert_eq!(st["rgb"]["tapret_tweak_derivation"], false);
+        assert_eq!(st["rgb"]["rgb_state_transition_validation"], false);
+        assert_eq!(st["rgb"]["onchain_anchor_write"], false);
+        assert_eq!(st["provided"]["btc_htlc_verify"], true);
+        assert_eq!(st["provided"]["rgb_commitment_verify"], true);
+        assert_eq!(st["provided"]["btc_node_connection"], false);
+        assert_eq!(
+            st["enforceable"]["htlc_fail_closed_when_node_unconfigured"],
+            true
+        );
+        assert_eq!(
+            st["enforceable"]["rgb_tapret_derivation_honestly_not_claimed"],
+            true
+        );
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster
+        // 只读协议能力；v3.9.6 再 + btc:htlc:read / rgb:commitment:read（共 8 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 8);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -758,6 +781,87 @@ mod tests {
         // bundler 中继 / 链上质押写方法未接线（NotFound），不伪造可写。
         assert!(inst.call("erc4337_bundler_relay", b"{}").is_err());
         assert!(inst.call("paymaster_stake_write", b"{}").is_err());
+
+        // v3.9.6 BTC HTLC：经系统插件字节桥做链下纯校验（真实脚本/哈希/金额/超时）。
+        let htlc_pre = [9u8; 32];
+        let htlc_hash: [u8; 32] = Sha256::digest(htlc_pre).into();
+        let htlc_recv = [2u8; 33];
+        let htlc_send = [3u8; 33];
+        let mut htlc_script = Vec::new();
+        htlc_script.extend_from_slice(&[0x63, 0xaa, 0x20]);
+        htlc_script.extend_from_slice(&htlc_hash);
+        htlc_script.extend_from_slice(&[0x88, 0x75, 0x21]);
+        htlc_script.extend_from_slice(&htlc_recv);
+        // 700_000 区块高度，最小 LE 3 字节 [0x60,0xAE,0x0A]。
+        htlc_script.extend_from_slice(&[0xac, 0x67, 0x03, 0x60, 0xae, 0x0a, 0xb1, 0x75, 0x21]);
+        htlc_script.extend_from_slice(&htlc_send);
+        htlc_script.extend_from_slice(&[0xac, 0x68]);
+        let htlc_program = Sha256::digest(&htlc_script);
+        let htlc_ok = serde_json::to_vec(&serde_json::json!({
+            "offered_sats": 99_000u64,
+            "fee_sats": 1_000u64,
+            "total_input_sats": 100_000u64,
+            "preimage_hex": hex::encode(htlc_pre),
+            "payment_hash_hex": hex::encode(htlc_hash),
+            "witness_program_hex": hex::encode(htlc_program),
+            "witness_script_hex": hex::encode(&htlc_script),
+            "current": 690_000u32,
+            "min_remaining": 1_000u32
+        }))
+        .unwrap();
+        let htlc_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("btc_htlc_verify", &htlc_ok).unwrap()).unwrap();
+        assert_eq!(htlc_out["verified"], true);
+        assert_eq!(htlc_out["witness_program_matches"], true);
+        assert_eq!(htlc_out["locktime_units"], "block_height");
+        assert_eq!(htlc_out["onchain_packed_or_confirmed"], false);
+        // 金额不守恒 → 具名拒绝。
+        let mut htlc_bad: serde_json::Value = serde_json::from_slice(&htlc_ok).unwrap();
+        htlc_bad["total_input_sats"] = serde_json::json!(100_001u64);
+        assert!(inst
+            .call("btc_htlc_verify", &serde_json::to_vec(&htlc_bad).unwrap())
+            .unwrap_err()
+            .to_string()
+            .contains("HTLC_SETTLEMENT_MISMATCH"));
+        // finalize 不连节点：具名 fail-closed，不伪造交易/原像。
+        assert!(inst
+            .call("btc_htlc_finalize", b"{}")
+            .unwrap_err()
+            .to_string()
+            .contains("HTLC_NODE_NOT_CONFIGURED"));
+
+        // v3.9.6 RGB：opret-first 承诺位置校验通过；tapret tweak 推导诚实未实现。
+        let rgb_commitment = [0xabu8; 32];
+        let mut rgb_opret = vec![0x6a, 0x20];
+        rgb_opret.extend_from_slice(&rgb_commitment);
+        let mut rgb_taproot = vec![0x51, 0x20];
+        rgb_taproot.extend_from_slice(&[4u8; 32]);
+        let rgb_ok = serde_json::to_vec(&serde_json::json!({
+            "scheme": "opret_first",
+            "commitment_hex": hex::encode(rgb_commitment),
+            "outputs_script_hex": [hex::encode(&rgb_taproot), hex::encode(&rgb_opret)],
+            "taproot_output_index": 0,
+            "require_derivation": false
+        }))
+        .unwrap();
+        let rgb_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("rgb_commitment_verify", &rgb_ok).unwrap()).unwrap();
+        assert_eq!(rgb_out["verified"], true);
+        assert_eq!(rgb_out["anchor_output_index"], 1);
+        assert_eq!(rgb_out["derivation_verified"], true);
+        let rgb_tapret = serde_json::to_vec(&serde_json::json!({
+            "scheme": "tapret_first",
+            "commitment_hex": hex::encode(rgb_commitment),
+            "outputs_script_hex": [hex::encode(&rgb_taproot)],
+            "taproot_output_index": 0,
+            "require_derivation": true
+        }))
+        .unwrap();
+        assert!(inst
+            .call("rgb_commitment_verify", &rgb_tapret)
+            .unwrap_err()
+            .to_string()
+            .contains("RGB_TAPRET_DERIVATION_NOT_IMPLEMENTED"));
 
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());

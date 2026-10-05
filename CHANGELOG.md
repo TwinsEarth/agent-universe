@@ -1,3 +1,17 @@
+## [v3.9.4] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（5/9）——ERC-8004 三注册表纯协议内核（Identity 身份句柄绑定 + Reputation 带质押权重整数信誉聚合 + Validation 独立验证者 BFT-lite（n≥3f+1）裁决；零新依赖仅复用 sha2/hex，只做链下可验证决策面，不铸造 ERC-721/不连 RPC/不读写链上注册表/不持私钥）（#127，patch）
+
+- 新增 `gsn-core/src/economy/payment/erc8004.rs`：零新依赖（仅复用仓内 sha2 0.10 / hex 0.4 + std serde/collections），零浮点/零 syscall/零 unsafe/零 IO/无生产 panic。
+- IdentityRegistry：tokenId(u64)↔DID↔Ed25519(32B)↔tokenURI SHA-256 承诺四元组；validate_did（did: 前缀/非空/len≤256/无空白控制符）、validate_pubkey_hex、hash_token_uri（标准 SHA-256 非 keccak）；mint（传原文自算承诺）/mint_with_hash（承诺须 32B hex 否则 InvalidUriHash）；拒 tokenId=0/坏 DID/坏 key/坏 hash/token·did·pk 重复；存储与比对统一 norm_hex32（剥 0x/0X + 小写，大小写不敏感）；verify_binding 不自洽返 false 不 panic。
+- ReputationRegistry + 无状态 aggregate_feedback：四维 quality/speed/honesty/availability 隔离；Feedback{reviewer,subject,dimension,score:i16(-100..=100),weight:u64(>0),nonce} 校验 InvalidScore/InvalidWeight/SelfFeedbackForbidden/UnknownIdentity/(reviewer,nonce) DuplicateFeedbackNonce；i128/u128 checked 累加 ArithmeticOverflow；score_01k 无反馈中性 500 否则 clamp(signed*500/(total*100)+500,0..=1000) 整数守恒。
+- ValidationTally：方法 stake_rerun/tee_attestation/zkml，裁决 valid/invalid；record_vote_checked 校验验证者存在+证据 32B hex+权重>0；decide BFT-lite n≥3f+1（total=0 InvalidQuorumTally；方向需 weight*3>=total*2 且严格多于对方，2/2 与 2/3 即 confirm，1:1 等 Inconclusive）；权重以字符串出 JSON 规避 u128 精度。
+- Erc8004Error 15 变体稳定 code()/Display/Error；生产全具名返回不 panic。
+- T0 系统插件 payment-router 新注册 erc8004_identity_check/erc8004_reputation_aggregate/erc8004_validation_decide 三只读 handler（快照由调用方取证传入，维度/方法/裁决白名单解析），连旧共 13 handler；status 增 erc8004_introduced_in=v3.9.4 与完整 erc8004 诚实块（onchain_mint_or_write=false/evm_rpc_connection=false/live_registry_read=false/self_feedback_blocked/nonce_replay_guard/integer_only/fail_closed），enforceable 增 3 位，capabilities_declared 4→5（加 erc8004:registry:read），reserved 登记 erc8004:registry:write，未接线 erc8004_registry_write NotFound 不伪造可写。
+- 全量 gsn-core lib **580/0**（较 566 净增 14：erc8004 13 + payment handler E2E 1；系统插件 spawn E2E 在既有用例内扩三方法真实 call）、fmt --check、clippy --all-targets -D warnings、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、js test(22)、check-version 3.9.4（十声明点）全绿；release daemon --version=0.3.94。
+- 版本 npm 3.9.4 ↔ gsn-core/gsn-daemon 0.3.94。
+- 诚实边界：交付纯协议决策内核非链上集成——不铸造/不连 RPC/不读写链上注册表/不持钥/不广播/不划转；binding true 仅表快照自洽非链上持有；信誉是链下整数复算不同步链、分数口径为本内核定义；BFT-lite 不做验证者选举/质押真实性/equivocation 罚没/证据真伪（证据只校 32B hex）。ERC-4337 Paymaster v3.9.5、BTC HTLC/RGB 纯校验 v3.9.6、锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；外部协议采用量/规模数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.3] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（4/9）——L402 / 比特币闪电网络纯协议内核（402 challenge 头解析 + BOLT11 人类可读金额前缀整数解析 + preimage/payment_hash SHA256 关系与精确金额守恒；只用仓内 sha2/hex 无新依赖，只校验不连节点，生产默认 L402_LIGHTNING_NOT_CONFIGURED fail-closed，不持钥/不签 HTLC/不解 bech32/不校 macaroon 签名）（#126，patch）

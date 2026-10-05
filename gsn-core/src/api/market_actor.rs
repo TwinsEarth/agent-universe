@@ -209,18 +209,22 @@ pub enum MarketCommand {
         dispute: Value,
         reply: oneshot::Sender<MarketResponse>,
     },
-    /// 仲裁
-    /// 仲裁（v2.8.5：罚没金额服务端定，需显式仲裁者，不再传 slash）
+    /// 仲裁（P0-4：特权写必须携带签名治理信封）
+    ///
+    /// capability=`governance:arbitrate`，target=dispute_id，claim.guilty 为裁决。
+    /// Governance.verify 全通过后才执行 slash；仲裁者取自信封 sender_did。
     Arbitrate {
-        dispute_id: String,
-        arbitrator: String,
-        guilty: bool,
+        cmd: crate::marketplace::SignedGovernanceCommand,
+        now: u64,
         reply: oneshot::Sender<MarketResponse>,
     },
-    /// 充值
+    /// off-chain 授信（P0-4：特权写必须携带签名治理信封）
+    ///
+    /// capability=`governance:credit`，target=account，claim.amount 为非负整数。
+    /// 生产口径必须由链上支付凭证支持（未验证/需外部审计）。
     Deposit {
-        account: String,
-        amount: Money,
+        cmd: crate::marketplace::SignedGovernanceCommand,
+        now: u64,
         reply: oneshot::Sender<MarketResponse>,
     },
     /// 查询余额
@@ -358,6 +362,23 @@ impl MarketActorHandle {
         let (tx, mut rx) = mpsc::channel::<MarketCommand>(256);
         tokio::spawn(async move {
             let mut market = AgentMarket::with_min_stake(min_stake);
+            while let Some(cmd) = rx.recv().await {
+                dispatch(&mut market, cmd);
+            }
+        });
+        Self { tx }
+    }
+
+    /// 启动并注入受权治理集（P0-4，测试/dev/faucet 用）。
+    ///
+    /// 生产路径仍走 [`Self::spawn`]（治理集来自 `GSN_GOVERNANCE_FILE`）。
+    /// 本构造仅用于：测试中构造签名治理命令后调用 `arbitrate_signed` /
+    /// `deposit_signed`；或本地 faucet 开发环境显式声明治理成员。
+    pub fn spawn_with_governance_members(members: Vec<(String, [u8; 32])>) -> Self {
+        let (tx, mut rx) = mpsc::channel::<MarketCommand>(256);
+        tokio::spawn(async move {
+            let mut market = AgentMarket::new();
+            market.set_governance(crate::marketplace::Governance::from_members(members));
             while let Some(cmd) = rx.recv().await {
                 dispatch(&mut market, cmd);
             }
@@ -645,27 +666,24 @@ impl MarketActorHandle {
         self.call(|reply| MarketCommand::OpenDispute { dispute, reply })
             .await
     }
-    pub async fn arbitrate(
+    /// 仲裁（P0-4：需签名治理信封 capability=governance:arbitrate）
+    pub async fn arbitrate_signed(
         &self,
-        dispute_id: String,
-        arbitrator: String,
-        guilty: bool,
+        cmd: crate::marketplace::SignedGovernanceCommand,
+        now: u64,
     ) -> MarketResponse {
-        self.call(|reply| MarketCommand::Arbitrate {
-            dispute_id,
-            arbitrator,
-            guilty,
-            reply,
-        })
-        .await
+        self.call(move |reply| MarketCommand::Arbitrate { cmd, now, reply })
+            .await
     }
-    pub async fn deposit(&self, account: String, amount: Money) -> MarketResponse {
-        self.call(|reply| MarketCommand::Deposit {
-            account,
-            amount,
-            reply,
-        })
-        .await
+
+    /// off-chain 授信（P0-4：需签名治理信封 capability=governance:credit）
+    pub async fn deposit_signed(
+        &self,
+        cmd: crate::marketplace::SignedGovernanceCommand,
+        now: u64,
+    ) -> MarketResponse {
+        self.call(move |reply| MarketCommand::Deposit { cmd, now, reply })
+            .await
     }
     pub async fn balance(&self, account: String) -> MarketResponse {
         self.call(|reply| MarketCommand::Balance { account, reply })
@@ -972,38 +990,37 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 }
             }
         }
-        MarketCommand::Arbitrate {
-            dispute_id,
-            arbitrator,
-            guilty,
-            reply,
-        } => match market.arbitrate(&dispute_id, &arbitrator, guilty) {
-            Ok((verdict, slashed)) => {
-                let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                    "status": "arbitrated",
-                    "dispute_id": dispute_id,
-                    "arbitrator": arbitrator,
-                    "verdict": verdict,
-                    "slash_amount": slashed,
-                })));
+        MarketCommand::Arbitrate { cmd, now, reply } => {
+            match market.arbitrate_signed(&cmd, now) {
+                Ok((verdict, slashed)) => {
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "arbitrated",
+                        "dispute_id": cmd.target,
+                        "arbitrator": cmd.sender_did,
+                        "capability": cmd.capability,
+                        "verdict": verdict,
+                        "slash_amount": slashed,
+                    })));
+                }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
+                }
             }
-            Err(e) => {
-                let _ = reply.send(MarketResponse::err(e));
-            }
-        },
-        MarketCommand::Deposit {
-            account,
-            amount,
-            reply,
-        } => match market.deposit(&account, amount) {
-            Ok(_) => {
-                let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                    "status": "deposited", "account": account,
-                    "amount": amount, "balance": market.balance(&account),
-                })));
-            }
-            Err(e) => {
-                let _ = reply.send(MarketResponse::err(e));
+        }
+        MarketCommand::Deposit { cmd, now, reply } => {
+            match market.deposit_signed(&cmd, now) {
+                Ok(_) => {
+                    let bal = market.balance(&cmd.target);
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "deposited",
+                        "account": cmd.target,
+                        "capability": cmd.capability,
+                        "balance": bal,
+                    })));
+                }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
+                }
             }
         },
         MarketCommand::Balance { account, reply } => {

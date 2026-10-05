@@ -380,42 +380,56 @@ pub async fn route(
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            if let Some(v) = parsed_body {
-                let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
-                // v2.8.5：仲裁者身份必填（拒绝匿名）；罚没金额由服务端规则决定，
-                // 不再读取请求体的 slash_amount。
-                let arbitrator = v
-                    .get("arbitrator")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if arbitrator.trim().is_empty() {
-                    return Routed::bad_request("缺少仲裁者身份（arbitrator）");
-                }
-                return from_mr(market.arbitrate(id, arbitrator, guilty).await, 200);
+            // P0-4：仲裁是特权写，请求体必须是签名治理信封
+            // （SignedGovernanceCommand，capability=governance:arbitrate，
+            // target=dispute_id，claim.guilty 为裁决）。无信封/验签失败一律拒绝；
+            // 仲裁者身份由信封 sender_did 决定，禁止自报。
+            let Some(v) = parsed_body else {
+                return Routed::bad_request("缺少签名治理信封（SignedGovernanceCommand）");
+            };
+            let cmd: crate::marketplace::SignedGovernanceCommand =
+                match serde_json::from_value(v.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Routed::bad_request(&format!(
+                            "治理信封解析失败（需 SignedGovernanceCommand JSON）: {e}"
+                        ))
+                    }
+                };
+            if cmd.target != id {
+                return Routed::bad_request(&format!(
+                    "治理信封 target={} 与路径 dispute_id={} 不一致",
+                    cmd.target, id
+                ));
             }
-            return Routed::bad_request("缺少仲裁数据");
+            return from_mr(market.arbitrate_signed(cmd, unix_now()).await, 200);
         }
         Some(RouteTarget::AccountDeposit(account)) => {
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            // v2.8.6（GAP §4.1）：JSON body 金额只接受整数（i64），
-            // 拒绝浮点（10.5 截断、10.0 亦为 f64）；URL query 为字符串→解析整数。
-            let amount = parsed_body
-                .as_ref()
-                .and_then(|v| v.get("amount"))
-                .and_then(|x| x.as_i64())
-                .or_else(|| q.get("amount").and_then(|s| s.parse::<i64>().ok()));
-            if let Some(amount) = amount {
-                return from_mr(
-                    market
-                        .deposit(account, crate::marketplace::Money::new(amount))
-                        .await,
-                    200,
-                );
+            // P0-4：off-chain 授信是特权写，请求体必须是签名治理信封
+            // （capability=governance:credit，target=account，claim.amount 非负整数）。
+            // 生产口径必须由链上支付凭证支持（未验证/需外部审计）。
+            let Some(v) = parsed_body else {
+                return Routed::bad_request("缺少签名治理信封（SignedGovernanceCommand）");
+            };
+            let cmd: crate::marketplace::SignedGovernanceCommand =
+                match serde_json::from_value(v.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Routed::bad_request(&format!(
+                            "治理信封解析失败（需 SignedGovernanceCommand JSON）: {e}"
+                        ))
+                    }
+                };
+            if cmd.target != account {
+                return Routed::bad_request(&format!(
+                    "治理信封 target={} 与路径 account={} 不一致",
+                    cmd.target, account
+                ));
             }
-            return Routed::bad_request("缺少 amount");
+            return from_mr(market.deposit_signed(cmd, unix_now()).await, 200);
         }
         Some(RouteTarget::AccountBalance(account)) => {
             return from_mr(market.balance(account).await, 200);

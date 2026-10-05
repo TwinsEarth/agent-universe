@@ -241,16 +241,35 @@ mod tests {
 
     #[tokio::test]
     async fn register_gated_registers_valid_card() {
-        let market = MarketActorHandle::spawn();
+        // P0-4：deposit 现为特权写，必须由治理集成员签名授信命令。
+        // 这里构造一个 faucet 治理成员，注入治理集后签 credit 命令给 alice 注资。
+        use crate::identity::{Did, Keypair};
+        use crate::marketplace::{SignedGovernanceCommand, GOV_CAP_CREDIT};
+        let mut seed = [0u8; 32];
+        seed[0] = 42;
+        let faucet_kp = Keypair::from_seed(&seed);
+        let faucet_did = Did::from_public_key(faucet_kp.public_key()).to_string();
+        let faucet_pk: [u8; 32] = faucet_kp.public_key().try_into().unwrap();
+        let market = MarketActorHandle::spawn_with_governance_members(vec![(
+            faucet_did.clone(),
+            faucet_pk,
+        )]);
         let orch = PluginOrchestratorHandle::new(booted_host(), market.clone());
-        // 先 deposit 100 到注册方账户，满足注册质押锁定门槛。
-        let d = market
-            .deposit(
-                "did:nau:alice".to_string(),
-                crate::marketplace::Money::new(100),
-            )
-            .await;
-        assert!(matches!(d, MarketResponse::Ok(_)), "deposit 应成功: {d:?}");
+        // 先由 faucet 签名授信 100 到注册方账户，满足注册质押锁定门槛。
+        let now = 1_000_000u64;
+        let credit = SignedGovernanceCommand::sign(
+            "dep1",
+            &faucet_did,
+            &faucet_kp,
+            GOV_CAP_CREDIT,
+            "did:nau:alice",
+            serde_json::json!({"amount": 100}),
+            "n-dep-1",
+            now - 10,
+            300,
+        );
+        let d = market.deposit_signed(credit, now).await;
+        assert!(matches!(d, MarketResponse::Ok(_)), "授信应成功: {d:?}");
         let resp = orch.register_agent_gated(valid_card()).await;
         match resp {
             MarketResponse::Ok(v) => assert_eq!(v["status"], "registered"),

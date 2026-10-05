@@ -15,6 +15,28 @@ use gsn_core::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+/// dev/faucet 治理成员（P0-4：授信须受权治理签名命令；生产须链上凭证，未验证）。
+fn faucet() -> (String, gsn_core::Keypair) {
+    let mut seed = [0u8; 32];
+    seed[0] = 7;
+    let kp = gsn_core::Keypair::from_seed(&seed);
+    (gsn_core::Did::from_public_key(kp.public_key()).to_string(), kp)
+}
+fn spawn_market() -> MarketActorHandle {
+    let (did, kp) = faucet();
+    let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+    MarketActorHandle::spawn_with_governance_members(vec![(did, pk)])
+}
+fn deposit_cmd(account: &str, amount: i64) -> Value {
+    let (did, kp) = faucet();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let cmd = gsn_core::marketplace::SignedGovernanceCommand::sign(
+        "v286", &did, &kp, gsn_core::marketplace::GOV_CAP_CREDIT, account,
+        serde_json::json!({"amount": amount}), &format!("v286-{account}-{amount}"), now - 10, 300,
+    );
+    serde_json::to_value(cmd).unwrap()
+}
+
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -59,7 +81,7 @@ async fn call(
 #[test]
 fn deposit_amount_string_rejected() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         let r = call(
             &market,
@@ -81,7 +103,7 @@ fn deposit_amount_string_rejected() {
 #[test]
 fn deposit_amount_fractional_float_rejected() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         let r = call(
             &market,
@@ -97,7 +119,7 @@ fn deposit_amount_fractional_float_rejected() {
 #[test]
 fn deposit_amount_dot_zero_float_rejected() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         // serde_json 中 10.0 也是 f64，is_i64() 为 false，必须拒绝。
         let r = call(
@@ -114,7 +136,7 @@ fn deposit_amount_dot_zero_float_rejected() {
 #[test]
 fn deposit_missing_amount_rejected() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         let r = call(
             &market,
@@ -131,7 +153,7 @@ fn deposit_missing_amount_rejected() {
 #[test]
 fn arbitrate_guilty_wrong_type_rejected() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         // guilty 必须是 boolean；传数字 1 应被 -32602 拒绝，不再 unwrap_or(false)。
         let r = call(
@@ -149,12 +171,12 @@ fn arbitrate_guilty_wrong_type_rejected() {
 #[test]
 fn deposit_valid_integer_succeeds() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
         let r = call(
             &market,
             &sb,
-            json!({"name":"market_deposit","arguments":{"account":"a","amount":250}}),
+            json!({"name":"market_deposit","arguments":{"account":"a","amount":250,"governance": deposit_cmd("a",250)}}),
         )
         .await;
         assert_eq!(r.status, 200);

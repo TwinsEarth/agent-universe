@@ -8,11 +8,43 @@
 //! v2.5.8：金额为精确整数（Money），发布即托管预算，注册即锁定质押，
 //! 付款方余额不足一律拒绝（不凭空铸币），守恒为精确相等。
 
+use gsn_core::identity::{Did, Keypair};
 use gsn_core::marketplace::{
-    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, MarketAgentCard, Money, Pricing,
-    PricingModel, QaCommittee, QaVote, ResultEnvelope, Sla, TaskSpec, TaskState,
-    VerificationPolicy,
+    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, Governance, GOV_CAP_ARBITRATE,
+    GOV_CAP_CREDIT, MarketAgentCard, Money, Pricing, PricingModel, QaCommittee, QaVote,
+    ResultEnvelope, Sla, SignedGovernanceCommand, TaskSpec, TaskState, VerificationPolicy,
 };
+
+/// 演示用 faucet 治理成员（dev/faucet：生产授信须链上凭证，未验证）。
+fn faucet() -> (String, Keypair) {
+    let mut seed = [0u8; 32];
+    seed[0] = 7;
+    let kp = Keypair::from_seed(&seed);
+    (Did::from_public_key(kp.public_key()).to_string(), kp)
+}
+
+/// dev/faucet 授信（治理签名命令）。
+fn deposit(market: &mut AgentMarket, account: &str, amount: Money) {
+    let (did, kp) = faucet();
+    let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+    market.set_governance(Governance::from_members(vec![(did.clone(), pk)]));
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cmd = SignedGovernanceCommand::sign(
+        "demo",
+        &did,
+        &kp,
+        GOV_CAP_CREDIT,
+        account,
+        serde_json::json!({"amount": amount.as_i64()}),
+        "demo-nonce",
+        now - 10,
+        300,
+    );
+    market.deposit_signed(&cmd, now).unwrap();
+}
 
 fn make_agent(id: &str, name: &str, skill: &str, price: i64, stake: i64) -> MarketAgentCard {
     MarketAgentCard {
@@ -75,9 +107,9 @@ fn main() {
 
     // ===== 步骤 1：充值并注册 3 个 Agent =====
     println!("\n【步骤 1】充值质押金并注册 Agent（质押准入，最低 100）");
-    market.deposit("agent-writer", Money::new(100)).unwrap();
-    market.deposit("agent-pro", Money::new(150)).unwrap();
-    market.deposit("agent-data", Money::new(200)).unwrap();
+    deposit(&mut market, "agent-writer", Money::new(100));
+    deposit(&mut market, "agent-pro", Money::new(150));
+    deposit(&mut market, "agent-data", Money::new(200));
     market
         .register_agent(make_agent("agent-writer", "文案师", "writing", 10, 100))
         .unwrap();
@@ -90,7 +122,7 @@ fn main() {
     println!("  已注册 Agent 数量：{}", market.agent_count());
 
     // 验证：质押不足被拒绝（钱仍留在自有账户，未锁定）
-    market.deposit("agent-bad", Money::new(50)).unwrap();
+    deposit(&mut market, "agent-bad", Money::new(50));
     let bad = make_agent("agent-bad", "低质押", "writing", 5, 50);
     match market.register_agent(bad) {
         Ok(_) => println!("  [异常] 低质押应被拒绝！"),
@@ -110,7 +142,7 @@ fn main() {
 
     // ===== 步骤 3：需求方充值 =====
     println!("\n【步骤 3】需求方充值");
-    market.deposit("requester-1", Money::new(100)).unwrap();
+    deposit(&mut market, "requester-1", Money::new(100));
     println!("  requester-1 余额：{}", market.balance("requester-1"));
 
     // ===== 步骤 4：发布任务（发布即托管预算 30）=====
@@ -177,6 +209,7 @@ fn main() {
         trace_ref: "trace://task-1/step/3".to_string(),
         evidence_grade: EvidenceGrade::CpuProto,
         latency_ms: 950,
+        pocv: None,
     };
     market.submit_result(envelope).unwrap();
     let task = market.get_task("task-1").unwrap();
@@ -258,6 +291,7 @@ fn main() {
             trace_ref: "trace://task-2".to_string(),
             evidence_grade: EvidenceGrade::Unverified,
             latency_ms: 1800,
+            pocv: None,
         })
         .unwrap();
 
@@ -276,7 +310,25 @@ fn main() {
     );
 
     // 仲裁：有罪，罚没金额由服务端规则决定（全部质押），托管预算全额退回需求方
-    let (verdict, slashed) = market.arbitrate("dispute-1", "arbiter-1", true).unwrap();
+    let (arb_did, arb_kp) = faucet();
+    let arb_pk: [u8; 32] = arb_kp.public_key().try_into().unwrap();
+    market.set_governance(Governance::from_members(vec![(arb_did.clone(), arb_pk)]));
+    let arb_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let arb_cmd = SignedGovernanceCommand::sign(
+        "demo",
+        &arb_did,
+        &arb_kp,
+        GOV_CAP_ARBITRATE,
+        "dispute-1",
+        serde_json::json!({"guilty": true}),
+        "demo-arb-nonce",
+        arb_now - 10,
+        300,
+    );
+    let (verdict, slashed) = market.arbitrate_signed(&arb_cmd, arb_now).unwrap();
     println!("  仲裁结果：{}，罚没：{}", verdict, slashed.as_i64());
     println!(
         "  任务状态：{}",

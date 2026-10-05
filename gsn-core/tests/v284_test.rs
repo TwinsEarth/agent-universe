@@ -18,6 +18,9 @@ use gsn_core::marketplace::{
     AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, Money, Pricing, PricingModel,
     ResultEnvelope, Sla, TaskSpec, TaskState, VerificationPolicy,
 };
+
+#[path = "common/mod.rs"]
+mod helpers;
 use gsn_core::storage::PersistentStore;
 
 fn tmp_db(tag: &str) -> std::path::PathBuf {
@@ -93,8 +96,8 @@ fn evidence_gate_survives_restart() {
     {
         let mut market = AgentMarket::new();
         // 需求方与 agent 各入金（需求方覆盖预算，agent 覆盖质押）
-        market.deposit("requester-1", Money::new(5000)).unwrap();
-        market.deposit(agent_id, Money::new(1000)).unwrap();
+        helpers::deposit(&mut market, "requester-1", Money::new(5000));
+        helpers::deposit(&mut market, agent_id, Money::new(1000));
         // 注册 agent（质押 1000 锁定）
         market.register_agent(make_card(agent_id)).unwrap();
         // 发布 BftLite 任务（预算 5000 托管）
@@ -123,6 +126,7 @@ fn evidence_gate_survives_restart() {
                 trace_ref: String::new(),
                 evidence_grade: EvidenceGrade::CpuProto,
                 latency_ms: 100,
+                pocv: None,
             })
             .unwrap();
 

@@ -12,6 +12,10 @@
 
 use gsn_core::marketplace::*;
 
+#[path = "common/mod.rs"]
+mod helpers;
+
+
 // ===== 辅助函数 =====
 
 fn make_agent_card(id: &str, stake: i64) -> MarketAgentCard {
@@ -74,14 +78,14 @@ fn make_bid(agent: &str, task: &str, price: i64) -> Bid {
 
 /// 正常路径：先充值质押金，再注册
 fn fund_and_register(market: &mut AgentMarket, id: &str, stake: i64) {
-    market.deposit(id, Money::new(stake)).unwrap();
+    helpers::deposit(market, id, Money::new(stake));
     market.register_agent(make_agent_card(id, stake)).unwrap();
 }
 
 /// 正常路径：先给需求方充值预算，再发布（发布即托管）
 fn fund_and_publish(market: &mut AgentMarket, task: TaskSpec, funds: i64) -> String {
     let requester = task.requester.clone();
-    market.deposit(&requester, Money::new(funds)).unwrap();
+    helpers::deposit(market, &requester, Money::new(funds));
     market.publish_task(task).unwrap()
 }
 
@@ -102,6 +106,7 @@ fn match_and_accept(market: &mut AgentMarket, task_id: &str, agent: &str, price:
             trace_ref: format!("trace://{}/1", task_id),
             evidence_grade: EvidenceGrade::CpuProto,
             latency_ms: 100,
+            pocv: None,
         })
         .unwrap();
 }
@@ -111,7 +116,7 @@ fn match_and_accept(market: &mut AgentMarket, task_id: &str, agent: &str, price:
 #[test]
 fn test_register_agent_success() {
     let mut market = AgentMarket::new();
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(100));
     let result = market.register_agent(make_agent_card("agent-1", 100));
     assert!(result.is_ok());
     assert_eq!(market.agent_count(), 1);
@@ -120,7 +125,7 @@ fn test_register_agent_success() {
 #[test]
 fn test_register_agent_insufficient_stake() {
     let mut market = AgentMarket::new();
-    market.deposit("agent-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(50));
     let result = market.register_agent(make_agent_card("agent-1", 50)); // 最低 100
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("质押不足"));
@@ -129,7 +134,7 @@ fn test_register_agent_insufficient_stake() {
 #[test]
 fn test_register_agent_empty_id() {
     let mut market = AgentMarket::new();
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(100));
     let mut card = make_agent_card("agent-1", 100);
     card.agent_id = "".to_string();
     let result = market.register_agent(card);
@@ -139,7 +144,7 @@ fn test_register_agent_empty_id() {
 #[test]
 fn test_register_agent_empty_name() {
     let mut market = AgentMarket::new();
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(100));
     let mut card = make_agent_card("agent-1", 100);
     card.name = "".to_string();
     let result = market.register_agent(card);
@@ -149,7 +154,7 @@ fn test_register_agent_empty_name() {
 #[test]
 fn test_register_agent_duplicate() {
     let mut market = AgentMarket::new();
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(100));
     assert!(market
         .register_agent(make_agent_card("agent-1", 100))
         .is_ok());
@@ -196,7 +201,7 @@ fn test_publish_task_success() {
 #[test]
 fn test_publish_task_empty_goal() {
     let mut market = AgentMarket::new();
-    market.deposit("user-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "user-1", Money::new(50));
     let mut task = make_task("task-1", 50, "user-1");
     task.goal = "".to_string();
     let result = market.publish_task(task);
@@ -208,7 +213,7 @@ fn test_publish_task_empty_goal() {
 #[test]
 fn test_publish_task_empty_todo() {
     let mut market = AgentMarket::new();
-    market.deposit("user-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "user-1", Money::new(50));
     let mut task = make_task("task-1", 50, "user-1");
     task.todo = vec![];
     let result = market.publish_task(task);
@@ -248,7 +253,7 @@ fn test_publish_without_deposit_rejected_escrow() {
 #[test]
 fn test_publish_locks_budget_in_escrow() {
     let mut market = AgentMarket::new();
-    market.deposit("u1", Money::new(80)).unwrap();
+    helpers::deposit(&mut market, "u1", Money::new(80));
     market.publish_task(make_task("t1", 50, "u1")).unwrap();
 
     // 需求方自有余额只剩 30，预算 50 已锁定
@@ -737,8 +742,8 @@ fn test_arbitration_guilty() {
     match_and_accept(&mut market, "t1", "a1", 10);
     market.open_dispute("d1", "t1", "u1", "作弊").unwrap();
 
-    // v2.8.5：仲裁者显式指定，罚没金额由服务端规则决定（不接受请求体）。
-    let (verdict, slashed) = market.arbitrate("d1", "arb-1", true).unwrap();
+    // P0-4：仲裁需受权治理签名命令；仲裁者取自信封 sender。
+    let (verdict, slashed) = helpers::arbitrate(&mut market, "d1", true);
     assert_eq!(verdict, "guilty");
     assert_eq!(slashed, Money::new(100), "仲裁作恶应罚没全部质押 100");
 
@@ -765,7 +770,7 @@ fn test_arbitration_not_guilty() {
     match_and_accept(&mut market, "t1", "a1", 10);
     market.open_dispute("d1", "t1", "u1", "争议").unwrap();
 
-    let (verdict, slashed) = market.arbitrate("d1", "arb-1", false).unwrap();
+    let (verdict, slashed) = helpers::arbitrate(&mut market, "d1", false);
     assert_eq!(verdict, "not_guilty");
     assert_eq!(slashed, Money::ZERO);
 }
@@ -777,7 +782,7 @@ fn test_end_to_end_market_flow() {
     let mut market = AgentMarket::new();
 
     // 1. 充值并注册 Agent（质押 100）
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(&mut market, "agent-1", Money::new(100));
     market
         .register_agent(make_agent_card("agent-1", 100))
         .unwrap();
@@ -785,7 +790,7 @@ fn test_end_to_end_market_flow() {
     // 2. 充值需求方并发布任务（预算 50，发布即托管）
     //    v3.5.1（AU-18）：本用例主体是资金守恒，不依赖 QA；用 policy=None（无需 QA，
     //    证据闸门合法豁免）。旧版靠客户端自报 CpuProto 通过结算闸门，正是 AU-18 封堵点。
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     let mut task = make_task("task-1", 50, "requester-1");
     task.verification_policy = VerificationPolicy::None;
     market.publish_task(task).unwrap();
@@ -809,6 +814,7 @@ fn test_end_to_end_market_flow() {
         trace_ref: "trace://t1/1".to_string(),
         evidence_grade: EvidenceGrade::Unverified,
         latency_ms: 300,
+        pocv: None,
     };
     market.submit_result(envelope).unwrap();
     assert_eq!(
@@ -858,6 +864,7 @@ fn test_end_to_end_rework_flow() {
         trace_ref: "trace://t1/1".to_string(),
         evidence_grade: EvidenceGrade::CpuProto,
         latency_ms: 1000,
+        pocv: None,
     };
     market.submit_result(envelope).unwrap();
 
@@ -884,7 +891,7 @@ fn test_end_to_end_rework_flow() {
 fn test_bid_price_validation() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
-    market.deposit("u1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "u1", Money::new(50));
     market.publish_task(make_task("t1", 50, "u1")).unwrap();
 
     // 0 价拒绝
@@ -907,6 +914,7 @@ fn failing_envelope(report: &str) -> ResultEnvelope {
         trace_ref: "trace://t1/1".to_string(),
         evidence_grade: EvidenceGrade::CpuProto,
         latency_ms: 1000,
+        pocv: None,
     }
 }
 
@@ -914,7 +922,7 @@ fn failing_envelope(report: &str) -> ResultEnvelope {
 fn test_end_to_end_rejected_flow() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
-    market.deposit("u1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "u1", Money::new(50));
     market.publish_task(make_task("t1", 50, "u1")).unwrap();
     market.submit_bid(make_bid("a1", "t1", 10)).unwrap();
     market.match_task("t1").unwrap();
@@ -955,7 +963,7 @@ fn test_end_to_end_rejected_flow() {
 fn test_end_to_end_duplicate_work_flow() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "a1", 100);
-    market.deposit("u1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "u1", Money::new(50));
     market.publish_task(make_task("t1", 50, "u1")).unwrap();
     market.submit_bid(make_bid("a1", "t1", 10)).unwrap();
     market.match_task("t1").unwrap();
@@ -1031,6 +1039,7 @@ fn test_result_envelope_success() {
         trace_ref: "".to_string(),
         evidence_grade: EvidenceGrade::Verified,
         latency_ms: 100,
+        pocv: None,
     };
     assert!(envelope.is_success());
 }
@@ -1046,6 +1055,7 @@ fn test_result_envelope_low_confidence_failure() {
         trace_ref: "".to_string(),
         evidence_grade: EvidenceGrade::Unverified,
         latency_ms: 100,
+        pocv: None,
     };
     assert!(!envelope.is_success());
 }
@@ -1073,7 +1083,7 @@ fn test_money_vector_matches_conformance() {
     // worker：充值 100 并注册质押 100
     fund_and_register(&mut market, "agent-1", 100);
     // requester：充值 50
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     // 发布任务（预算 50，发布即托管）
     // v3.5.1（AU-18）：本用例主体是跨语言金额向量，不依赖 QA；用 policy=None（证据闸门
     // 合法豁免），保持金额与 money-vectors.json 完全一致。旧版靠自报 CpuProto 通过闸门。
@@ -1096,6 +1106,7 @@ fn test_money_vector_matches_conformance() {
             trace_ref: "trace://t1".to_string(),
             evidence_grade: EvidenceGrade::Unverified,
             latency_ms: 300,
+            pocv: None,
         })
         .unwrap();
     // 结算
@@ -1144,6 +1155,7 @@ fn submit_envelope(market: &mut AgentMarket, task: &str, agent: &str, grade: Evi
             trace_ref: "trace://x".to_string(),
             evidence_grade: grade,
             latency_ms: 300,
+            pocv: None,
         })
         .unwrap();
 }
@@ -1206,7 +1218,7 @@ fn test_state_transition_table() {
 fn test_resume_after_rework() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "agent-1", 100);
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "requester-1"))
         .unwrap();
@@ -1237,7 +1249,7 @@ fn test_resume_after_rework() {
 fn test_reopen_after_no_quorum_then_resettle() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "agent-1", 100);
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "requester-1"))
         .unwrap();
@@ -1282,7 +1294,7 @@ fn test_reopen_after_no_quorum_then_resettle() {
         let kp = gsn_core::Keypair::from_seed(&seed);
         let pk: [u8; 32] = kp.public_key().try_into().unwrap();
         let did = format!("did:nau:qa{i}");
-        market.deposit(&did, Money::new(100)).unwrap();
+        helpers::deposit(&mut market, &did, Money::new(100));
         market.register_agent(make_agent_card(&did, 100)).unwrap();
         members.push((did.clone(), pk));
         if i <= 3 {
@@ -1311,7 +1323,7 @@ fn test_reopen_after_no_quorum_then_resettle() {
 fn test_settle_rejected_for_unverified_evidence() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "agent-1", 100);
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "requester-1"))
         .unwrap();
@@ -1347,7 +1359,7 @@ fn test_settle_rejected_for_unverified_evidence() {
 fn test_settle_none_policy_exempts_evidence_gate() {
     let mut market = AgentMarket::new();
     fund_and_register(&mut market, "agent-1", 100);
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "requester-1", Money::new(50));
     let mut task = make_task("task-1", 50, "requester-1");
     task.verification_policy = VerificationPolicy::None;
     market.publish_task(task).unwrap();

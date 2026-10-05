@@ -14,7 +14,7 @@ use libp2p::{
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
 /// 网络行为组合
@@ -81,6 +81,60 @@ impl From<ping::Event> for PeerEvent {
     }
 }
 
+// ─────────────── P0-2: GossipSub 入站去重与投递 ───────────────
+
+/// 入站 GossipSub 消息（应用层消费单位）。
+///
+/// swarm 事件流里 `Gossipsub(Event::Message)` 经去重后投递到此结构，
+/// 由 daemon 层的消费者任务路由/记录。`source` 为传播者（forwarder）的 PeerId 字符串。
+#[derive(Debug, Clone)]
+pub struct InboundGossipMessage {
+    /// 所属 topic（topic hash 的字符串形式）
+    pub topic: String,
+    /// 传播该消息的 peer（PeerId 字符串）
+    pub source: String,
+    /// 消息负载
+    pub data: Vec<u8>,
+}
+
+/// GossipSub 消息去重器：基于 message id 的有界缓存。
+///
+/// 用 `HashSet` 判重 + `VecDeque` 保序淘汰：超过容量时丢弃最旧的 id，
+/// 避免无界增长。只对「首次见到」的 id 返回 true（放行），重复返回 false（丢弃）。
+pub struct GossipDedup {
+    seen: HashSet<Vec<u8>>,
+    order: VecDeque<Vec<u8>>,
+    capacity: usize,
+}
+
+impl GossipDedup {
+    /// 以指定容量创建去重器（如 4096）。
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            seen: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// 记录并判定是否首次见到该消息 id。
+    /// 返回 true = 首次（应放行投递）；false = 重复（应丢弃）。
+    pub fn first_seen(&mut self, id: &[u8]) -> bool {
+        if self.seen.contains(id) {
+            return false;
+        }
+        self.seen.insert(id.to_vec());
+        self.order.push_back(id.to_vec());
+        // 超出容量淘汰最旧
+        while self.order.len() > self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.seen.remove(&old);
+            }
+        }
+        true
+    }
+}
+
 /// 真实 libp2p 对等节点
 pub struct P2pPeer {
     pub peer_id: PeerId,
@@ -93,12 +147,27 @@ pub struct P2pPeer {
     /// v2.7.5: DCUtR 直连升级成功的对端 peer（经 relay 打洞成功，升级为直连）。
     /// 直连比 relay 中继延迟低、吞吐高；失败时仍回退 relay。
     direct_peers: HashSet<PeerId>,
+    /// P0-2: GossipSub 入站消息去重（按 message id）。
+    gossip_dedup: GossipDedup,
 }
 
 impl P2pPeer {
     /// 创建新节点，从 ~/.gsn/identity.key 加载身份；不存在则生成并持久化
     pub async fn new() -> anyhow::Result<Self> {
-        let local_key = load_or_create_identity()?;
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .unwrap_or_else(|_| ".".to_string());
+        let dir = std::path::Path::new(&home).join(".gsn");
+        let local_key = load_or_create_identity_in(&dir)?;
+        Self::with_identity(local_key).await
+    }
+
+    /// P0-5: 创建节点，身份持久化到 `<data_dir>/identity.key`。
+    ///
+    /// 不同 `--data-dir` 的节点拥有不同的 PeerId（同机多节点不再共用同一身份）；
+    /// 同一 data-dir 重复启动则确定性恢复同一 PeerId。
+    pub async fn with_data_dir(data_dir: &std::path::Path) -> anyhow::Result<Self> {
+        let local_key = load_or_create_identity_in(data_dir)?;
         Self::with_identity(local_key).await
     }
 
@@ -189,6 +258,7 @@ impl P2pPeer {
             bootstrapped: Vec::new(),
             relay_listeners: HashMap::new(),
             direct_peers: HashSet::new(),
+            gossip_dedup: GossipDedup::new(4096),
         })
     }
 
@@ -257,6 +327,26 @@ impl P2pPeer {
     /// 主动查找节点（DHT 节点发现）
     pub fn find_peer(&mut self, peer: PeerId) {
         self.swarm.behaviour_mut().kademlia.get_closest_peers(peer);
+    }
+
+    /// P0-1: 把一个已连接 peer 的对端地址登记进 Kademlia kbucket。
+    ///
+    /// dial 成功只会建立传输连接，**不会**自动让 Kademlia 把对端纳入路由表；
+    /// 必须显式 `kademlia.add_address(peer, addr)`，否则 kbucket 恒空、
+    /// `get_closest_peers` 无路由可走。这里在 ConnectionEstablished / Identify.Received
+    /// 时调用。返回值（RoutingUpdate）可忽略，仅记 debug。
+    pub fn add_kad_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        let update = self
+            .swarm
+            .behaviour_mut()
+            .kademlia
+            .add_address(&peer_id, addr.clone());
+        tracing::debug!(%peer_id, %addr, ?update, "kademlia add_address");
+    }
+
+    /// P0-2: 查询 GossipDedup 是否首次见到该 message id（首次记录并返回 true=放行）。
+    pub fn gossip_dedup_first_seen(&mut self, message_id: &gossipsub::MessageId) -> bool {
+        self.gossip_dedup.first_seen(&message_id.0)
     }
 
     /// v2.5.5: 触发一次 DHT 随机节点发现（随机 Peer 查 closest peers），
@@ -452,15 +542,30 @@ pub fn extract_relay_peer_id(addr: &Multiaddr) -> Option<String> {
     })
 }
 
-/// v2.5.3: 从磁盘加载 libp2p 身份密钥；不存在则生成 Ed25519 并保存
+/// v2.5.3: 从磁盘加载 libp2p 身份密钥；不存在则生成 Ed25519 并保存。
 ///
-/// 持久化路径: `~/.gsn/identity.key`（protobuf 编码）
-/// 保证同一台机器跨重启 Peer ID 稳定，DID 绑定可保持
+/// 持久化路径: `~/.gsn/identity.key`（protobuf 编码）。向后兼容；
+/// 新代码请用 [`load_or_create_identity_in`] 以跟随 `--data-dir`。
+/// 保证同一台机器跨重启 Peer ID 稳定，DID 绑定可保持。
 pub fn load_or_create_identity() -> anyhow::Result<identity::Keypair> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .unwrap_or_else(|_| ".".to_string());
     let dir = std::path::Path::new(&home).join(".gsn");
+    load_or_create_identity_in(&dir)
+}
+
+/// P0-5: 从指定目录加载 libp2p 身份密钥；不存在则生成 Ed25519 并保存到
+/// `<dir>/identity.key`（protobuf 编码）。
+///
+/// - 目录不存在会 `create_dir_all` 创建；
+/// - 同一目录重复调用确定性恢复同一 PeerId；不同目录得到不同 PeerId；
+/// - Unix 下新建文件权限设为 `0600`（仅属主可读写，私钥不暴露）。
+///
+/// 密码学说明：仅复用 libp2p/ed25519 自带的密钥生成与 protobuf 编解码，
+/// 未自造任何密码学原语。【密钥持久化改动需外部审计】
+pub fn load_or_create_identity_in(dir: &std::path::Path) -> anyhow::Result<identity::Keypair> {
+    std::fs::create_dir_all(dir)?;
     let key_path = dir.join("identity.key");
 
     if key_path.exists() {
@@ -474,8 +579,194 @@ pub fn load_or_create_identity() -> anyhow::Result<identity::Keypair> {
     }
 
     let kp = identity::Keypair::generate_ed25519();
-    std::fs::create_dir_all(&dir)?;
     let encoded = kp.to_protobuf_encoding()?;
-    std::fs::write(&key_path, encoded)?;
+    std::fs::write(&key_path, &encoded)?;
+    // Unix 下收紧权限到 0600（私钥不应被同机其他用户读取）
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))?;
+    }
     Ok(kp)
+}
+
+// ───────────────────────── P0 修复的本地验证测试 ─────────────────────────
+
+#[cfg(test)]
+mod p0_tests {
+    use super::*;
+    use libp2p::gossipsub::Event as GsEvent;
+    use libp2p::swarm::SwarmEvent;
+    use std::time::{Duration, Instant, SystemTime};
+
+    /// 从 Multiaddr 中取出 TCP 端口（QUIC 走 UDP，不会命中）。
+    fn tcp_port_of(addr: &Multiaddr) -> Option<u16> {
+        addr.iter().find_map(|p| match p {
+            libp2p::multiaddr::Protocol::Tcp(port) => Some(port),
+            _ => None,
+        })
+    }
+
+    /// 轮询 swarm 直到拿到 TCP listener 的真实绑定地址（端口 0 由内核分配，
+    /// 必须经 NewListenAddr 事件才能得知，不能同步读 listeners()）。
+    async fn wait_tcp_listen_addr(a: &mut P2pPeer) -> Multiaddr {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            match a.next_event().await {
+                Some(SwarmEvent::NewListenAddr { address, .. }) => {
+                    if tcp_port_of(&address).is_some() {
+                        return address;
+                    }
+                }
+                Some(_) => {}
+                None => {}
+            }
+        }
+        panic!("等待 TCP NewListenAddr 超时");
+    }
+
+    // ── P0-1: dial 成功 + add_address → kbucket 非空 ──
+    #[tokio::test]
+    async fn p01_dht_add_address_populates_kbucket() {
+        let mut a = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let mut b = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        // 先等 A 的 TCP 端口绑定完成
+        let listen = wait_tcp_listen_addr(&mut a).await;
+        let port = tcp_port_of(&listen).unwrap();
+        let a_peer = a.peer_id;
+
+        let dial: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", port, a_peer)
+            .parse()
+            .unwrap();
+        b.add_bootstrap(dial).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while b.routing_table_size() < 1 && Instant::now() < deadline {
+            tokio::select! {
+                ev = a.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) = ev {
+                        a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                    }
+                }
+                ev = b.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) = ev {
+                        b.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+        assert!(
+            b.routing_table_size() >= 1,
+            "B 的 kbucket 应在 add_address 后包含 A，实际 size={}",
+            b.routing_table_size()
+        );
+    }
+
+    // ── P0-2: 两个真实 swarm 互发 GossipSub，B 收到且 data 一致 ──
+    #[tokio::test]
+    async fn p02_gossipsub_delivers_between_real_swarms() {
+        let mut a = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let mut b = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let listen = wait_tcp_listen_addr(&mut a).await;
+        let port = tcp_port_of(&listen).unwrap();
+        let a_peer = a.peer_id;
+        let topic = "gsn.test.p02.delivery";
+        a.subscribe(topic).unwrap();
+        b.subscribe(topic).unwrap();
+        let dial: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", port, a_peer)
+            .parse()
+            .unwrap();
+        b.add_bootstrap(dial).unwrap();
+
+        let payload = b"p02-unique-payload-0xDeadBeef".to_vec();
+        let mut received: Option<Vec<u8>> = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while received.is_none() && Instant::now() < deadline {
+            tokio::select! {
+                ev = a.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. }) = ev {
+                        a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                    }
+                }
+                ev = b.next_event() => {
+                    if let Some(e) = ev {
+                        if let SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } = &e {
+                            b.add_kad_address(*peer_id, endpoint.get_remote_address().clone());
+                        }
+                        if let SwarmEvent::Behaviour(PeerEvent::Gossipsub(GsEvent::Message { message, .. })) = &e {
+                            received = Some(message.data.clone());
+                        }
+                    }
+                }
+                // 周期性重发：等双方订阅关系交换后，下一次 publish 即被 B 收到
+                _ = tokio::time::sleep(Duration::from_millis(300)) => {
+                    let _ = a.publish(topic, payload.clone());
+                }
+            }
+        }
+        let received = received.expect("B 应在 mesh 建立后收到 A 发布的 gossip 消息");
+        assert_eq!(received, payload, "收到的 data 必须与发布一致");
+    }
+
+    // ── P0-2: GossipDedup 仅首次放行，重复丢弃，容量超限淘汰最旧 ──
+    #[test]
+    fn p02_gossip_dedup_filters_duplicates_and_evicts() {
+        let mut d = GossipDedup::new(2);
+        assert!(d.first_seen(b"a"), "首次应放行");
+        assert!(!d.first_seen(b"a"), "重复应丢弃");
+        assert!(d.first_seen(b"b")); // 窗口 [a,b] 满
+        // 再入 c → 淘汰最旧 a；窗口 [b,c]
+        assert!(d.first_seen(b"c"));
+        assert!(!d.first_seen(b"b"), "b 仍在窗口内，应判重");
+        assert!(!d.first_seen(b"c"), "c 仍在窗口内，应判重");
+        // a 已被淘汰 → 重新视为首次；这次插入会淘汰 b
+        assert!(d.first_seen(b"a"), "a 已被淘汰，应重新放行");
+        assert!(!d.first_seen(b"c"), "c 仍在窗口内，应判重");
+    }
+
+    // ── P0-5: 身份随目录持久化：不同目录 PeerId 不同，同目录恢复一致，文件 0600 ──
+    #[test]
+    fn p05_identity_persists_per_data_dir() {
+        let base = std::env::temp_dir().join(format!(
+            "gsn-id-p05-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let d1 = base.join("a");
+        let d2 = base.join("b");
+
+        let k1a = load_or_create_identity_in(&d1).unwrap();
+        let k1b = load_or_create_identity_in(&d1).unwrap();
+        let k2 = load_or_create_identity_in(&d2).unwrap();
+
+        let p1a = PeerId::from(k1a.public());
+        let p1b = PeerId::from(k1b.public());
+        let p2 = PeerId::from(k2.public());
+
+        assert_eq!(p1a, p1b, "同一目录两次加载必须恢复同一 PeerId");
+        assert_ne!(p1a, p2, "不同 data-dir 必须得到不同 PeerId");
+
+        let key_path = d1.join("identity.key");
+        assert!(key_path.exists(), "identity.key 应落盘");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&key_path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "identity.key 权限应为 0600");
+        }
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -4,6 +4,7 @@
 //! `gsn daemon` 子命令复用，避免逻辑重复。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::net::peer::InboundGossipMessage;
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
@@ -239,6 +240,7 @@ async fn run_swarm_actor(
     mut peer: P2pPeer,
     mut cmd_rx: mpsc::Receiver<PeerCommand>,
     store: Arc<PersistentStore>,
+    inbound_tx: mpsc::Sender<InboundGossipMessage>,
 ) {
     // 周期性驱动网络栈：Kademlia 路由刷新、AutoNAT 重测、dnsaddr 解析与连接
     // 状态机都依赖被反复 poll；select! 在命令到达时会取消 next_event future，
@@ -271,6 +273,7 @@ async fn run_swarm_actor(
                 let need_ensure = process_swarm_event(
                     &mut peer, &event, &store,
                     &mut active_relay_addrs, &mut pending_probes, &mut connecting,
+                    &inbound_tx,
                 );
                 if need_ensure {
                     let held = ensure_channels(&mut peer, &store, &mut active_relay_addrs, &mut connecting);
@@ -419,10 +422,19 @@ fn process_swarm_event(
     active: &mut HashMap<String, String>,
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
+    inbound_tx: &mpsc::Sender<InboundGossipMessage>,
 ) -> bool {
     use libp2p::swarm::SwarmEvent::*;
     let mut need_ensure = false;
     match event {
+        // P0-1: 连接建立后把对端地址登记进 Kademlia kbucket。
+        // dial 成功本身不会让 Kademlia 认识对端；不 add_address 则 kbucket 恒空。
+        ConnectionEstablished {
+            peer_id, endpoint, ..
+        } => {
+            let addr = endpoint.get_remote_address().clone();
+            peer.add_kad_address(*peer_id, addr);
+        }
         ConnectionClosed { peer_id, .. } => {
             let id = peer_id.to_string();
             if active.remove(&id).is_some() || connecting.remove(peer_id) {
@@ -491,6 +503,12 @@ fn process_swarm_event(
                     if supports_hop {
                         auto_adopt_hop_relay(peer_id, info, store);
                     }
+                    // P0-1: Identify 上报的 listen_addrs 全部登记进 DHT（种子候选地址）。
+                    // 这些是对端声明的可被 dial 的地址，比 ConnectionEstablished 的
+                    // 对端 socket 地址更全（含公网/中继地址），尽力而为、不报错。
+                    for a in &info.listen_addrs {
+                        peer.add_kad_address(*peer_id, a.clone());
+                    }
                 }
                 Identify(_) => {}
                 // v2.7.5: DCUtR 直连升级结果——成功则纳入 direct_peers
@@ -501,6 +519,27 @@ fn process_swarm_event(
                         eprintln!("⛏️ DCUtR 直连失败（继续走 relay）: {}", e.remote_peer_id);
                     }
                 }
+                // P0-2: 入站 GossipSub 消息——先按 message id 去重，首次放行投递到应用层。
+                // （libp2p 0.54 gossipsub Event::Message 字段为 propagation_source/message_id/message）
+                Gossipsub(libp2p::gossipsub::Event::Message {
+                    propagation_source,
+                    message_id,
+                    message,
+                }) => {
+                    if peer.gossip_dedup_first_seen(message_id) {
+                        let msg = InboundGossipMessage {
+                            topic: message.topic.as_str().to_string(),
+                            source: propagation_source.to_string(),
+                            data: message.data.clone(),
+                        };
+                        if inbound_tx.try_send(msg).is_err() {
+                            tracing::warn!("inbound gossip channel 已满/已关闭，丢弃消息");
+                        }
+                    } else {
+                        tracing::debug!(%message_id, "重复 gossip 消息，已丢弃");
+                    }
+                }
+                Gossipsub(_) => {}
                 _ => {}
             }
         }
@@ -2114,7 +2153,8 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v2.5.5: 初始化 relay 池（start_time / manual_bonus / 种子 relay）
     init_relay_pool(&store);
 
-    let mut peer = P2pPeer::new().await?;
+    // P0-5: 身份随 --data-dir 持久化（不同 data-dir → 不同 PeerId）。
+    let mut peer = P2pPeer::with_data_dir(&args.data_dir).await?;
     match peer.listen_on_port(args.port) {
         Ok(_) => println!("✅ libp2p P2P 端口: {}", args.port),
         Err(e) => eprintln!("⚠️ P2P 端口 {} 绑定失败: {}", args.port, e),
@@ -2142,9 +2182,33 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     let (peer_cmd_tx, peer_cmd_rx) = mpsc::channel::<PeerCommand>(64);
     println!("   Peer ID: {}", peer.peer_id);
     println!("   模式: {:?}", node_mode);
-    let _ = peer.subscribe("gsn/agents");
-    let _ = peer.subscribe("gsn/tasks");
-    tokio::spawn(run_swarm_actor(peer, peer_cmd_rx, store.clone()));
+    // P0-2: 入站 GossipSub 消息通道（swarm actor 投递 → 此处消费，后续可路由到 market）
+    let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundGossipMessage>(1024);
+    if let Err(e) = peer.subscribe("gsn/agents") {
+        eprintln!("⚠️ subscribe gsn/agents 失败: {e}");
+    }
+    if let Err(e) = peer.subscribe("gsn/tasks") {
+        eprintln!("⚠️ subscribe gsn/tasks 失败: {e}");
+    }
+    tokio::spawn(run_swarm_actor(
+        peer,
+        peer_cmd_rx,
+        store.clone(),
+        inbound_tx,
+    ));
+
+    // P0-2: 应用层消费者——把真实收到的入站 gossip 消息记录下来（这是从 swarm 事件
+    // 投递到应用层的终点；后续可按 topic 路由到 market 等子系统）。
+    tokio::spawn(async move {
+        while let Some(msg) = inbound_rx.recv().await {
+            tracing::info!(
+                topic = %msg.topic,
+                source = %msg.source,
+                len = msg.data.len(),
+                "📥 inbound gossip delivered to application layer"
+            );
+        }
+    });
 
     // v2.5.5: 启动后初始化维护（等 8s 让 bootstrap 连接），随后每小时巡检一轮
     {

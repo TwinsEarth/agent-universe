@@ -40,7 +40,8 @@ start() {
   local log="$dir/node.log"
   local boot_args=() b
   for b in "$@"; do boot_args+=(--bootstrap "$b"); done
-  REST_BEARER_TOKEN="$BEARER" \
+  # GSN_DISABLE_PUBLIC_RELAY=1：真实制造“本地分区”，否则三方会经公共种子 relay 连通。
+  GSN_DISABLE_PUBLIC_RELAY=1 REST_BEARER_TOKEN="$BEARER" \
     "$GSN_BIN" --listen 127.0.0.1 --port "$p2p" --api-port "$api" \
       --data-dir "$dir" --mode full "${boot_args[@]}" >"$log" 2>&1 &
   local pid=$!; PIDS+=("$pid")

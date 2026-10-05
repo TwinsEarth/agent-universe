@@ -50,6 +50,7 @@ bad()  { echo "   ❌ $1"; FAIL=$((FAIL+1)); }
 
 # 启动节点：start_node <name> <p2p_port> <api_port> <data_dir> [boot_api ...]
 # 额外：写 CRDT 需要 Bearer，故所有节点注入 REST_BEARER_TOKEN。
+# LOCAL_ONLY=0 时才允许节点探测公共 relay（默认 1=本地纯净组网，可复现、可重复）。
 start_node() {
   local name="$1" p2p="$2" api="$3" dir="$4"; shift 4
   mkdir -p "$dir"
@@ -59,7 +60,11 @@ start_node() {
   for b in "$@"; do
     boot_args+=(--bootstrap "$b")
   done
-  REST_BEARER_TOKEN="$BEARER" \
+  local extra_env=()
+  if [ "${LOCAL_ONLY:-1}" = "1" ]; then
+    extra_env=(GSN_DISABLE_PUBLIC_RELAY=1)
+  fi
+  env "${extra_env[@]}" REST_BEARER_TOKEN="$BEARER" \
     "$GSN_BIN" --listen 127.0.0.1 --port "$p2p" --api-port "$api" \
       --data-dir "$dir" --mode full "${boot_args[@]}" >"$log" 2>&1 &
   local pid=$!
@@ -77,7 +82,7 @@ start_node() {
   done
   local peer_id
   peer_id="$(grep -Eo 'Peer ID: [A-Za-z0-9]+' "$log" | head -1 | awk '{print $3}')"
-  echo "   • $name  pid=$pid  p2p=$p2p api=$api  PeerId=${peer_id:-?}"
+  echo "   • $name  pid=$pid  p2p=$p2p api=$api  PeerId=${peer_id:-?}" >&2
   echo "$peer_id"
 }
 
@@ -132,10 +137,10 @@ run_three() {
     -d "{\"key\":\"greet\",\"value\":\"$val\"}")"
   [ "$code" = "201" ] && ok "boot 本地写 CRDT 并广播（201）" || bad "CRDT 写失败 http=$code"
 
-  if wait_cond 4012 /api/v1/crdt/greet "\"value\": \"$val\"" 30 >/dev/null; then
+  if wait_cond 4012 /api/v1/crdt/greet "\"value\":\"$val\"" 30 >/dev/null; then
     ok "node1 经 GossipSub 收到 CRDT（且 LWW 一致）"
   else bad "node1 30s 内未收到 CRDT"; fi
-  if wait_cond 4022 /api/v1/crdt/greet "\"value\": \"$val\"" 30 >/dev/null; then
+  if wait_cond 4022 /api/v1/crdt/greet "\"value\":\"$val\"" 30 >/dev/null; then
     ok "node2 经 GossipSub 收到 CRDT"
   else bad "node2 30s 内未收到 CRDT"; fi
 
@@ -147,7 +152,7 @@ run_three() {
   local id1b
   id1b="$(start_node node1-restart 4011 4012 "$d1" "$boot_addr")" || { bad "node1 重启失败"; return; }
   sleep 6
-  if wait_cond 4012 /api/v1/crdt/greet "\"value\": \"$val\"" 25 >/dev/null; then
+  if wait_cond 4012 /api/v1/crdt/greet "\"value\":\"$val\"" 25 >/dev/null; then
     ok "node1 重启后恢复（身份持久化、状态重新同步）"
     if [ "$id1" != "?" ] && [ "$id1b" = "$id1" ]; then
       ok "node1 重启后 PeerId 一致（$id1b）"
@@ -184,7 +189,7 @@ run_five() {
     -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' \
     -d "{\"key\":\"lat\",\"value\":\"$val\"}"
   t0="$(date +%s%3N)"
-  if wait_cond 5002 /api/v1/crdt/lat "\"value\": \"$val\"" 30 >/dev/null; then
+  if wait_cond 5002 /api/v1/crdt/lat "\"value\":\"$val\"" 30 >/dev/null; then
     t1="$(date +%s%3N)"; ms=$((t1-t0))
     ok "GossipSub 广播到达 boot，延迟约 ${ms}ms（写入到观测）"
   else bad "广播 30s 内未到达 boot"; fi

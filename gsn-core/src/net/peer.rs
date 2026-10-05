@@ -324,6 +324,41 @@ impl P2pPeer {
         Ok(())
     }
 
+    /// 发布 GossipSub 消息，但保留具体的 gossipsub 错误（供调用方区分
+    /// `InsufficientPeers` 并做重试，而不是被 anyhow 抹平后无法判断）。
+    pub fn try_publish(
+        &mut self,
+        topic: &str,
+        data: Vec<u8>,
+    ) -> Result<(), gossipsub::PublishError> {
+        let t = IdentTopic::new(topic);
+        self.swarm.behaviour_mut().gossipsub.publish(t, data)?;
+        Ok(())
+    }
+
+    /// 本节点期望订阅的 GossipSub 主题（应用层固定，CRDT 主题为 "gsn/crdt"）。
+    pub const GSN_GOSSIP_TOPICS: [&str; 3] = ["gsn/agents", "gsn/tasks", "gsn/crdt"];
+
+    /// 连接建立后重放订阅，解决 GossipSub 冷启动死锁。
+    ///
+    /// 背景（libp2p-gossipsub 0.47）：节点启动、尚无邻居时调用 `subscribe()`，
+    /// `join()` 因 `topic_peers` 为空选不到任何节点，**不会把主题放进 mesh**。
+    /// 之后新连接建立时，`on_connection_established` 只对“已在 mesh”的主题
+    /// 重发 SUBSCRIBE（见 gossipsub behaviour.rs 中 `for topic in self.mesh`），
+    /// 于是双方都不向对方宣告主题，`topic_peers` 永远为空，`publish` 返回
+    /// `InsufficientPeers`——典型的“连得上、消息发不出”冷启动死锁。
+    ///
+    /// 在每条新连接建立后重新调用 `subscribe`（幂等：已在 mesh 返回 Ok(false)）：
+    /// 若尚未入 mesh，会向新连接对端发送 SUBSCRIBE（对端把本节点记入 topic_peers），
+    /// 随后 `join()` 即可从 topic_peers 选中该对端并 GRAFT 组建 mesh。
+    pub fn refresh_gossipsub_subscriptions(&mut self) {
+        for t in Self::GSN_GOSSIP_TOPICS {
+            if let Err(e) = self.subscribe(t) {
+                tracing::debug!(topic = t, error = %e, "refresh subscribe 失败");
+            }
+        }
+    }
+
     /// 主动查找节点（DHT 节点发现）
     pub fn find_peer(&mut self, peer: PeerId) {
         self.swarm.behaviour_mut().kademlia.get_closest_peers(peer);
@@ -715,6 +750,69 @@ mod p0_tests {
         }
         let received = received.expect("B 应在 mesh 建立后收到 A 发布的 gossip 消息");
         assert_eq!(received, payload, "收到的 data 必须与发布一致");
+    }
+
+    // ── P0-2(冷启动): 先订阅(无邻居)→连接建立时 refresh 重放订阅→publish 一次即送达 ──
+    #[tokio::test]
+    async fn p02_coldstart_subscribe_before_connect_refresh_then_publish() {
+        let mut a = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let mut b = P2pPeer::with_identity(identity::Keypair::generate_ed25519())
+            .await
+            .unwrap();
+        let listen = wait_tcp_listen_addr(&mut a).await;
+        let port = tcp_port_of(&listen).unwrap();
+        let a_peer = a.peer_id;
+        // 关键：双方在“没有任何邻居”时先订阅（模拟 run_daemon 启动顺序）
+        let topic = "gsn.test.coldstart";
+        a.subscribe(topic).unwrap();
+        b.subscribe(topic).unwrap();
+        let dial: Multiaddr = format!("/ip4/127.0.0.1/tcp/{}/p2p/{}", port, a_peer)
+            .parse()
+            .unwrap();
+        b.add_bootstrap(dial).unwrap();
+
+        // 连接建立时用 refresh 重放订阅（对应 process_swarm_event 中的调用）
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut connected = 0;
+        while connected < 2 && Instant::now() < deadline {
+            tokio::select! {
+                ev = a.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { .. }) = ev {
+                        a.refresh_gossipsub_subscriptions();
+                        connected += 1;
+                    }
+                }
+                ev = b.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished { .. }) = ev {
+                        b.refresh_gossipsub_subscriptions();
+                        connected += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(connected, 2, "双方都应建立连接");
+
+        // 等 mesh 组建（心跳），然后 publish 一次
+        let payload = b"coldstart-unique-payload-0xC0FFEE".to_vec();
+        let mut received: Option<Vec<u8>> = None;
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while received.is_none() && Instant::now() < deadline {
+            tokio::select! {
+                ev = a.next_event() => { let _ = ev; }
+                ev = b.next_event() => {
+                    if let Some(SwarmEvent::Behaviour(PeerEvent::Gossipsub(GsEvent::Message { message, .. }))) = ev {
+                        received = Some(message.data.clone());
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(400)) => {
+                    let _ = a.publish(topic, payload.clone());
+                }
+            }
+        }
+        let received = received.expect("refresh 后 mesh 应组建，B 收到一次 publish");
+        assert_eq!(received, payload);
     }
 
     // ── P0-2: GossipDedup 仅首次放行，重复丢弃，容量超限淘汰最旧 ──

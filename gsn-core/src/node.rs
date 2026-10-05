@@ -425,6 +425,13 @@ async fn run_swarm_actor(
     let mut idle = tokio::time::interval(std::time::Duration::from_secs(5));
     idle.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
+    // P0-2: 冷启动 publish 重试。节点刚启动时 gossipsub mesh 尚未组建，
+    // `publish` 会返回 InsufficientPeers；若不重试，这条本地写入/快照就永远
+    // 发不出去（周期快照 15s 虽能兜底，但太慢且不稳定）。这里把失败消息
+    // 放入 pending，每 2s 重试，最多 6 次（约 12s，覆盖 mesh 组建窗口）。
+    let mut pending_publish: Vec<(String, Vec<u8>, u8)> = Vec::new();
+    let mut retry_tick = tokio::time::interval(std::time::Duration::from_secs(2));
+
     // v2.5.4/5: relay reservation 应用层续期（真机实测 relay client 内部
     // renewal_timeout 在本机始终不自动续期）。每 80s（<120s 到期）对**所有**
     // 活跃 relay 通道显式续期；listen_via_relay 按 relay 先 remove 旧 listener 再建。
@@ -462,12 +469,32 @@ async fn run_swarm_actor(
                     Some(cmd) => handle_peer_command(
                         &mut peer, cmd, &store,
                         &mut active_relay_addrs, &mut pending_probes, &mut connecting,
+                        &mut pending_publish,
                     ),
                     None => break,
                 }
             }
             _ = idle.tick() => {
                 // 仅用于唤醒并重新 poll swarm，无额外动作
+            }
+            _ = retry_tick.tick() => {
+                // 重试冷启动期间未能发出的 publish（mesh 未就绪）。
+                if pending_publish.is_empty() { continue; }
+                let mut still: Vec<(String, Vec<u8>, u8)> = Vec::new();
+                for (topic, data, attempts) in pending_publish.drain(..) {
+                    match peer.try_publish(&topic, data.clone()) {
+                        Ok(()) => eprintln!("✅ 重试 publish 成功 [{topic}]（第{attempts}次）"),
+                        Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
+                            if attempts < 6 {
+                                still.push((topic, data, attempts + 1));
+                            } else {
+                                eprintln!("⚠️ publish 重试 {attempts} 次仍 InsufficientPeers，放弃 [{topic}]");
+                            }
+                        }
+                        Err(e) => eprintln!("⚠️ publish 重试失败 [{topic}]: {e}"),
+                    }
+                }
+                pending_publish = still;
             }
             _ = renew.tick() => {
                 for (id, addr) in &active_relay_addrs {
@@ -611,6 +638,9 @@ fn process_swarm_event(
         } => {
             let addr = endpoint.get_remote_address().clone();
             peer.add_kad_address(*peer_id, addr);
+            // 连接建立后重放订阅，解决 GossipSub 冷启动死锁（详见
+            // P2pPeer::refresh_gossipsub_subscriptions 的说明）。
+            peer.refresh_gossipsub_subscriptions();
         }
         ConnectionClosed { peer_id, .. } => {
             let id = peer_id.to_string();
@@ -895,6 +925,7 @@ fn handle_peer_command(
     active: &mut HashMap<String, String>,
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
+    pending_publish: &mut Vec<(String, Vec<u8>, u8)>,
 ) {
     match cmd {
         PeerCommand::GetInfo { reply } => {
@@ -919,8 +950,14 @@ fn handle_peer_command(
             }
         }
         PeerCommand::Publish { topic, data } => {
-            if let Err(e) = peer.publish(&topic, data) {
-                eprintln!("⚠️ publish 失败 [{}]: {}", topic, e);
+            match peer.try_publish(&topic, data.clone()) {
+                Ok(()) => {}
+                // mesh 尚未组建 → 排队重试，而不是丢弃（冷启动关键路径）。
+                Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
+                    eprintln!("⚠️ publish 暂不可发 [{topic}]：mesh 未就绪，已排队重试");
+                    pending_publish.push((topic, data, 1));
+                }
+                Err(e) => eprintln!("⚠️ publish 失败 [{topic}]: {e}"),
             }
         }
         PeerCommand::AddBootstrap { addr, reply } => {
@@ -2263,6 +2300,13 @@ fn init_relay_pool(store: &PersistentStore) {
         }
     }
     if store.relay_count().unwrap_or(0) == 0 {
+        // GSN_DISABLE_PUBLIC_RELAY=1 时，连“种子 relay”也不写入（否则它只是
+        // 从显式 probe 移到了 ensure_channels/run_relay_maintenance 里被拨号，
+        // 名义上“禁用公共 relay”却仍连公网）。本地纯净组网应无任何公网 relay。
+        if std::env::var("GSN_DISABLE_PUBLIC_RELAY").as_deref() == Ok("1") {
+            println!("⏭️ 本地模式：不写入种子 relay（relay 池为空，仅本地组网）");
+            return;
+        }
         // 已真机验证的社区 relay（kubo，hop+stop+dcutr，reservation 120s/128KB）
         let seed_id = "12D3KooWJFBbD3czz9bpC4escx5izFKwaBj87XJ5r1rUpzPUu4WE";
         let seed = StoredRelay {

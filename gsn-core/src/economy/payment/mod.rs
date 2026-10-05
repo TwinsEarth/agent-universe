@@ -35,6 +35,7 @@
 
 pub mod erc8004;
 pub mod l402;
+pub mod paymaster;
 pub mod router;
 pub mod signer;
 pub mod x402;
@@ -48,6 +49,10 @@ pub use erc8004::{
 pub use l402::{
     parse_bolt11_amount_msat, verify_settlement as l402_verify_settlement, L402Challenge,
     L402Credential, L402Error, PaymentHash, Preimage, L402_SCHEME,
+};
+pub use paymaster::{
+    parse_paymaster_and_data, preview_paymaster_signature, sign_paymaster_data, PaymasterError,
+    PaymasterSignPreview, SponsorPolicy, SponsorshipApproval, UserOperation, UserOperationGas,
 };
 pub use router::{
     PaymentRouter, PaymentTrack, RouteDecision, RouteReason, RoutingInput, RoutingPolicy,
@@ -107,6 +112,15 @@ pub const METHOD_ERC8004_REPUTATION_AGGREGATE: &str = "erc8004_reputation_aggreg
 
 /// PMB 方法：ERC-8004 独立验证 BFT-lite 裁决（n≥3f+1，纯只读，不写链）。
 pub const METHOD_ERC8004_VALIDATION_DECIDE: &str = "erc8004_validation_decide";
+
+/// PMB 方法：ERC-4337 UserOperation 气体字段与 paymaster(And)Data 纯校验 + gas 上估（不广播）。
+pub const METHOD_PAYMASTER_USEROP_VALIDATE: &str = "paymaster_userop_validate";
+
+/// PMB 方法：ERC-4337 Paymaster 赞助决策（白名单/单笔上限/累计预算/时间窗，fail-closed）。
+pub const METHOD_PAYMASTER_DECIDE_SPONSORSHIP: &str = "paymaster_decide_sponsorship";
+
+/// PMB 方法：ERC-4337 Paymaster 担保签发（本版无宿主签名后端，一律具名 fail-closed，不伪造）。
+pub const METHOD_PAYMASTER_SIGN: &str = "paymaster_sign";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +228,80 @@ impl std::error::Error for PaymentError {}
 
 /// 结算路由只读状态负载（诚实标注：只决策，不动钱）。
 pub fn status_payload() -> serde_json::Value {
+    let paymaster_status = serde_json::json!({
+        "introduced_in": "v3.9.5",
+        "standard": "ERC-4337 Account Abstraction Paymaster (v0.6 paymasterAndData / v0.7 paymaster+paymasterData)",
+        "methods": [
+            "paymaster_userop_validate",
+            "paymaster_decide_sponsorship",
+            "paymaster_sign"
+        ],
+        "gas_cost_formula": "estimated_max_gas_cost = (preVerificationGas + verificationGasLimit + callGasLimit + paymasterVerificationGasLimit + paymasterPostOpGasLimit) * maxFeePerGas",
+        "amount_unit": "wei raw units (integer, no float / no ETH price)",
+        "decision_inputs": ["enabled", "chain_id", "valid_after/valid_until", "sender whitelist", "per-op gas cost cap", "cumulative budget"],
+        "integer_checked_arithmetic": true,
+        "default_deny_when_unconfigured_or_over_limit": true,
+        "whitelist_empty_denies_all_by_default": true,
+        "produces_paymaster_signature": false,
+        "paymaster_sign_fail_closed": true,
+        "fabricated_signature_on_failure": false,
+        "bundler_or_entrypoint_connection": false,
+        "useroperation_broadcast": false,
+        "live_gas_payment": false,
+        "paymaster_stake_or_deposit": false,
+        "onchain_nonce_or_balance_check": false,
+        "clock_read_in_kernel": false,
+        "note": "只做链下确定性赞助决策面：校验 UserOperation 气体/费用字段、解析并对齐 v0.6/v0.7 paymaster 字段、按整数上估 gas 成本并在显式策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint RPC、不聚合不广播 UserOp、不持 Paymaster 私钥不产出担保签名（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不在链上质押/充值、不校验链上 nonce/存款（由调用方取证）。累计 spent 与 now 均由调用方显式传入。"
+    });
+    let enforceable = serde_json::json!({
+        "deterministic_route_decision": true,
+        "integer_thresholds": true,
+        "fail_closed_when_track_unavailable": true,
+        "fail_closed_when_signer_unconfigured": true,
+        "fail_closed_when_evm_signer_unconfigured": true,
+        "host_only_signing_private_key_isolation": true,
+        "sandbox_direct_transaction_signing": false,
+        "x402_exact_amount_conservation": true,
+        "l402_exact_amount_conservation": true,
+        "fail_closed_when_lightning_not_configured": true,
+        "erc8004_integer_reputation_conservation": true,
+        "erc8004_bft_lite_two_thirds_quorum": true,
+        "erc8004_fail_closed_on_bad_binding_or_quorum": true,
+        "paymaster_integer_gas_cost_checks": true,
+        "paymaster_fail_closed_when_over_limit_or_unconfigured": true,
+        "paymaster_default_deny_non_whitelisted_sender": true,
+        "fund_movement": false,
+        "key_holding_in_sandbox": false,
+        "transaction_signing": false,
+        "transaction_broadcast": false,
+        "onchain_anchor_write": false,
+        "currency_exchange": false
+    });
+    let provided = serde_json::json!({
+        "payment_router_status": true,
+        "wallet_sign_preview": true,
+        "wallet_sign_when_host_configured": true,
+        "x402_challenge_validate": true,
+        "x402_authorize_preview": true,
+        "x402_settlement_verify": true,
+        "x402_sign_when_evm_signer_configured": true,
+        "l402_parse_challenge": true,
+        "l402_verify": true,
+        "l402_pay_when_lightning_configured": true,
+        "erc8004_identity_check": true,
+        "erc8004_reputation_aggregate": true,
+        "erc8004_validation_decide": true,
+        "paymaster_userop_validate": true,
+        "paymaster_decide_sponsorship": true,
+        "paymaster_sign_when_host_signer_configured": true,
+        "router_persistence": false,
+        "lightning_node_connection": false,
+        "evm_rpc_connection": false,
+        "btc_rgb_connection": false,
+        "erc8004_onchain_registry_write": false,
+        "erc4337_bundler_relay": false,
+        "erc4337_paymaster_stake_write": false
+    });
     serde_json::json!({
         "plugin": PAYMENT_ROUTER_PLUGIN,
         "version": env!("CARGO_PKG_VERSION"),
@@ -223,6 +311,7 @@ pub fn status_payload() -> serde_json::Value {
         "x402_introduced_in": "v3.9.2",
         "l402_introduced_in": "v3.9.3",
         "erc8004_introduced_in": "v3.9.4",
+        "paymaster_introduced_in": "v3.9.5",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -243,18 +332,21 @@ pub fn status_payload() -> serde_json::Value {
             "instant_cap": RoutingPolicy::default().instant_cap_micro,
             "large_floor": RoutingPolicy::default().large_floor_micro
         },
-        // v3.9.1 只读选路 + 宿主受限签名；v3.9.2 增 x402 协议只读构造/校验；v3.9.3 增闪电 L402 只读协议。执行/链上写仍在后续版本。
+        // v3.9.1 只读选路 + 宿主受限签名；v3.9.2 增 x402 协议只读构造/校验；v3.9.3 增闪电 L402 只读协议；v3.9.4 增 ERC-8004 三注册表；v3.9.5 增 ERC-4337 Paymaster 只读赞助决策。执行/链上写仍在后续版本。
         "capabilities_declared": [
             "pay:route:read",
             "wallet:sign:host-restricted",
             "x402:protocol:read",
             "l402:protocol:read",
-            "erc8004:registry:read"
+            "erc8004:registry:read",
+            "erc4337:paymaster:decide"
         ],
         "capabilities_reserved_later": [
             "pay:execute",
             "chain:anchor:write",
-            "erc8004:registry:write"
+            "erc8004:registry:write",
+            "erc4337:bundler:relay",
+            "erc4337:paymaster:stake:write"
         ],
         "signing": {
             "introduced_in": "v3.9.1",
@@ -340,48 +432,10 @@ pub fn status_payload() -> serde_json::Value {
             "fail_closed_on_bad_identity_or_quorum": true,
             "note": "只做链下可验证决策面：身份绑定/tokenURI 承诺校验、带质押权重的整数信誉聚合（守恒+重放/自评拦截）、独立验证者 BFT-lite 多数裁决；不铸造 ERC-721、不连 RPC、不读取/写入链上注册表（链上状态由调用方取证后以快照传入）、不持私钥不广播。链上锚定写入在后续版本经宿主签名闸门单独授权。"
         },
-        "enforceable": {
-            "deterministic_route_decision": true,
-            "integer_thresholds": true,
-            "fail_closed_when_track_unavailable": true,
-            "fail_closed_when_signer_unconfigured": true,
-            "fail_closed_when_evm_signer_unconfigured": true,
-            "host_only_signing_private_key_isolation": true,
-            "sandbox_direct_transaction_signing": false,
-            "x402_exact_amount_conservation": true,
-            "l402_exact_amount_conservation": true,
-            "fail_closed_when_lightning_not_configured": true,
-            "erc8004_integer_reputation_conservation": true,
-            "erc8004_bft_lite_two_thirds_quorum": true,
-            "erc8004_fail_closed_on_bad_binding_or_quorum": true,
-            "fund_movement": false,
-            "key_holding_in_sandbox": false,
-            "transaction_signing": false,
-            "transaction_broadcast": false,
-            "onchain_anchor_write": false,
-            "currency_exchange": false
-        },
-        "provided": {
-            "payment_router_status": true,
-            "wallet_sign_preview": true,
-            "wallet_sign_when_host_configured": true,
-            "x402_challenge_validate": true,
-            "x402_authorize_preview": true,
-            "x402_settlement_verify": true,
-            "x402_sign_when_evm_signer_configured": true,
-            "l402_parse_challenge": true,
-            "l402_verify": true,
-            "l402_pay_when_lightning_configured": true,
-            "erc8004_identity_check": true,
-            "erc8004_reputation_aggregate": true,
-            "erc8004_validation_decide": true,
-            "router_persistence": false,
-            "lightning_node_connection": false,
-            "evm_rpc_connection": false,
-            "btc_rgb_connection": false,
-            "erc8004_onchain_registry_write": false
-        },
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。Paymaster v3.9.5、BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
+        "paymaster": paymaster_status,
+        "enforceable": enforceable,
+        "provided": provided,
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。v3.9.5：ERC-4337 Paymaster 纯决策面——校验 UserOperation 气体/费用字段、解析并对齐 v0.6 paymasterAndData 与 v0.7 paymaster/paymasterData、按五类气体上限之和×maxFeePerGas 整数 checked 上估 gas 成本，在显式赞助策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不链上质押。BTC HTLC/RGB v3.9.6、锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
     })
 }
 
@@ -759,6 +813,97 @@ fn handle_erc8004_validation_decide(_method: &str, payload: &[u8]) -> PluginResu
     .map_err(|e| PluginError::Runtime(format!("erc8004_validation_decide 序列化失败: {e}")))
 }
 
+/// 字节桥：`paymaster_userop_validate`（校验 UserOperation 气体字段 + 解析对齐 paymaster + 整数上估 gas，纯只读）。
+fn handle_paymaster_userop_validate(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let uo: UserOperation = parse_json("paymaster_userop_validate", payload)?;
+    uo.gas
+        .validate()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let total_gas = uo
+        .gas
+        .total_gas()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let estimated = uo
+        .gas
+        .estimated_max_gas_cost()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    let (effective_paymaster, effective_data) = uo
+        .effective_paymaster()
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "valid": true,
+        "sender": uo.sender.to_hex(),
+        "nonce": uo.nonce.to_string(),
+        "chain_id": uo.chain_id,
+        "total_gas": total_gas.to_string(),
+        "estimated_max_gas_cost_wei": estimated.to_string(),
+        "effective_paymaster": effective_paymaster.to_hex(),
+        "effective_paymaster_data_hex": format!("0x{}", hex::encode(&effective_data))
+    }))
+    .map_err(|e| PluginError::Runtime(format!("paymaster_userop_validate 序列化失败: {e}")))
+}
+
+/// 字节桥：`paymaster_decide_sponsorship`（显式策略下纯确定性赞助判定，fail-closed，不广播）。
+fn handle_paymaster_decide_sponsorship(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    #[derive(serde::Deserialize)]
+    struct PolicyReq {
+        paymaster: EvmAddress,
+        chain_id: u64,
+        enabled: bool,
+        #[serde(default)]
+        allow_any_sender: bool,
+        #[serde(default)]
+        whitelist: Vec<String>,
+        per_op_max_gas_cost_wei: u128,
+        total_budget_wei: u128,
+        valid_after: u64,
+        valid_until: u64,
+    }
+    #[derive(serde::Deserialize)]
+    struct Req {
+        uo: UserOperation,
+        policy: PolicyReq,
+        #[serde(default)]
+        spent_before_wei: u128,
+        now_unix: u64,
+    }
+    let req: Req = parse_json("paymaster_decide_sponsorship", payload)?;
+
+    let mut whitelist = std::collections::BTreeSet::new();
+    for h in &req.policy.whitelist {
+        let a = EvmAddress::from_hex(h)
+            .ok_or_else(|| PluginError::Runtime(format!("PAYMASTER_BAD_WHITELIST_ADDRESS: {h}")))?;
+        whitelist.insert(a.0);
+    }
+    let policy = SponsorPolicy {
+        paymaster: req.policy.paymaster,
+        chain_id: req.policy.chain_id,
+        enabled: req.policy.enabled,
+        allow_any_sender: req.policy.allow_any_sender,
+        whitelist,
+        per_op_max_gas_cost_wei: req.policy.per_op_max_gas_cost_wei,
+        total_budget_wei: req.policy.total_budget_wei,
+        valid_after: req.policy.valid_after,
+        valid_until: req.policy.valid_until,
+    };
+    let approval = policy
+        .decide_sponsorship(&req.uo, req.spent_before_wei, req.now_unix)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&approval)
+        .map_err(|e| PluginError::Runtime(format!("paymaster_decide_sponsorship 序列化失败: {e}")))
+}
+
+/// 字节桥：`paymaster_sign`（ERC-4337 担保签发）。
+///
+/// 本版**没有** Paymaster 宿主签名后端：对任何请求一律具名
+/// [`PaymasterError::PaymasterSignerNotConfigured`] fail-closed，绝不伪造担保签名，
+/// 也不连接 bundler 中继 UserOperation。
+fn handle_paymaster_sign(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
+    Err(PluginError::Runtime(
+        PaymasterError::PaymasterSignerNotConfigured.to_string(),
+    ))
+}
+
 fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
     if payload.is_empty() {
         return Err(PluginError::Runtime(format!(
@@ -833,6 +978,22 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_ERC8004_VALIDATION_DECIDE,
         handle_erc8004_validation_decide,
     );
+    // v3.9.5 ERC-4337 Paymaster：只校验/决策，签发 fail-closed，不广播、不中继。
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_PAYMASTER_USEROP_VALIDATE,
+        handle_paymaster_userop_validate,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_PAYMASTER_DECIDE_SPONSORSHIP,
+        handle_paymaster_decide_sponsorship,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_PAYMASTER_SIGN,
+        handle_paymaster_sign,
+    );
 }
 
 #[cfg(test)]
@@ -896,10 +1057,18 @@ mod tests {
         assert_eq!(s["provided"]["erc8004_reputation_aggregate"], true);
         assert_eq!(s["provided"]["erc8004_validation_decide"], true);
         assert_eq!(s["provided"]["erc8004_onchain_registry_write"], false);
+        assert_eq!(s["provided"]["paymaster_userop_validate"], true);
+        assert_eq!(s["provided"]["paymaster_decide_sponsorship"], true);
+        assert_eq!(
+            s["provided"]["paymaster_sign_when_host_signer_configured"],
+            true
+        );
+        assert_eq!(s["provided"]["erc4337_bundler_relay"], false);
+        assert_eq!(s["provided"]["erc4337_paymaster_stake_write"], false);
         assert_eq!(s["provided"]["lightning_node_connection"], false);
         assert_eq!(s["tracks"].as_array().unwrap().len(), 3);
-        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 只读协议能力。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 5);
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster 只读协议能力。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 6);
         assert_eq!(
             s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
             true
@@ -924,6 +1093,19 @@ mod tests {
         assert_eq!(s["enforceable"]["erc8004_bft_lite_two_thirds_quorum"], true);
         assert_eq!(
             s["enforceable"]["erc8004_fail_closed_on_bad_binding_or_quorum"],
+            true
+        );
+        assert_eq!(s["paymaster"]["introduced_in"], "v3.9.5");
+        assert_eq!(s["paymaster"]["produces_paymaster_signature"], false);
+        assert_eq!(s["paymaster"]["bundler_or_entrypoint_connection"], false);
+        assert_eq!(s["paymaster"]["useroperation_broadcast"], false);
+        assert_eq!(s["paymaster"]["live_gas_payment"], false);
+        assert_eq!(
+            s["enforceable"]["paymaster_fail_closed_when_over_limit_or_unconfigured"],
+            true
+        );
+        assert_eq!(
+            s["enforceable"]["paymaster_default_deny_non_whitelisted_sender"],
             true
         );
         assert_eq!(s["signing"]["private_key_enters_sandbox"], false);
@@ -1142,5 +1324,84 @@ mod tests {
         assert!(
             handle_erc8004_validation_decide(METHOD_ERC8004_VALIDATION_DECIDE, &empty).is_err()
         );
+    }
+
+    #[test]
+    fn paymaster_handlers_validate_decide_and_sign_fail_closed() {
+        let pm = format!("0x{}", "11".repeat(20));
+        let sender = format!("0x{}", "22".repeat(20));
+        // v0.6 拼接形态：20B paymaster 地址 + 4B data。
+        let pad = format!("0x{}{}", "11".repeat(20), "deadbeef");
+        let gas = serde_json::json!({
+            "pre_verification_gas": 50000,
+            "verification_gas_limit": 100000,
+            "call_gas_limit": 200000,
+            "paymaster_verification_gas_limit": 50000,
+            "paymaster_post_op_gas_limit": 30000,
+            "max_fee_per_gas": 1_000_000_000,
+            "max_priority_fee_per_gas": 100_000_000
+        });
+        let uo = serde_json::json!({
+            "sender": sender, "nonce": 7, "chain_id": 8453,
+            "gas": gas, "paymaster_and_data_hex": pad
+        });
+
+        // validate：解析地址、整数上估 gas（430_000 * 1e9）。
+        let vp = serde_json::to_vec(&uo).unwrap();
+        let vout: serde_json::Value = serde_json::from_slice(
+            &handle_paymaster_userop_validate(METHOD_PAYMASTER_USEROP_VALIDATE, &vp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(vout["valid"], true);
+        assert_eq!(vout["effective_paymaster"], pm);
+        assert_eq!(vout["estimated_max_gas_cost_wei"], "430000000000000");
+        assert_eq!(vout["total_gas"], "430000");
+
+        // validate 坏气体（priority>max）fail-closed。
+        let mut bad_gas = gas.clone();
+        bad_gas["max_priority_fee_per_gas"] = serde_json::json!(2_000_000_000u64);
+        let mut bad_uo = uo.clone();
+        bad_uo["gas"] = bad_gas;
+        let bp = serde_json::to_vec(&bad_uo).unwrap();
+        assert!(handle_paymaster_userop_validate(METHOD_PAYMASTER_USEROP_VALIDATE, &bp).is_err());
+
+        // decide：白名单命中 + 预算足够 → approved。
+        let dp = serde_json::to_vec(&serde_json::json!({
+            "uo": uo,
+            "policy": {
+                "paymaster": pm, "chain_id": 8453, "enabled": true,
+                "whitelist": [sender],
+                "per_op_max_gas_cost_wei": 1_000_000_000_000_000u64,
+                "total_budget_wei": 10_000_000_000_000_000u64,
+                "valid_after": 1000, "valid_until": 2_000_000_000u64
+            },
+            "spent_before_wei": 0, "now_unix": 1_000_000
+        }))
+        .unwrap();
+        let dout: serde_json::Value = serde_json::from_slice(
+            &handle_paymaster_decide_sponsorship(METHOD_PAYMASTER_DECIDE_SPONSORSHIP, &dp).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dout["decision"], "approved");
+        assert_eq!(dout["produces_paymaster_signature"], false);
+        assert_eq!(dout["relays_user_operation"], false);
+
+        // decide：白名单坏地址 fail-closed（不静默当任意地址）。
+        let mut bad_policy = serde_json::json!({
+            "paymaster": pm, "chain_id": 8453, "enabled": true,
+            "whitelist": ["0xnothex"],
+            "per_op_max_gas_cost_wei": 1,
+            "total_budget_wei": 1,
+            "valid_after": 1000, "valid_until": 2_000_000_000u64
+        });
+        bad_policy["uo"] = uo.clone();
+        let bpp = serde_json::to_vec(&bad_policy).unwrap();
+        assert!(
+            handle_paymaster_decide_sponsorship(METHOD_PAYMASTER_DECIDE_SPONSORSHIP, &bpp).is_err()
+        );
+
+        // sign：无宿主签名后端，一律具名 fail-closed，不伪造。
+        let err = handle_paymaster_sign(METHOD_PAYMASTER_SIGN, b"{}").unwrap_err();
+        assert!(err.to_string().contains("PAYMASTER_SIGNER_NOT_CONFIGURED"));
     }
 }

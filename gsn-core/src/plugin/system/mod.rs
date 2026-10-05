@@ -482,6 +482,14 @@ mod tests {
         assert_eq!(st["provided"]["erc8004_reputation_aggregate"], true);
         assert_eq!(st["provided"]["erc8004_validation_decide"], true);
         assert_eq!(st["provided"]["erc8004_onchain_registry_write"], false);
+        assert_eq!(st["provided"]["paymaster_userop_validate"], true);
+        assert_eq!(st["provided"]["paymaster_decide_sponsorship"], true);
+        assert_eq!(
+            st["provided"]["paymaster_sign_when_host_signer_configured"],
+            true
+        );
+        assert_eq!(st["provided"]["erc4337_bundler_relay"], false);
+        assert_eq!(st["provided"]["erc4337_paymaster_stake_write"], false);
         assert_eq!(st["provided"]["lightning_node_connection"], false);
         assert_eq!(st["x402"]["produces_onchain_signature"], false);
         assert_eq!(st["x402"]["evm_signer_configured_by_default"], false);
@@ -493,13 +501,21 @@ mod tests {
         assert_eq!(st["erc8004"]["introduced_in"], "v3.9.4");
         assert_eq!(st["erc8004"]["onchain_mint_or_write"], false);
         assert_eq!(st["erc8004"]["evm_rpc_connection"], false);
+        assert_eq!(st["paymaster"]["introduced_in"], "v3.9.5");
+        assert_eq!(st["paymaster"]["produces_paymaster_signature"], false);
+        assert_eq!(st["paymaster"]["bundler_or_entrypoint_connection"], false);
+        assert_eq!(st["paymaster"]["useroperation_broadcast"], false);
+        assert_eq!(
+            st["enforceable"]["paymaster_fail_closed_when_over_limit_or_unconfigured"],
+            true
+        );
         assert_eq!(st["signing"]["private_key_enters_sandbox"], false);
         assert_eq!(
             st["signing"]["production_default_host_key_configured"],
             false
         );
-        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 只读协议能力（共 5 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 5);
+        // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster 只读协议能力（共 6 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 6);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -686,6 +702,62 @@ mod tests {
         assert_eq!(evalout["decision"], "confirmed_invalid");
         // 链上写入方法未接线（NotFound），不伪造可写。
         assert!(inst.call("erc8004_registry_write", b"{}").is_err());
+
+        // v3.9.5 ERC-4337 Paymaster：validate/decide 真实 spawn→call 可用（纯决策，不广播）。
+        let pm_addr = "11".repeat(20);
+        let sender_addr = "22".repeat(20);
+        let pm_uo = serde_json::json!({
+            "sender": format!("0x{sender_addr}"),
+            "nonce": 3,
+            "chain_id": 8453,
+            "gas": {
+                "pre_verification_gas": 50000,
+                "verification_gas_limit": 100000,
+                "call_gas_limit": 200000,
+                "paymaster_verification_gas_limit": 50000,
+                "paymaster_post_op_gas_limit": 30000,
+                "max_fee_per_gas": 1_000_000_000,
+                "max_priority_fee_per_gas": 100_000_000
+            },
+            "paymaster_and_data_hex": format!("0x{pm_addr}deadbeef")
+        });
+        let pmv = serde_json::to_vec(&pm_uo).unwrap();
+        let pmvout: serde_json::Value =
+            serde_json::from_slice(&inst.call("paymaster_userop_validate", &pmv).unwrap()).unwrap();
+        assert_eq!(pmvout["valid"], true);
+        assert_eq!(pmvout["effective_paymaster"], format!("0x{pm_addr}"));
+        assert_eq!(pmvout["estimated_max_gas_cost_wei"], "430000000000000");
+
+        let pmd = serde_json::to_vec(&serde_json::json!({
+            "uo": pm_uo,
+            "policy": {
+                "paymaster": format!("0x{pm_addr}"),
+                "chain_id": 8453,
+                "enabled": true,
+                "whitelist": [format!("0x{sender_addr}")],
+                "per_op_max_gas_cost_wei": 1_000_000_000_000_000u64,
+                "total_budget_wei": 10_000_000_000_000_000u64,
+                "valid_after": 1000,
+                "valid_until": 2_000_000_000u64
+            },
+            "spent_before_wei": 0,
+            "now_unix": 1_000_000
+        }))
+        .unwrap();
+        let pmdout: serde_json::Value =
+            serde_json::from_slice(&inst.call("paymaster_decide_sponsorship", &pmd).unwrap())
+                .unwrap();
+        assert_eq!(pmdout["decision"], "approved");
+        assert_eq!(pmdout["relays_user_operation"], false);
+
+        // paymaster_sign 无宿主签名后端：具名 fail-closed，不伪造担保签名。
+        let sign_err = inst.call("paymaster_sign", b"{}").unwrap_err();
+        assert!(sign_err
+            .to_string()
+            .contains("PAYMASTER_SIGNER_NOT_CONFIGURED"));
+        // bundler 中继 / 链上质押写方法未接线（NotFound），不伪造可写。
+        assert!(inst.call("erc4337_bundler_relay", b"{}").is_err());
+        assert!(inst.call("paymaster_stake_write", b"{}").is_err());
 
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());

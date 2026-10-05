@@ -1,0 +1,61 @@
+[Unit]
+# Agent Universe —— gsn-daemon 全节点 systemd 服务
+# 安装：
+#   sudo cp deploy/systemd/gsn-daemon.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now gsn-daemon
+# 日志：journalctl -u gsn-daemon -f
+Description=Agent Universe gsn-daemon (P2P full node)
+Documentation=https://github.com/TwinsEarth/agent-universe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议创建独立的非 root 用户：sudo useradd --system --create-home --home-dir /var/lib/gsn gsn
+User=gsn
+Group=gsn
+# 二进制路径（按实际安装位置修改；release 构建产物在 gsn-core/target/release/gsn-daemon）
+ExecStart=/usr/local/bin/gsn-daemon \
+  --data-dir /var/lib/gsn/data \
+  --listen 0.0.0.0 \
+  --port 4001 \
+  --api-port 4002 \
+  --mode full
+# 非根种子节点追加引导（按需，可多个）：
+#   --bootstrap /ip4/<boot-ip>/tcp/4001
+
+# 崩溃/退出后自动拉起（对应 macOS plist 的 KeepAlive）
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# 工作目录与环境
+WorkingDirectory=/var/lib/gsn
+Environment=RUST_LOG=info
+# 治理集配置（部署时填入官方多签公钥，见 deploy/governance.example.json）：
+#Environment=GSN_GOVERNANCE_FILE=/var/lib/gsn/governance.json
+# REST 写闸门 token（务必通过文件/秘密管理注入，不要直接写在本文件并提交）：
+#Environment=REST_BEARER_TOKEN=__CHANGE_ME__
+# 链上凭据（只从环境注入；详见 docs/DEPLOY.md，主网默认 fail-closed）：
+#Environment=GSEN_NETWORK=base-sepolia
+#Environment=GSEN_RPC_URL=https://...
+#Environment=GSEN_KEY_FILE=/var/lib/gsn/evm.key
+
+# 安全加固：限制服务可见的命名空间/权限（按需启用，systemd 版本支持时）
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/gsn
+# 若节点需要稳定的大文件/分片缓存，可在 ReadWritePaths 增加目录。
+
+# 资源上限（按机器规格调整）
+LimitNOFILE=65536
+
+# 健康检查（依赖 gsn-daemon --healthcheck；失败由 Restart 拉起）
+# ExecStartPre 可在启动前确认无残留；这里通过独立 path 单元做 liveness 更简单。
+
+[Install]
+WantedBy=multi-user.target

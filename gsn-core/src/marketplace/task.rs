@@ -263,6 +263,15 @@ pub struct ResultEnvelope {
     pub evidence_grade: EvidenceGrade,
     /// 执行耗时（毫秒）
     pub latency_ms: u64,
+    /// 随结果提交的签名 PoCV（P0-3：可选密码学证据门）。
+    ///
+    /// 缺省为 None（旧信封兼容）。非空时 `AgentMarket::submit_result` 会在入库前
+    /// 校验：贡献者 DID + Ed25519 签名 + nonce 重放 + 实际 (task_id, report)
+    /// 哈希一致性。**诚实边界**：该证明只证明归属/未篡改/贡献者见到该产出，
+    /// 不证明计算正确性（无 zk/确定性重放），故不会把 evidence_grade 提升为
+    /// Verified；BFT QA 仍是策略门。需外部审计。
+    #[serde(default)]
+    pub pocv: Option<crate::chain::pocv::SignedProofOfComputation>,
 }
 
 impl ResultEnvelope {

@@ -1,12 +1,12 @@
 [package]
 name = "gsn-core"
-version = "0.3.98"
+version = "0.3.99"
 edition = "2021"
 # MSRV（W-01，v3.5.7）：锁定依赖中最高的 rust-version 是 time 0.3.x 家族要求的 1.88；
 # 已用 rustc 1.88.0 实测 `cargo check --bins --locked` 通过。CI 有对应 MSRV 关卡。
 # 仅约束库与二进制；测试/clippy 仍以 stable 运行。
 rust-version = "1.88"
-description = "Agent Universe 核心库 v3.9.8: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+description = "Agent Universe 核心库 v3.9.9: 历史 Bug 回归套件 + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
 repository = "https://github.com/TwinsEarth/agent-universe"
 homepage = "https://github.com/TwinsEarth/agent-universe"
@@ -68,6 +68,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reed-solomon-erasure = "6.0.0"
 
+# 第三轮：链上信任锚完整接入（Base / Arbitrum 测试网+主网双就绪）。
+# 仅新增两项最小密码学原语（均 RustCrypto 出品、MSRV 1.88 兼容），不引入
+# ethers/alloy/reqwest 等重型栈：
+# - sha3：EVM 全链路使用 Keccak-256（EIP-712 域分隔、RLP 交易哈希、地址派生）；
+# - k256：secp256k1 ECDSA 签名 + recovery id（EVM 交易签名 / EIP-3009 授权）。
+# JSON-RPC 走已有的 rustls + 手写 HTTP/1.1 POST（见 chain/rpc.rs），无 HTTP 客户端新依赖。
+sha3 = "0.10"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+
 # v3.6.1 自动更新：最小 HTTPS 能力（rustls + ring + webpki 根证书，无 native-tls/OpenSSL）。
 # rustls 已由 libp2p(wss) 传递进依赖树并锁定同版本，直接声明为正式依赖不扩大依赖图。
 # 注意：rustls 0.23 用的是 rustls-pki-types 1.x 的 TrustAnchor，因此根证书必须用
@@ -90,3 +99,13 @@ windows-sys = { version = "0.52", features = [
 ] }
 
 [dev-dependencies]
+
+# ===== 生产发布优化（第二轮工程加固，P2）=====
+# - lto = "fat"：全 crate（含依赖）过程间优化，跨边界内联，缩小体积、提升运行期性能；
+# - codegen-units = 1：单一代码生成单元，换取更激进的整体优化（以编译时间为代价）；
+# - strip = "symbols"：剥离符号表与调试信息，显著缩小最终二进制。
+# 注意：刻意不设置 panic = "abort"——保持 unwind 语义与下游/FFI 兼容性。
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

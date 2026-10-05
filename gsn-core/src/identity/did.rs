@@ -12,6 +12,15 @@ pub const METHOD_NAU: &str = "nau";
 ///
 /// - 本项目新铸造身份：`did:nau:<fingerprint>`
 /// - 上游身份：`did:aip:<fingerprint>`，`parse` 仍接受并可验证其签名
+///
+/// # 关于 64bit 指纹的安全定位
+///
+/// `fingerprint` 仅取 SHA-256 的前 8 字节（64bit），它是一个**路由标识（routing identity）**：
+/// 用于在网络中把请求映射到一个身份桶。其碰撞概率由"8 字节摘要预算"决定——
+/// 约 2^32 量级即可出现可构造碰撞，**不构成安全边界**。真正的安全边界是
+/// Ed25519 签名验签：任何人可以制造出与某 DID 字符串指纹相同的另一个公钥，
+/// 但无法伪造该 DID 对消息的签名。因此"指纹相同"只意味着路由到同一标识，
+/// "签名通过"才证明身份归属。不要把 64bit 指纹当作抗碰撞的身份认证。
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Did(String);
 
@@ -34,6 +43,9 @@ impl Did {
     ///
     /// 接受上游 `did:aip:<id>` 与本项目 `did:nau:<id>`；
     /// 其他方法或格式错误均返回 Err。
+    ///
+    /// identifier 段必须**恰好为 16 个小写十六进制字符**（即 8 字节 SHA-256 指纹的 hex）：
+    /// 长度不符、含大写、含非 hex 字符均拒绝。不引入 regex，见 [`is_hex16`]。
     pub fn parse(s: &str) -> Result<Self, String> {
         let rest = s
             .strip_prefix("did:")
@@ -41,12 +53,14 @@ impl Did {
         let (method, identifier) = rest
             .split_once(':')
             .ok_or_else(|| format!("非法 DID（格式应为 did:<method>:<id>）: {s}"))?;
-        if identifier.is_empty() {
-            return Err(format!("非法 DID（标识部分为空）: {s}"));
-        }
         if method != METHOD_AIP && method != METHOD_NAU {
             return Err(format!(
                 "不支持的 DID 方法 '{method}'（仅接受 {METHOD_AIP}/{METHOD_NAU}）: {s}"
+            ));
+        }
+        if !is_hex16(identifier) {
+            return Err(format!(
+                "非法 DID（标识段须为 16 位小写十六进制指纹，实得 '{identifier}'）: {s}"
             ));
         }
         Ok(Did(s.to_string()))
@@ -65,6 +79,14 @@ impl Did {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// 判断字符串是否恰好为 16 个小写十六进制字符（即 8 字节指纹的 hex 编码）。
+///
+/// 手写判定，不引 regex：长度必须为 16，且每字节落在 `0-9` 或 `a-f`。
+/// 显式拒绝大写 `A-F`（指纹口径统一小写）与其他字符。
+fn is_hex16(s: &str) -> bool {
+    s.len() == 16 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// 判断公钥是否为弱公钥（GAP §4.6）。
@@ -131,6 +153,49 @@ mod tests {
         assert!(Did::parse("naddaip").is_err());
         assert!(Did::parse("did:aip:").is_err());
         assert!(Did::parse("did:aip").is_err());
+    }
+
+    #[test]
+    fn parse_accepts_exact_16_lower_hex() {
+        // 合法下界/上界字符集
+        let d = Did::parse("did:nau:0123456789abcdef").unwrap();
+        assert_eq!(d.method(), "nau");
+        assert_eq!(d.identifier(), "0123456789abcdef");
+        // 上游 aip 方法同样接受 16 位小写 hex
+        let d2 = Did::parse("did:aip:ffffffffffffffff").unwrap();
+        assert_eq!(d2.identifier(), "ffffffffffffffff");
+    }
+
+    #[test]
+    fn parse_rejects_wrong_length_identifier() {
+        // 短于 16
+        assert!(Did::parse("did:nau:abcdef01").is_err());
+        assert!(Did::parse("did:nau:0123456789abcde").is_err());
+        // 长于 16
+        assert!(Did::parse("did:nau:0123456789abcdef0").is_err());
+        assert!(Did::parse("did:nau:0123456789abcdefff").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_non_lower_hex_identifier() {
+        // 大写 hex 必须拒绝（指纹口径统一小写）
+        assert!(Did::parse("did:nau:34750F98BD59FCFC").is_err());
+        // 含非 hex 字符 g
+        assert!(Did::parse("did:nau:34750g98bd59fcfc").is_err());
+        // 含分隔符/空白
+        assert!(Did::parse("did:nau:34750f98bd59fcf ").is_err());
+        assert!(Did::parse("did:nau:34750f98-bd59-fcfc").is_err());
+    }
+
+    #[test]
+    fn is_hex16_unit() {
+        assert!(is_hex16("0123456789abcdef"));
+        assert!(is_hex16("ffffffffffffffff"));
+        assert!(!is_hex16(""));
+        assert!(!is_hex16("0123456789abcde")); // 15
+        assert!(!is_hex16("0123456789abcdef0")); // 17
+        assert!(!is_hex16("0123456789abcdeG")); // 非 hex
+        assert!(!is_hex16("0123456789ABCDEF")); // 大写
     }
 
     #[test]

@@ -73,9 +73,9 @@ fn test_lightweight_consensus() {
         100,
     );
 
-    consensus.vote("prop-1", "voter1".to_string(), true, 4000);
-    consensus.vote("prop-1", "voter2".to_string(), true, 3000);
-    consensus.vote("prop-1", "voter3".to_string(), false, 2000);
+    let _ = consensus.vote("prop-1", "voter1".to_string(), true, 4000);
+    let _ = consensus.vote("prop-1", "voter2".to_string(), true, 3000);
+    let _ = consensus.vote("prop-1", "voter3".to_string(), false, 2000);
 
     let result = consensus.tally("prop-1").unwrap();
     assert!(result.consensus_reached);

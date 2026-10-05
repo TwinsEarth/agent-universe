@@ -12,6 +12,7 @@
 
 pub mod agent_card;
 pub mod evidence;
+pub mod governance;
 pub mod money;
 pub mod qa_committee;
 pub mod reputation;
@@ -23,6 +24,10 @@ pub use agent_card::{
     Sla,
 };
 pub use evidence::EvidenceGrade;
+pub use governance::{
+    parse_arbitrate_claim, parse_credit_claim, Governance, GovernanceAction, GovernanceMemberEntry,
+    SignedGovernanceCommand, GOV_CAP_ARBITRATE, GOV_CAP_CREDIT,
+};
 pub use money::Money;
 pub use qa_committee::{QaCommittee, QaDecision, QaMember, QaVote, SignedQaVote};
 pub use reputation::{MarketReputation, ReputationManager, StakeRecord, StakeStatus};
@@ -160,6 +165,13 @@ pub struct AgentMarket {
     /// expires_at]`，过期票一律拒绝）。要把已消费 nonce 落盘持久化需要既有 PersistentStore
     /// 的 schema 扩张，超出本补丁（patch）语义，列入后续 minor。
     seen_qa_nonces: HashSet<(String, u32, String, String)>,
+    /// 受权治理集（P0-4）：仲裁罚没 / off-chain 授信两类特权写的签名校验者。
+    ///
+    /// 从 `GSN_GOVERNANCE_FILE`（JSON `[{did,pubkey_hex}]`）加载；未设置/空 =
+    /// 治理集为空 = 特权路径 fail-closed（无人能经未认证命令罚没/铸币）。
+    governance: Governance,
+    /// 已消费的签名 PoCV nonce（P0-3，跨请求重放去重；重启后由时间窗兜底）。
+    seen_pocv_nonces: HashSet<String>,
 }
 
 impl AgentMarket {
@@ -178,6 +190,8 @@ impl AgentMarket {
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
             seen_qa_nonces: HashSet::new(),
+            governance: Governance::from_env(),
+            seen_pocv_nonces: HashSet::new(),
         }
     }
 
@@ -196,6 +210,8 @@ impl AgentMarket {
             reputation_mgr: ReputationManager::new(min_stake),
             min_stake,
             seen_qa_nonces: HashSet::new(),
+            governance: Governance::from_env(),
+            seen_pocv_nonces: HashSet::new(),
         }
     }
 
@@ -572,6 +588,26 @@ impl AgentMarket {
         // 闸门。此后只有认证 QA Stop（`verify_result_authenticated`）或仲裁路径
         // 才能把证据提升回 Verified/CpuProto（服务端签发，执行者无法自报）。
         envelope.evidence_grade = EvidenceGrade::Unverified;
+
+        // P0-3 接线点：随结果提交的签名 PoCV 在入库前校验一次。
+        // 实际产出一致性绑定：actual_input = task_id（被处理对象），
+        // actual_output = report（实际产出正文）。证明有效则留痕；无效/篡改直接拒绝
+        // 整个结果（4xx 语义），不静默入库。注意诚实边界：有有效签名证明 ≠ 计算正确，
+        // 故不提升 evidence_grade；BFT QA 仍是策略门。需外部审计。
+        if let Some(proof) = envelope.pocv.take() {
+            let now_secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            proof.verify(
+                envelope.task_id.as_bytes(),
+                envelope.report.as_bytes(),
+                &mut self.seen_pocv_nonces,
+                now_secs,
+            )?;
+            envelope.pocv = Some(proof);
+        }
+
         self.results.insert(envelope.task_id.clone(), envelope);
         Ok(())
     }
@@ -994,36 +1030,45 @@ impl AgentMarket {
         Ok(())
     }
 
-    /// 仲裁争议（v2.8.5，GAP §3.7/§3.8）
+    /// 仲裁争议（P0-4：特权写必须携带签名治理命令）。
     ///
-    /// 关键变更：
-    /// - 必须显式指定仲裁者身份 `arbitrator`，拒绝匿名仲裁；
-    /// - 罚没金额**不再来自请求体**，由服务端规则 `SLASH_RATE_ARBITRATION`
-    ///   决定（仲裁作恶罚没全部质押）；
-    /// - 状态变更只经状态转换表（终态无入边）。
+    /// 旧实现仅要求 `arbitrator` 非空字符串（自报即可罚没任意人 100% 质押）。
+    /// 现在改为：调用方必须提交 capability = `governance:arbitrate` 的
+    /// [`SignedGovernanceCommand`]，其 `target` 绑定 dispute_id、`claim.guilty` 为裁决。
+    /// `Governance::verify` 全通过（成员→capability→目标→时间窗→验签→nonce）后，
+    /// 仲裁者身份一律取自信封 `sender_did`（禁止请求体自报），再执行既有罚没逻辑。
+    /// 普通请求（无治理信封 / 治理集为空）一律拒绝；slash 只在本特权路径触发。
     ///
     /// 返回 `(verdict, slashed)`：裁决结论与服务端实际罚没金额。
-    pub fn arbitrate(
+    ///
+    /// # 需外部审计
+    pub fn arbitrate_signed(
         &mut self,
-        dispute_id: &str,
-        arbitrator: &str,
-        guilty: bool,
+        cmd: &SignedGovernanceCommand,
+        now: u64,
     ) -> Result<(String, Money), String> {
-        if arbitrator.trim().is_empty() {
-            return Err(
-                "BAD_REQUEST: 仲裁必须显式指定仲裁者身份（arbitrator），拒绝匿名".to_string(),
-            );
+        // 1. 治理信封校验（fail-closed：治理集空 / 非成员 / 验签失败一律拒绝）
+        let action = self.governance.verify(cmd, now)?;
+        if action.capability != GOV_CAP_ARBITRATE {
+            return Err(format!(
+                "GOV_BAD_CAPABILITY: 仲裁命令需要 {GOV_CAP_ARBITRATE}，实际 {}",
+                action.capability
+            ));
         }
+        let dispute_id = action.target;
+        let guilty = parse_arbitrate_claim(&action.claim)?;
+        // 仲裁者取自信封 sender，禁止自报
+        let arbitrator = action.sender_did;
 
-        // 先取出仲裁所需信息（避免与后续 &mut self 操作产生借用冲突）。
+        // 2. 先取出仲裁所需信息（避免与后续 &mut self 操作产生借用冲突）。
         let (agent_id, task_id) = {
             let dispute = self
                 .disputes
                 .iter_mut()
                 .find(|d| d.dispute_id == dispute_id)
-                .ok_or_else(|| format!("NOT_FOUND: 争议 {} 不存在", dispute_id))?;
+                .ok_or_else(|| format!("NOT_FOUND: 争议 {dispute_id} 不存在"))?;
             if dispute.resolved {
-                return Err(format!("争议 {} 已仲裁，不能重复仲裁", dispute_id));
+                return Err(format!("争议 {dispute_id} 已仲裁，不能重复仲裁",));
             }
             (dispute.respondent.clone(), dispute.task_id.clone())
         };
@@ -1068,16 +1113,45 @@ impl AgentMarket {
         {
             dispute.resolved = true;
             dispute.verdict = Some(verdict.clone());
-            dispute.arbitrator = Some(arbitrator.to_string());
+            dispute.arbitrator = Some(arbitrator);
         }
         Ok((verdict, slashed))
     }
 
     // ===== 查询接口 =====
 
-    /// 充值（唯一资金入口）
-    pub fn deposit(&mut self, account: &str, amount: Money) -> Result<(), String> {
-        self.settlement.deposit(account, amount)
+    /// 替换受权治理集（P0-4；测试/dev 注入；生产由 `Governance::from_env` 加载）。
+    pub fn set_governance(&mut self, g: Governance) {
+        self.governance = g;
+    }
+
+    /// 当前治理集是否为空（空 = 特权经济写路径 fail-closed 不可用）。
+    pub fn governance_is_empty(&self) -> bool {
+        self.governance.is_empty()
+    }
+    ///
+    /// 旧实现 `deposit(account, amount)` 无凭证即可对任意账户记账（本地铸币）。
+    /// 现在改为：调用方必须提交 capability = `governance:credit` 的
+    /// [`SignedGovernanceCommand`]，`target` = account、`claim.amount` 为非负整数。
+    ///
+    /// **生产口径（未验证 / 需外部审计）**：off-chain 授信在生产环境必须由链上支付
+    /// 凭证支持；本入口仅供 dev/faucet 与受权治理签批发起。`SettlementEngine::deposit`
+    /// 作为内部可信构建块保留（内部/测试/账本恢复可用），但外部 actor 入口不再接受
+    /// 无签名的普通授信。
+    pub fn deposit_signed(
+        &mut self,
+        cmd: &SignedGovernanceCommand,
+        now: u64,
+    ) -> Result<(), String> {
+        let action = self.governance.verify(cmd, now)?;
+        if action.capability != GOV_CAP_CREDIT {
+            return Err(format!(
+                "GOV_BAD_CAPABILITY: 授信命令需要 {GOV_CAP_CREDIT}，实际 {}",
+                action.capability
+            ));
+        }
+        let amount = parse_credit_claim(&action.claim)?;
+        self.settlement.deposit(&action.target, amount)
     }
 
     /// 余额
@@ -1432,5 +1506,250 @@ impl AgentMarket {
 impl Default for AgentMarket {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod phase2_security_tests {
+    //! P0-3 / P0-4 市场层接线测试（同模块内可访问私有字段）。
+    use super::*;
+    use crate::chain::pocv::SignedProofOfComputation;
+    use crate::identity::{Did, Keypair};
+    use serde_json::json;
+
+    const NOW: u64 = 1_000_000;
+
+    fn member(seed: u8) -> (String, Keypair) {
+        let mut s = [0u8; 32];
+        s[0] = seed;
+        let kp = Keypair::from_seed(&s);
+        let did = Did::from_public_key(kp.public_key()).to_string();
+        (did, kp)
+    }
+
+    fn seeded_market() -> (AgentMarket, String, Keypair) {
+        let mut m = AgentMarket::new();
+        let (did, kp) = member(1);
+        let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+        m.set_governance(Governance::from_members(vec![(did.clone(), pk)]));
+        (m, did, kp)
+    }
+
+    #[test]
+    fn p04_deposit_signed_credits_and_rejects_stranger() {
+        let (mut m, judge, kp) = seeded_market();
+        let cmd = SignedGovernanceCommand::sign(
+            "c1",
+            &judge,
+            &kp,
+            GOV_CAP_CREDIT,
+            "alice",
+            json!({"amount": 50}),
+            "n1",
+            NOW - 10,
+            300,
+        );
+        m.deposit_signed(&cmd, NOW).unwrap();
+        assert_eq!(m.balance("alice"), Money::new(50));
+
+        // 非治理成员签名 → 拒绝（fail-closed，不能本地铸币）
+        let mut s = [0u8; 32];
+        s[0] = 9;
+        let kp2 = Keypair::from_seed(&s);
+        let did2 = Did::from_public_key(kp2.public_key()).to_string();
+        let cmd2 = SignedGovernanceCommand::sign(
+            "c2",
+            &did2,
+            &kp2,
+            GOV_CAP_CREDIT,
+            "bob",
+            json!({"amount": 5}),
+            "n2",
+            NOW - 10,
+            300,
+        );
+        assert!(m.deposit_signed(&cmd2, NOW).is_err());
+        assert_eq!(m.balance("bob"), Money::ZERO);
+    }
+
+    #[test]
+    fn p04_arbitrate_fail_closed_without_governance() {
+        let mut m = AgentMarket::new(); // 空治理集
+        let (did, kp) = member(1);
+        let cmd = SignedGovernanceCommand::sign(
+            "c",
+            &did,
+            &kp,
+            GOV_CAP_ARBITRATE,
+            "disp-1",
+            json!({"guilty": true}),
+            "n",
+            NOW - 10,
+            300,
+        );
+        let err = m.arbitrate_signed(&cmd, NOW).unwrap_err();
+        assert!(err.contains("NO_MEMBERS"), "实际: {err}");
+    }
+
+    #[test]
+    fn p04_arbitrate_signed_slash_through_privileged_path() {
+        let (mut m, judge, kp) = seeded_market();
+        m.disputes.push(DisputeCase {
+            dispute_id: "disp-1".into(),
+            task_id: "task-1".into(),
+            complainant: "req".into(),
+            respondent: "evil".into(),
+            reason: "bad".into(),
+            resolved: false,
+            verdict: None,
+            arbitrator: None,
+        });
+        m.reputation_mgr
+            .register_stake("evil", Money::new(100))
+            .unwrap();
+        // 授信 100 并锁定为质押
+        let credit = SignedGovernanceCommand::sign(
+            "c0",
+            &judge,
+            &kp,
+            GOV_CAP_CREDIT,
+            "evil",
+            json!({"amount": 100}),
+            "n0",
+            NOW - 10,
+            300,
+        );
+        m.deposit_signed(&credit, NOW).unwrap();
+        m.settlement
+            .lock(
+                "task-1",
+                "evil",
+                "__stake__:evil",
+                Money::new(100),
+                SettlementReason::Staked,
+            )
+            .unwrap();
+
+        let cmd = SignedGovernanceCommand::sign(
+            "c1",
+            &judge,
+            &kp,
+            GOV_CAP_ARBITRATE,
+            "disp-1",
+            json!({"guilty": true}),
+            "n1",
+            NOW - 10,
+            300,
+        );
+        let (verdict, slashed) = m.arbitrate_signed(&cmd, NOW).unwrap();
+        assert_eq!(verdict, "guilty");
+        assert_eq!(slashed, Money::new(100));
+        assert!(m.disputes[0].resolved);
+        // 仲裁者取自信封 sender，而非请求体自报
+        assert_eq!(m.disputes[0].arbitrator.as_deref(), Some(judge.as_str()));
+    }
+
+    #[test]
+    fn p03_submit_result_accepts_valid_pocv_and_rejects_tampered() {
+        let mut m = AgentMarket::new();
+        // 直接塞一个 Matched 任务（私有字段，同模块测试可构造）
+        let task = TaskSpec {
+            task_id: "task-x".into(),
+            goal: "do".into(),
+            context: "ctx".into(),
+            done: vec![],
+            todo: vec!["t".into()],
+            trace: vec![],
+            owner: None,
+            budget: Money::new(10),
+            winner_price: None,
+            deadline: NOW,
+            required_skills: vec!["s".into()],
+            verification_policy: VerificationPolicy::None,
+            requester: "req".into(),
+            state: TaskState::Matched,
+            created_at: NOW,
+        };
+        m.tasks.insert("task-x".into(), task);
+
+        let (worker, kp) = member(5);
+        let report = "the report body";
+        // submit_result 内部取真实时钟，故证明 issued_at 用真实时间
+        let real_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // 有效证明：对 (task_id, report) 签名
+        let proof = SignedProofOfComputation::sign(
+            &worker,
+            &kp,
+            b"task-x",
+            report.as_bytes(),
+            1,
+            "pocv-n1",
+            real_now - 10,
+            600,
+        );
+        let env = ResultEnvelope {
+            task_id: "task-x".into(),
+            agent_id: worker.clone(),
+            report: report.into(),
+            confidence: 0.9,
+            error_type: ErrorType::None,
+            trace_ref: String::new(),
+            evidence_grade: EvidenceGrade::Unverified,
+            latency_ms: 1,
+            pocv: Some(proof),
+        };
+        m.submit_result(env).unwrap();
+
+        // 篡改报告的假证明：签名时 output 是别的内容，与实际 report 不一致 → 拒绝
+        let task2 = TaskSpec {
+            state: TaskState::Matched,
+            ..task_clone_helper()
+        };
+        m.tasks.insert("task-y".into(), task2);
+        let bad_proof = SignedProofOfComputation::sign(
+            &worker,
+            &kp,
+            b"task-y",
+            b"something-else",
+            1,
+            "pocv-n2",
+            real_now - 10,
+            600,
+        );
+        let env2 = ResultEnvelope {
+            task_id: "task-y".into(),
+            agent_id: worker,
+            report: "changed report".into(),
+            confidence: 0.9,
+            error_type: ErrorType::None,
+            trace_ref: String::new(),
+            evidence_grade: EvidenceGrade::Unverified,
+            latency_ms: 1,
+            pocv: Some(bad_proof),
+        };
+        assert!(m.submit_result(env2).is_err());
+    }
+
+    fn task_clone_helper() -> TaskSpec {
+        TaskSpec {
+            task_id: "task-y".into(),
+            goal: "do".into(),
+            context: "ctx".into(),
+            done: vec![],
+            todo: vec!["t".into()],
+            trace: vec![],
+            owner: None,
+            budget: Money::new(10),
+            winner_price: None,
+            deadline: NOW,
+            required_skills: vec!["s".into()],
+            verification_policy: VerificationPolicy::None,
+            requester: "req".into(),
+            state: TaskState::Matched,
+            created_at: NOW,
+        }
     }
 }

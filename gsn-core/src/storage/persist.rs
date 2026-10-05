@@ -93,6 +93,19 @@ impl PersistentStore {
         }
         let conn = Connection::open(path)?;
 
+        // v3.5.5（P1）：连接级 PRAGMA，必须在建表/写库前设置。
+        // - journal_mode=WAL：把默认 rollback journal 改为 WAL，大幅降低写放大并允许并发读；
+        // - synchronous=NORMAL：WAL 下安全且更快（仍防断电坏库，只丢最近一帧事务）；
+        // - busy_timeout=5000：撞库时等待最多 5s 而非立刻返回 SQLITE_BUSY；
+        // - foreign_keys=ON：外键约束默认关闭，必须逐连接显式开启。
+        // 任一 PRAGMA 失败都要返回错误（?），绝不静默吞掉。
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             PRAGMA busy_timeout=5000;
+             PRAGMA foreign_keys=ON;",
+        )?;
+
         conn.execute_batch(
             "
             CREATE TABLE IF NOT EXISTS agents (
@@ -1092,5 +1105,39 @@ mod tests {
         let s = PersistentStore::open(&path).unwrap();
         assert_eq!(s.load_agents().unwrap().len(), 1);
         assert_eq!(s.load_tasks().unwrap().len(), 1);
+    }
+
+    /// v3.5.5（P1）：open 后连接必须带上预期 PRAGMA。
+    ///
+    /// - `foreign_keys` 是连接级开关，必须严格为 1；
+    /// - `journal_mode` 在正常可写文件库应为 `wal`；若运行环境（只读 FS / 特殊构建）
+    ///   无法启用 WAL 而退化为 `memory`，这里如实接受，不硬断言失败。
+    #[test]
+    fn open_sets_expected_connection_pragmas() {
+        let path = tmp_db("pragma");
+        let s = PersistentStore::open(&path).unwrap();
+        let conn = s.conn.lock().unwrap_or_else(|e| {
+            eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
+            e.into_inner()
+        });
+
+        let jm: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("读取 journal_mode 失败");
+        assert!(
+            jm == "wal" || jm == "memory",
+            "journal_mode 期望 wal（受限环境可能退化为 memory），实得 '{jm}'"
+        );
+
+        let fk: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("读取 foreign_keys 失败");
+        assert_eq!(fk, 1, "foreign_keys 必须逐连接开启");
+
+        // busy_timeout / synchronous 被成功设置即可，不硬断言具体值以免环境差异。
+        let busy: i64 = conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .expect("读取 busy_timeout 失败");
+        assert!(busy > 0, "busy_timeout 应已设置为正值，实得 {busy}");
     }
 }

@@ -117,3 +117,6 @@ impl ErasureCoder {
         self.rs.verify(&ordered).unwrap_or(false)
     }
 }
+
+pub mod distributed;
+pub mod wire;

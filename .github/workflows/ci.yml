@@ -33,29 +33,33 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      # 统一用 Swatinem/rust-cache@v2：自动按 Cargo.lock 指纹缓存 registry/依赖/
+      # 编译产物（替代旧 actions/cache，key 自动含 lockfile，命中率更高且免手写 key）。
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.toml') }}
+          workspaces: gsn-core
 
+      # 关卡顺序：格式 → 静态检查 → 测试 → 发布构建。
       - name: Rustfmt
-        run: cd gsn-core && cargo fmt --check
+        run: cargo fmt --all -- --check
+        working-directory: gsn-core
 
-      - name: Build
-        run: cd gsn-core && cargo build --verbose
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+        working-directory: gsn-core
 
       - name: Test
-        run: cd gsn-core && cargo test --verbose
+        run: cargo test --workspace
+        working-directory: gsn-core
 
-      - name: Clippy
-        run: cd gsn-core && cargo clippy --all-targets -- -D warnings
+      - name: Release build
+        run: cargo build --release --workspace
+        working-directory: gsn-core
 
       - name: Run gsn-daemon --help
-        run: cd gsn-core && cargo run --bin gsn-daemon -- --help
+        run: cargo run --bin gsn-daemon -- --help
+        working-directory: gsn-core
 
   # MSRV 关卡（W-01，v3.5.7）：gsn-core 的最低支持工具链是声明且实测的 1.88.0——
   # 下限来自锁定依赖中最高的 rust-version（time 0.3.x 家族要求 1.88），不是猜的。
@@ -72,17 +76,16 @@ jobs:
         with:
           toolchain: "1.88.0"
 
-      - name: Cache cargo
-        uses: actions/cache@v4
+      - name: Cache cargo (rust-cache)
+        uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.toml') }}
+          workspaces: gsn-core
+          # MSRV 关卡独立缓存 key，避免与 stable job 的编译产物互相污染。
+          prefix-key: "msrv-1.88"
 
       - name: Check library and bins under MSRV
-        run: cd gsn-core && cargo check --bins --locked
+        run: cargo check --bins --locked
+        working-directory: gsn-core
 
   workbench-check:
     name: Workbench Desktop
@@ -165,7 +168,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='3.9.8') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='3.9.9') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

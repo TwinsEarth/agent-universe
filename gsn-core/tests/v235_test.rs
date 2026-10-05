@@ -16,6 +16,45 @@ use gsn_core::sandbox::manager::SandboxManager;
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
+/// dev/faucet 治理成员（P0-4：授信/仲裁须受权治理签名命令；生产须链上凭证，未验证）。
+fn faucet() -> (String, gsn_core::Keypair) {
+    let mut seed = [0u8; 32];
+    seed[0] = 7;
+    let kp = gsn_core::Keypair::from_seed(&seed);
+    (
+        gsn_core::Did::from_public_key(kp.public_key()).to_string(),
+        kp,
+    )
+}
+
+/// 启动带 faucet 治理成员的市场 actor。
+fn spawn_market() -> MarketActorHandle {
+    let (did, kp) = faucet();
+    let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+    MarketActorHandle::spawn_with_governance_members(vec![(did, pk)])
+}
+
+/// 构造 governance:credit 签名命令 JSON（REST deposit 请求体）。
+fn deposit_cmd(account: &str, amount: i64) -> Value {
+    let (did, kp) = faucet();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cmd = gsn_core::marketplace::SignedGovernanceCommand::sign(
+        "v235",
+        &did,
+        &kp,
+        gsn_core::marketplace::GOV_CAP_CREDIT,
+        account,
+        serde_json::json!({"amount": amount}),
+        &format!("v235-nonce-{account}-{amount}"),
+        now - 10,
+        300,
+    );
+    serde_json::to_value(cmd).unwrap()
+}
+
 /// 测试用沙箱管理器（MCP handle_post 现需此参数）
 fn sandbox_mgr() -> Arc<Mutex<SandboxManager>> {
     let dir = std::env::temp_dir().join("au-v235-mcp-sb");
@@ -39,13 +78,14 @@ fn info() -> NodeInfo {
         mode: "full".to_string(),
         p2p_port: 4001,
         connected_peers: 0,
+        dht_routing_entries: 0,
         uptime_ms: 0,
     }
 }
 
 /// 通过 REST route 发请求，返回 (status, body)
 async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let r = route(method, path, body, market, None, &info()).await;
+    let r = route(method, path, body, market, None, None, &info()).await;
     (r.status, r.body)
 }
 
@@ -68,14 +108,14 @@ fn to_hex(bytes: &[u8]) -> String {
 #[test]
 fn test_rest_full_market_lifecycle() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         // 1. 调用方充值（需求方，付任务预算）
         let (s, _) = rest(
             &market,
             "POST",
             "/api/v1/accounts/caller-1/deposit",
-            r#"{"amount":1000}"#,
+            &deposit_cmd("caller-1", 1000).to_string(),
         )
         .await;
         assert_ok(s);
@@ -85,7 +125,7 @@ fn test_rest_full_market_lifecycle() {
             &market,
             "POST",
             "/api/v1/accounts/agent-translate/deposit",
-            r#"{"amount":100}"#,
+            &deposit_cmd("agent-translate", 100).to_string(),
         )
         .await;
         assert_ok(s);
@@ -207,7 +247,7 @@ fn test_rest_full_market_lifecycle() {
                 &market,
                 "POST",
                 &format!("/api/v1/accounts/{did}/deposit"),
-                r#"{"amount":100}"#,
+                &deposit_cmd(&did, 100).to_string(),
             )
             .await;
             assert_ok(s);
@@ -269,7 +309,7 @@ fn test_rest_full_market_lifecycle() {
 #[test]
 fn test_rest_health_and_404() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         let (s, body) = rest(&market, "GET", "/health", "").await;
         assert_ok(s);
@@ -290,7 +330,7 @@ fn test_rest_health_and_404() {
 #[test]
 fn test_rest_register_validation() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         // 质押不足应 422
         let bad = json!({"agent_id":"a1","name":"X","stake": 1.0});
@@ -336,7 +376,7 @@ fn test_mcp_tool_definitions() {
 #[test]
 fn test_mcp_tools_call_real_execution() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let bridge = MarketMcpBridge::new(market.clone());
 
         // 调用 stats（无参数）—— 应真实返回而非占位
@@ -356,7 +396,10 @@ fn test_mcp_tools_call_real_execution() {
         // 充值 + 余额查询，验证带参工具真实执行
         // v2.8.6：金额入口只接受整数，500.0 浮点会被拒（GAP §4.1）。
         let r = bridge
-            .call("market_deposit", &json!({"account":"c1","amount":500}))
+            .call(
+                "market_deposit",
+                &json!({"account":"c1","amount":500,"governance": deposit_cmd("c1",500)}),
+            )
             .await;
         assert!(!r.is_error);
 
@@ -379,7 +422,7 @@ fn test_mcp_tools_call_real_execution() {
 #[test]
 fn test_mcp_full_flow_via_bridge() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let bridge = MarketMcpBridge::new(market.clone());
 
         // 先充值质押金（注册即锁定，不能凭空铸造）
@@ -387,7 +430,8 @@ fn test_mcp_full_flow_via_bridge() {
             .call(
                 "market_deposit",
                 &json!({
-                    "account":"a-mcp","amount":100
+                    "account":"a-mcp","amount":100,
+                    "governance": deposit_cmd("a-mcp",100)
                 }),
             )
             .await;
@@ -421,7 +465,7 @@ fn test_mcp_full_flow_via_bridge() {
 #[test]
 fn test_mcp_http_initialize_and_tools_list() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         // initialize
         let init = json!({
@@ -445,7 +489,7 @@ fn test_mcp_http_initialize_and_tools_list() {
 #[test]
 fn test_mcp_http_tools_call() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         let sb = sandbox_mgr();
 
         let call = json!({
@@ -453,7 +497,7 @@ fn test_mcp_http_tools_call() {
             "params":{
                 "name":"market_deposit",
                 // v2.8.6（GAP §4.1）：金额入口只接受整数，250.0 浮点会被 -32602 拒绝。
-                "arguments":{"account":"http-1","amount":250}
+                "arguments":{"account":"http-1","amount":250,"governance": deposit_cmd("http-1",250)}
             }
         });
         // v2.6.8：写/动钱工具必须带正确 Bearer 令牌
@@ -496,7 +540,7 @@ fn test_mcp_http_tools_call() {
 #[test]
 fn test_mcp_http_notification_returns_202() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
         // notifications/initialized 无 id
         let sb = sandbox_mgr();
         let notif = json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}});

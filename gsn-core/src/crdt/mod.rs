@@ -1,4 +1,13 @@
 //! CRDT 无冲突复制数据类型
+//!
+//! - [`VersionVector`]：版本向量（计数与 pointwise-max 合并）；
+//! - [`store`]：LWW 键值状态存储 + 同步消息（已接线到 net 同步路径）。
+
+pub mod store;
+
+pub use store::{
+    CrdtMessage, CrdtOp, CrdtSnapshot, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC, DEFAULT_MAX_KEYS,
+};
 
 use std::collections::HashMap;
 

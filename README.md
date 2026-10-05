@@ -195,7 +195,69 @@ cargo run --release --bin gsn-daemon -- \
 
 > **当前实现状态**：gsn-daemon 已是**真实网络节点**——libp2p（Noise 加密 + Kademlia DHT + GossipSub）真实 bind P2P 端口，HTTP API 真实 bind API 端口，agents/tasks 通过 SQLite 真实落盘并在重启后恢复。已真机验证：两端口 `LISTEN`、各 API 端点返回正确、POST 注册可查、404 路径正确转义、kill 重启后数据仍在。核心业务逻辑（Agent Market 结算守恒、BFT-lite 验证、信誉）由 618 个 Rust 测试 + 19 个 Python 测试 + 22 个 JS 测试守护（随版本增长，以发布时 cargo test / pytest / node 实测为准），跨语言签名测试保证三端身份/签名互验。链上结算与跨主机多节点 DHT 联调为下一步目标。
 
+### 多节点本地组网（3 / 5 节点）
+
+仓库内置端到端回归脚本（release 二进制、独立 data-dir、真实 libp2p 组网）：
+
+```bash
+cargo build --release --workspace
+# 3 节点：节点发现 / DHT 路由表 / GossipSub 广播 / CRDT 同步 / 重启恢复
+scripts/regression-3and5.sh
+# 仅 5 节点：mesh 形成、广播延迟
+ONLY=5 scripts/regression-3and5.sh
+# 网络分区：3 节点分 1+2、写冲突、恢复后 30s 内 CRDT 收敛
+scripts/regression-partition.sh
+# 20% 恶意节点（10 节点 / 2 不转发）：消息到达率应 > 95%
+scripts/regression-malicious.sh
+# 50 节点规模：检查每节点路由表 ≥ K=20（资源不足时会如实报未达标）
+scripts/regression-scale.sh
+```
+
+**手动起 3 节点**（每节点独立 data-dir；身份密钥按 data-dir 首次生成，故 PeerId 互不相同）：
+
+```bash
+BIN=gsn-core/target/release/gsn-daemon
+GSN_DISABLE_PUBLIC_RELAY=1 $BIN --listen 127.0.0.1 --port 4001 --api-port 4002 --data-dir /tmp/au/n0
+# 读 boot 日志里的 “Peer ID: ...” 后，再分别起 worker：
+GSN_DISABLE_PUBLIC_RELAY=1 $BIN --listen 127.0.0.1 --port 4011 --api-port 4012 \
+  --data-dir /tmp/au/n1 --bootstrap /ip4/127.0.0.1/tcp/4001
+GSN_DISABLE_PUBLIC_RELAY=1 $BIN --listen 127.0.0.1 --port 4021 --api-port 4022 \
+  --data-dir /tmp/au/n2 --bootstrap /ip4/127.0.0.1/tcp/4001
+```
+
+> `GSN_DISABLE_PUBLIC_RELAY=1` = 本地纯净组网：不探测、也不写入公共社区 relay，便于
+> 可复现测试。生产环境无需设置（节点会经社区 relay 与公网互联）。
+> 冷启动时 GossipSub mesh 需 1–2 秒组建；未就绪的消息会自动排队重试（每 2s，最多 6 次），
+> 周期快照（默认 15s，`GSN_CRDT_SNAPSHOT_INTERVAL_SECS` 可调）作为反熵兜底。
+
+### Docker / docker-compose
+
+```bash
+# 构建镜像（多阶段：rust:1.88-alpine → distroless static）
+docker build -t agent-universe/gsn-daemon:local .
+# 3 节点本地组网（boot 先起并健康检查通过后，worker 自动加入）
+docker compose -f deploy/docker-compose.yml up
+# 5 节点
+docker compose -f deploy/docker-compose.5nodes.yml up
+```
+
+容器内 `HOME=/data`，身份密钥落在挂载的命名卷（`/data/identity.key`），故每个容器
+PeerId 独立；非 root 运行（`65532`）。端口：每节点暴露 P2P `4001/tcp`、`4001/udp`（QUIC）、
+API `4002/tcp`。健康检查执行 `gsn-daemon --healthcheck` 真实探测 `/health`。
+
+### 健康检查与指标
+
+| 路径 | 说明 |
+|---|---|
+| `GET /health` | **真实依赖检查**：硬检查 storage（失败→503）；软检查连接数 / DHT 路由条目 / CRDT 键数与字节 |
+| `GET /metrics` | Prometheus 指标：DHT 路由表、连接数、GossipSub 吞吐、CRDT 键数 / 应用 Op / 字节数、信誉分布 |
+| `GET /api/v1/crdt` | CRDT 状态（GET 汇总 / `POST` 写入；另有 `/stats`、`/{key}`、`/crdt-snapshot`） |
+
+容器/进程存活探针可用 `gsn-daemon --healthcheck`（读 `GSN_HEALTHCHECK_URL`，
+默认 `http://127.0.0.1:4002/health`，2xx→exit 0 否则 1；当前仅支持 `http://`）。
+
 ### 自动更新（v3.6.1 引入，v3.6.2 修复联网，v3.6.3 支持代理/老 glibc）
+
 
 daemon 每次启动会在**后台**联网到 npm registry（`@twinsearth/agent-universe` 的完整版本表）
 检查是否最新，检查失败只告警、不影响启动。更新对象同时包含 **daemon 二进制**与 **npm 包**。

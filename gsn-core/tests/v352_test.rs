@@ -8,6 +8,10 @@
 //! `#[cfg(test)]` 内或本文件后续增补。
 
 use gsn_core::marketplace::*;
+
+#[path = "common/mod.rs"]
+mod helpers;
+
 use gsn_core::Keypair;
 
 // ===== 辅助构造（与 v351_test 对齐，集成测试为独立 crate，需各自定义）=====
@@ -71,7 +75,7 @@ fn make_bid(agent: &str, task: &str, price: i64) -> Bid {
 }
 
 fn deposit_and_register(market: &mut AgentMarket, id: &str, stake: i64) {
-    market.deposit(id, Money::new(stake)).unwrap();
+    helpers::deposit(market, id, Money::new(stake));
     market.register_agent(make_agent_card(id, stake)).unwrap();
 }
 
@@ -81,7 +85,7 @@ const NOW: u64 = 1_000_000;
 fn setup_task_awaiting_qa(market: &mut AgentMarket) -> (String, String) {
     let exec = "did:nau:executor";
     deposit_and_register(market, exec, 100);
-    market.deposit("did:nau:requester", Money::new(50)).unwrap();
+    helpers::deposit(market, "did:nau:requester", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "did:nau:requester"))
         .unwrap();
@@ -97,6 +101,7 @@ fn setup_task_awaiting_qa(market: &mut AgentMarket) -> (String, String) {
             trace_ref: "trace://t1/1".to_string(),
             evidence_grade: EvidenceGrade::Unverified,
             latency_ms: 100,
+            pocv: None,
         })
         .unwrap();
     ("task-1".to_string(), exec.to_string())

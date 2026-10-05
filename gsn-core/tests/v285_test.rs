@@ -13,6 +13,9 @@
 
 use gsn_core::marketplace::*;
 
+#[path = "common/mod.rs"]
+mod helpers;
+
 // ── 辅助函数（本文件独立，与 v234 同构） ──
 
 fn make_agent_card(id: &str, stake: i64) -> MarketAgentCard {
@@ -83,6 +86,7 @@ fn ok_envelope(task: &str, agent: &str) -> ResultEnvelope {
         trace_ref: "trace://t1/1".to_string(),
         evidence_grade: EvidenceGrade::CpuProto,
         latency_ms: 100,
+        pocv: None,
     }
 }
 
@@ -96,19 +100,20 @@ fn weak_envelope(task: &str, agent: &str) -> ResultEnvelope {
         trace_ref: "trace://t1/1".to_string(),
         evidence_grade: EvidenceGrade::Unverified,
         latency_ms: 1000,
+        pocv: None,
     }
 }
 
 /// 充值质押金并注册
 fn fund_and_register(m: &mut AgentMarket, id: &str, stake: i64) {
-    m.deposit(id, Money::new(stake)).unwrap();
+    helpers::deposit(m, id, Money::new(stake));
     m.register_agent(make_agent_card(id, stake)).unwrap();
 }
 
 /// 充值预算并发布
 fn fund_and_publish(m: &mut AgentMarket, task: TaskSpec, budget: i64) {
     let requester = task.requester.clone();
-    m.deposit(&requester, Money::new(budget)).unwrap();
+    helpers::deposit(m, &requester, Money::new(budget));
     m.publish_task(task).unwrap();
 }
 
@@ -127,19 +132,22 @@ fn setup_disputed(m: &mut AgentMarket) {
     m.open_dispute("d1", "t1", "u1", "质量不达标").unwrap();
 }
 
-// ===== 1. 仲裁者必填（拒绝匿名） =====
+// ===== 1. 仲裁必须有受权治理签名信封（P0-4：fail-closed，拒绝自报） =====
 
 #[test]
-fn test_arbitrator_required() {
+fn test_arbitrate_requires_governance_signature() {
     let mut m = AgentMarket::new();
     setup_disputed(&mut m);
+    // 显式清空治理集（helpers::deposit 已注入 faucet）→ fail-closed
+    m.set_governance(gsn_core::marketplace::Governance::empty());
 
-    // 空仲裁者 → 拒绝
-    let err = m.arbitrate("d1", "   ", true).unwrap_err();
-    assert!(err.contains("仲裁者"), "错误信息应指明仲裁者: {}", err);
+    // 空治理集 → 任何仲裁命令都被 fail-closed 拒绝
+    let err = helpers::arbitrate_signed_by_stranger(&mut m, "d1", true).unwrap_err();
+    assert!(err.contains("NO_MEMBERS"), "错误信息: {err}");
 
-    // 非空仲裁者 → 成功
-    assert!(m.arbitrate("d1", "arb-1", true).is_ok());
+    // 注入治理集后，受权成员签名命令 → 成功
+    let (verdict, _) = helpers::arbitrate(&mut m, "d1", true);
+    assert_eq!(verdict, "guilty");
 }
 
 // ===== 2. 仲裁作恶：罚没全部质押（服务端规则） =====
@@ -149,7 +157,7 @@ fn test_arbitration_guilty_slash_all_server_decided() {
     let mut m = AgentMarket::new();
     setup_disputed(&mut m);
 
-    let (verdict, slashed) = m.arbitrate("d1", "arb-1", true).unwrap();
+    let (verdict, slashed) = helpers::arbitrate(&mut m, "d1", true);
     assert_eq!(verdict, "guilty");
     // 罚没全部质押 100（由服务端 SLASH_RATE_ARBITRATION 规则决定，
     // 调用方无法通过请求体指定 slash_amount）
@@ -176,10 +184,10 @@ fn test_duplicate_arbitration_rejected() {
     let mut m = AgentMarket::new();
     setup_disputed(&mut m);
 
-    m.arbitrate("d1", "arb-1", false).unwrap();
+    helpers::arbitrate(&mut m, "d1", false);
     // 已仲裁 → 不能再次仲裁（即使换仲裁者/改结论）
-    let err = m.arbitrate("d1", "arb-2", true).unwrap_err();
-    assert!(err.contains("已仲裁"), "错误信息应指明已仲裁: {}", err);
+    let err = helpers::arbitrate_result(&mut m, "d1", true).unwrap_err();
+    assert!(err.contains("已仲裁"), "错误信息应指明已仲裁: {err}");
 }
 
 // ===== 4. 仲裁无争议 / 不存在 → NOT_FOUND =====
@@ -187,12 +195,10 @@ fn test_duplicate_arbitration_rejected() {
 #[test]
 fn test_arbitration_missing_dispute_not_found() {
     let mut m = AgentMarket::new();
-    let err = m.arbitrate("nope", "arb-1", true).unwrap_err();
-    assert!(
-        err.contains("NOT_FOUND"),
-        "错误信息应指明 NOT_FOUND: {}",
-        err
-    );
+    helpers::grant_governance(&mut m);
+    // 受权成员签名命令打不存在的争议 → NOT_FOUND（治理校验已过）
+    let err = helpers::arbitrate_result(&mut m, "nope", true).unwrap_err();
+    assert!(err.contains("NOT_FOUND"), "错误信息应指明 NOT_FOUND: {err}");
 }
 
 // ===== 5. 仲裁无过：不罚没，任务回到 Accepted =====
@@ -202,7 +208,7 @@ fn test_arbitration_not_guilty_no_slash() {
     let mut m = AgentMarket::new();
     setup_disputed(&mut m);
 
-    let (verdict, slashed) = m.arbitrate("d1", "arb-1", false).unwrap();
+    let (verdict, slashed) = helpers::arbitrate(&mut m, "d1", false);
     assert_eq!(verdict, "not_guilty");
     assert_eq!(slashed, Money::ZERO);
     assert_eq!(m.get_task("t1").unwrap().state, TaskState::Accepted);

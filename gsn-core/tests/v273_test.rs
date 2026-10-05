@@ -14,6 +14,41 @@ use gsn_core::api::market_actor::MarketActorHandle;
 use gsn_core::api::rest::{route, NodeInfo};
 use serde_json::{json, Value};
 
+/// dev/faucet 治理成员（P0-4：授信须受权治理签名命令；生产须链上凭证，未验证）。
+fn faucet() -> (String, gsn_core::Keypair) {
+    let mut seed = [0u8; 32];
+    seed[0] = 7;
+    let kp = gsn_core::Keypair::from_seed(&seed);
+    (
+        gsn_core::Did::from_public_key(kp.public_key()).to_string(),
+        kp,
+    )
+}
+fn spawn_market() -> MarketActorHandle {
+    let (did, kp) = faucet();
+    let pk: [u8; 32] = kp.public_key().try_into().unwrap();
+    MarketActorHandle::spawn_with_governance_members(vec![(did, pk)])
+}
+fn deposit_cmd(account: &str, amount: i64) -> Value {
+    let (did, kp) = faucet();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let cmd = gsn_core::marketplace::SignedGovernanceCommand::sign(
+        "v273",
+        &did,
+        &kp,
+        gsn_core::marketplace::GOV_CAP_CREDIT,
+        account,
+        serde_json::json!({"amount": amount}),
+        &format!("v273-{account}-{amount}"),
+        now - 10,
+        300,
+    );
+    serde_json::to_value(cmd).unwrap()
+}
+
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -27,12 +62,13 @@ fn info() -> NodeInfo {
         mode: "full".to_string(),
         p2p_port: 4001,
         connected_peers: 0,
+        dht_routing_entries: 0,
         uptime_ms: 0,
     }
 }
 
 async fn rest(market: &MarketActorHandle, method: &str, path: &str, body: &str) -> (u16, Value) {
-    let r = route(method, path, body, market, None, &info()).await;
+    let r = route(method, path, body, market, None, None, &info()).await;
     (r.status, r.body)
 }
 
@@ -52,13 +88,13 @@ fn to_hex(bytes: &[u8]) -> String {
 #[test]
 fn test_publish_task_without_state_defaults_open() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         let (s, _) = rest(
             &market,
             "POST",
             "/api/v1/accounts/caller-1/deposit",
-            r#"{"amount":1000}"#,
+            &deposit_cmd("caller-1", 1000).to_string(),
         )
         .await;
         assert_ok(s);
@@ -67,7 +103,7 @@ fn test_publish_task_without_state_defaults_open() {
             &market,
             "POST",
             "/api/v1/accounts/agent-translate/deposit",
-            r#"{"amount":100}"#,
+            &deposit_cmd("agent-translate", 100).to_string(),
         )
         .await;
         assert_ok(s);
@@ -114,13 +150,13 @@ fn test_publish_task_without_state_defaults_open() {
 #[test]
 fn test_unverified_result_authenticated_verify_then_settle() {
     rt().block_on(async {
-        let market = MarketActorHandle::spawn();
+        let market = spawn_market();
 
         let (s, _) = rest(
             &market,
             "POST",
             "/api/v1/accounts/caller-1/deposit",
-            r#"{"amount":1000}"#,
+            &deposit_cmd("caller-1", 1000).to_string(),
         )
         .await;
         assert_ok(s);
@@ -128,7 +164,7 @@ fn test_unverified_result_authenticated_verify_then_settle() {
             &market,
             "POST",
             "/api/v1/accounts/agent-translate/deposit",
-            r#"{"amount":100}"#,
+            &deposit_cmd("agent-translate", 100).to_string(),
         )
         .await;
         assert_ok(s);
@@ -224,7 +260,7 @@ fn test_unverified_result_authenticated_verify_then_settle() {
                 &market,
                 "POST",
                 &format!("/api/v1/accounts/{did}/deposit"),
-                r#"{"amount":100}"#,
+                &deposit_cmd(&did, 100).to_string(),
             )
             .await;
             assert_ok(s);

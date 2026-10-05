@@ -16,6 +16,9 @@
 
 use gsn_core::marketplace::*;
 
+#[path = "common/mod.rs"]
+mod helpers;
+
 fn agent_card(id: &str, stake: i64) -> MarketAgentCard {
     MarketAgentCard {
         agent_id: id.to_string(),
@@ -66,9 +69,9 @@ fn task(id: &str, budget: i64, requester: &str) -> TaskSpec {
 
 /// 推进到「已结算」：充值质押注册 → 发布托管 → 投标(10) → 匹配 → 验收 → 结算。
 fn settle_once(market: &mut AgentMarket) -> Money {
-    market.deposit("agent-1", Money::new(100)).unwrap();
+    helpers::deposit(market, "agent-1", Money::new(100));
     market.register_agent(agent_card("agent-1", 100)).unwrap();
-    market.deposit("requester-1", Money::new(50)).unwrap();
+    helpers::deposit(market, "requester-1", Money::new(50));
     market
         .publish_task(task("task-1", 50, "requester-1"))
         .unwrap();
@@ -92,6 +95,7 @@ fn settle_once(market: &mut AgentMarket) -> Money {
             trace_ref: "trace://task-1/1".to_string(),
             evidence_grade: EvidenceGrade::Unverified,
             latency_ms: 300,
+            pocv: None,
         })
         .unwrap();
     market.settle_task("task-1").unwrap()

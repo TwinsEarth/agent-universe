@@ -5,6 +5,7 @@
 //! gsn-daemon 的 TCP HTTP 服务器与测试都可直接调用。
 
 use crate::api::market_actor::MarketActorHandle;
+use crate::node::CrdtHandle;
 use crate::plugin::PluginOrchestratorHandle;
 use serde_json::{json, Value};
 
@@ -99,6 +100,15 @@ fn method_not_allowed(allow: &'static str) -> Routed {
     }
 }
 
+/// CRDT 子系统未注入句柄（测试或精简部署）时的统一响应。
+fn crdt_disabled() -> Routed {
+    Routed {
+        status: 503,
+        status_text: "Service Unavailable",
+        body: json!({"error": "crdt_disabled"}),
+    }
+}
+
 /// 解析 query string 为简单 map（不处理重复键/URL 编码的完整场景，够用）
 fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -112,7 +122,7 @@ fn parse_query(q: &str) -> std::collections::HashMap<String, String> {
 }
 
 /// 极简 URL 解码
-fn url_decode(s: &str) -> String {
+pub(crate) fn url_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -148,6 +158,8 @@ pub struct NodeInfo {
     pub mode: String,
     pub p2p_port: u16,
     pub connected_peers: usize,
+    /// Kademlia 路由表条目数（软健康/metrics 观察项）。
+    pub dht_routing_entries: usize,
     pub uptime_ms: u128,
 }
 
@@ -162,6 +174,7 @@ pub async fn route(
     body: &str,
     market: &MarketActorHandle,
     orchestrator: Option<&PluginOrchestratorHandle>,
+    crdt: Option<&CrdtHandle>,
     info: &NodeInfo,
 ) -> Routed {
     let (path, query) = full_path.split_once('?').unwrap_or((full_path, ""));
@@ -179,7 +192,8 @@ pub async fn route(
 
     // ───── 节点级（向后兼容旧路径） ─────
     match (method, path) {
-        ("GET", "/") | ("GET", "/health") => {
+        ("GET", "/") => {
+            // 根路径：保留既有轻量探针行为（不做硬依赖查询）。
             return Routed::ok(json!({
                 "status": "ok",
                 "service": "gsn-daemon",
@@ -188,6 +202,43 @@ pub async fn route(
                 "p2p_port": info.p2p_port,
                 "connected_peers": info.connected_peers,
                 "uptime_ms": info.uptime_ms,
+            }));
+        }
+        ("GET", "/health") | ("GET", "/api/v1/health") => {
+            // 真实健康检查：硬依赖 = market/存储可查询（做一次轻量 stats 查询）。
+            // connected_peers=0 不算失败（boot 节点合法为 0）。
+            use crate::api::market_actor::MarketResponse;
+            let storage_ok = matches!(market.stats().await, MarketResponse::Ok(_));
+            let crdt_keys = crdt.map(|c| c.len()).unwrap_or(0);
+            let crdt_size = crdt.map(|c| c.size_bytes()).unwrap_or(0);
+            let soft = json!({
+                "connected_peers": info.connected_peers,
+                "dht_routing_entries": info.dht_routing_entries,
+                "crdt_keys": crdt_keys,
+                "crdt_size_bytes": crdt_size,
+            });
+            if !storage_ok {
+                return Routed {
+                    status: 503,
+                    status_text: "Service Unavailable",
+                    body: json!({
+                        "status": "unhealthy",
+                        "service": "gsn-daemon",
+                        "version": info.version,
+                        "hard": { "storage": "error" },
+                        "soft": soft,
+                    }),
+                };
+            }
+            return Routed::ok(json!({
+                "status": "ok",
+                "service": "gsn-daemon",
+                "version": info.version,
+                "mode": info.mode,
+                "p2p_port": info.p2p_port,
+                "uptime_ms": info.uptime_ms,
+                "hard": { "storage": "ok" },
+                "soft": soft,
             }));
         }
         ("GET", "/version") => {
@@ -380,42 +431,56 @@ pub async fn route(
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            if let Some(v) = parsed_body {
-                let guilty = v.get("guilty").and_then(|x| x.as_bool()).unwrap_or(false);
-                // v2.8.5：仲裁者身份必填（拒绝匿名）；罚没金额由服务端规则决定，
-                // 不再读取请求体的 slash_amount。
-                let arbitrator = v
-                    .get("arbitrator")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if arbitrator.trim().is_empty() {
-                    return Routed::bad_request("缺少仲裁者身份（arbitrator）");
-                }
-                return from_mr(market.arbitrate(id, arbitrator, guilty).await, 200);
+            // P0-4：仲裁是特权写，请求体必须是签名治理信封
+            // （SignedGovernanceCommand，capability=governance:arbitrate，
+            // target=dispute_id，claim.guilty 为裁决）。无信封/验签失败一律拒绝；
+            // 仲裁者身份由信封 sender_did 决定，禁止自报。
+            let Some(v) = parsed_body else {
+                return Routed::bad_request("缺少签名治理信封（SignedGovernanceCommand）");
+            };
+            let cmd: crate::marketplace::SignedGovernanceCommand =
+                match serde_json::from_value(v.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Routed::bad_request(&format!(
+                            "治理信封解析失败（需 SignedGovernanceCommand JSON）: {e}"
+                        ))
+                    }
+                };
+            if cmd.target != id {
+                return Routed::bad_request(&format!(
+                    "治理信封 target={} 与路径 dispute_id={} 不一致",
+                    cmd.target, id
+                ));
             }
-            return Routed::bad_request("缺少仲裁数据");
+            return from_mr(market.arbitrate_signed(cmd, unix_now()).await, 200);
         }
         Some(RouteTarget::AccountDeposit(account)) => {
             if method != "POST" {
                 return method_not_allowed("POST");
             }
-            // v2.8.6（GAP §4.1）：JSON body 金额只接受整数（i64），
-            // 拒绝浮点（10.5 截断、10.0 亦为 f64）；URL query 为字符串→解析整数。
-            let amount = parsed_body
-                .as_ref()
-                .and_then(|v| v.get("amount"))
-                .and_then(|x| x.as_i64())
-                .or_else(|| q.get("amount").and_then(|s| s.parse::<i64>().ok()));
-            if let Some(amount) = amount {
-                return from_mr(
-                    market
-                        .deposit(account, crate::marketplace::Money::new(amount))
-                        .await,
-                    200,
-                );
+            // P0-4：off-chain 授信是特权写，请求体必须是签名治理信封
+            // （capability=governance:credit，target=account，claim.amount 非负整数）。
+            // 生产口径必须由链上支付凭证支持（未验证/需外部审计）。
+            let Some(v) = parsed_body else {
+                return Routed::bad_request("缺少签名治理信封（SignedGovernanceCommand）");
+            };
+            let cmd: crate::marketplace::SignedGovernanceCommand =
+                match serde_json::from_value(v.clone()) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return Routed::bad_request(&format!(
+                            "治理信封解析失败（需 SignedGovernanceCommand JSON）: {e}"
+                        ))
+                    }
+                };
+            if cmd.target != account {
+                return Routed::bad_request(&format!(
+                    "治理信封 target={} 与路径 account={} 不一致",
+                    cmd.target, account
+                ));
             }
-            return Routed::bad_request("缺少 amount");
+            return from_mr(market.deposit_signed(cmd, unix_now()).await, 200);
         }
         Some(RouteTarget::AccountBalance(account)) => {
             return from_mr(market.balance(account).await, 200);
@@ -435,6 +500,120 @@ pub async fn route(
         }
         Some(RouteTarget::Stats) => {
             return from_mr(market.stats().await, 200);
+        }
+        Some(RouteTarget::CrdtCollection) => {
+            let Some(c) = crdt else {
+                return crdt_disabled();
+            };
+            if method == "GET" {
+                let entries = c.all();
+                let keys: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
+                let s = c.stats();
+                return Routed::ok(json!({
+                    "keys": keys,
+                    "count": entries.len(),
+                    "size_bytes": c.size_bytes(),
+                    "stats": {
+                        "inbound_ops": s.inbound_ops,
+                        "applied_ops": s.applied_ops,
+                        "dropped_capped": s.dropped_capped,
+                        "snapshot_seq": s.snapshot_seq,
+                    },
+                }));
+            }
+            if method == "POST" {
+                let Some(v) = parsed_body else {
+                    return Routed::bad_request("缺少请求体 {\"key\":..,\"value\":..}");
+                };
+                let key = v.get("key").and_then(|x| x.as_str()).unwrap_or("");
+                let value = v.get("value").and_then(|x| x.as_str()).unwrap_or("");
+                if key.is_empty() {
+                    return Routed::bad_request("缺少 key");
+                }
+                return match c.put(key, value) {
+                    Ok(op) => Routed {
+                        status: 201,
+                        status_text: "Created",
+                        body: json!({
+                            "ok": true, "key": key, "ts": op.ts,
+                            "origin": op.origin, "counter": op.counter,
+                        }),
+                    },
+                    Err(e) => Routed {
+                        status: 422,
+                        status_text: "Unprocessable Entity",
+                        body: json!({"error": e}),
+                    },
+                };
+            }
+            return method_not_allowed("GET, POST");
+        }
+        Some(RouteTarget::CrdtStats) => {
+            let Some(c) = crdt else {
+                return crdt_disabled();
+            };
+            if method != "GET" {
+                return method_not_allowed("GET");
+            }
+            let s = c.stats();
+            return Routed::ok(json!({
+                "inbound_ops": s.inbound_ops,
+                "applied_ops": s.applied_ops,
+                "dropped_capped": s.dropped_capped,
+                "snapshot_seq": s.snapshot_seq,
+            }));
+        }
+        Some(RouteTarget::CrdtItem(key)) => {
+            let Some(c) = crdt else {
+                return crdt_disabled();
+            };
+            if method == "GET" {
+                return match c.entry(&key) {
+                    Some(e) => Routed::ok(json!({
+                        "key": e.key, "value": e.value,
+                        "ts": e.ts, "origin": e.origin,
+                    })),
+                    None => Routed::not_found(&format!("/api/v1/crdt/{key}")),
+                };
+            }
+            if method == "POST" {
+                let Some(v) = parsed_body else {
+                    return Routed::bad_request("缺少请求体 {\"value\":..}");
+                };
+                let value = v.get("value").and_then(|x| x.as_str()).unwrap_or("");
+                return match c.put(&key, value) {
+                    Ok(op) => Routed {
+                        status: 201,
+                        status_text: "Created",
+                        body: json!({
+                            "ok": true, "key": key, "ts": op.ts,
+                            "origin": op.origin, "counter": op.counter,
+                        }),
+                    },
+                    Err(e) => Routed {
+                        status: 422,
+                        status_text: "Unprocessable Entity",
+                        body: json!({"error": e}),
+                    },
+                };
+            }
+            return method_not_allowed("GET, POST");
+        }
+        Some(RouteTarget::CrdtSnapshot) => {
+            let Some(c) = crdt else {
+                return crdt_disabled();
+            };
+            if method != "POST" {
+                return method_not_allowed("POST");
+            }
+            return match c.broadcast_snapshot() {
+                Ok(()) => Routed::ok(json!({"ok": true, "broadcast": "snapshot"})),
+                Err(e) => Routed {
+                    status: 500,
+                    status_text: "Internal Server Error",
+                    body: json!({"error": e}),
+                },
+            };
         }
         None => {}
     }
@@ -464,6 +643,10 @@ enum RouteTarget {
     Audit,
     Leaderboard,
     Stats,
+    CrdtCollection,
+    CrdtStats,
+    CrdtItem(String),
+    CrdtSnapshot,
 }
 
 /// 把路径（含旧版兼容）映射到路由目标
@@ -515,6 +698,12 @@ fn map_api_segments(seg: &[&str]) -> Option<RouteTarget> {
         ["audit"] => Some(RouteTarget::Audit),
         ["leaderboard"] => Some(RouteTarget::Leaderboard),
         ["stats"] => Some(RouteTarget::Stats),
+        // CRDT（LWW 键值同步）。保留子路径（stats/snapshot）必须在通配 id 之前匹配。
+        ["crdt"] => Some(RouteTarget::CrdtCollection),
+        ["crdt", "stats"] => Some(RouteTarget::CrdtStats),
+        ["crdt", "snapshot"] => Some(RouteTarget::CrdtSnapshot),
+        ["crdt", id] => Some(RouteTarget::CrdtItem((*id).to_string())),
+        ["crdt-snapshot"] => Some(RouteTarget::CrdtSnapshot),
         _ => None,
     }
 }
@@ -630,5 +819,174 @@ mod v266_tests {
     fn method_not_allowed_shape() {
         let r = method_not_allowed("POST");
         assert_eq!(r.status, 405);
+    }
+}
+
+#[cfg(test)]
+mod crdt_health_tests {
+    use super::*;
+    use crate::api::market_actor::MarketActorHandle;
+    use crate::crdt::CrdtStore;
+    use crate::node::{CrdtHandle, PeerCommand};
+    use std::sync::Arc;
+
+    fn make_info() -> NodeInfo {
+        NodeInfo {
+            version: "test".into(),
+            mode: "full".into(),
+            p2p_port: 4001,
+            connected_peers: 0,
+            dht_routing_entries: 3,
+            uptime_ms: 100,
+        }
+    }
+
+    fn make_crdt() -> (CrdtHandle, tokio::sync::mpsc::Receiver<PeerCommand>) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<PeerCommand>(8);
+        let store = Arc::new(std::sync::Mutex::new(CrdtStore::new("peerX")));
+        (CrdtHandle::new(store, tx), rx)
+    }
+
+    #[tokio::test]
+    async fn health_ok_runs_real_market_query_and_reports_crdt_soft() {
+        let market = MarketActorHandle::spawn();
+        let (crdt, _rx) = make_crdt();
+        crdt.put("a", "1").unwrap();
+        let r = route(
+            "GET",
+            "/health",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body["status"], "ok");
+        assert_eq!(r.body["hard"]["storage"], "ok");
+        assert_eq!(r.body["soft"]["crdt_keys"], 1);
+        assert_eq!(r.body["soft"]["connected_peers"], 0);
+        assert_eq!(r.body["soft"]["dht_routing_entries"], 3);
+    }
+
+    #[tokio::test]
+    async fn root_path_keeps_legacy_200_shape() {
+        let market = MarketActorHandle::spawn();
+        let (crdt, _rx) = make_crdt();
+        let r = route("GET", "/", "", &market, None, Some(&crdt), &make_info()).await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body["status"], "ok");
+        assert!(r.body.get("hard").is_none());
+    }
+
+    #[tokio::test]
+    async fn crdt_collection_put_get_and_404_roundtrip() {
+        let market = MarketActorHandle::spawn();
+        let (crdt, _rx) = make_crdt();
+        // POST collection {key,value}
+        let r = route(
+            "POST",
+            "/api/v1/crdt",
+            r#"{"key":"k","value":"v"}"#,
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 201, "{:?}", r.body);
+        // GET collection summary
+        let r = route(
+            "GET",
+            "/api/v1/crdt",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body["count"].as_u64().unwrap(), 1);
+        let keys = r.body["keys"].as_array().unwrap();
+        assert!(keys.iter().any(|v| v == "k"));
+        // GET item
+        let r = route(
+            "GET",
+            "/api/v1/crdt/k",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 200);
+        assert_eq!(r.body["value"], "v");
+        assert_eq!(r.body["origin"], "peerX");
+        // GET missing -> 404
+        let r = route(
+            "GET",
+            "/api/v1/crdt/nope",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 404);
+    }
+
+    #[tokio::test]
+    async fn crdt_post_by_path_stats_and_snapshot() {
+        let market = MarketActorHandle::spawn();
+        let (crdt, _rx) = make_crdt();
+        // POST /api/v1/crdt/{key} with body {value}
+        let r = route(
+            "POST",
+            "/api/v1/crdt/mykey",
+            r#"{"value":"xyz"}"#,
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 201);
+        assert_eq!(crdt.get("mykey").as_deref(), Some("xyz"));
+        // POST snapshot broadcast
+        let r = route(
+            "POST",
+            "/api/v1/crdt-snapshot",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 200, "{:?}", r.body);
+        // GET stats
+        let r = route(
+            "GET",
+            "/api/v1/crdt/stats",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
+        assert_eq!(r.status, 200);
+        assert!(r.body["applied_ops"].as_u64().unwrap() >= 1);
+    }
+
+    #[tokio::test]
+    async fn crdt_without_handle_is_503() {
+        let market = MarketActorHandle::spawn();
+        let r = route("GET", "/api/v1/crdt", "", &market, None, None, &make_info()).await;
+        assert_eq!(r.status, 503);
     }
 }

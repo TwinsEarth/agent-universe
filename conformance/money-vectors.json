@@ -1,5 +1,5 @@
 {
-  "version": "v3.9.8",
+  "version": "v3.9.9",
   "description": "跨语言金额向量：Rust gsn-core、JS SDK 对同一市场场景逐账户余额必须完全一致。金额为精确整数（Rust Money(i64) / JS 安全整数 / Python int），守恒为精确相等，无任何容差。",
   "scenario": {
     "worker": { "id": "agent-1", "deposit": 100, "stake": 100, "bid": 10 },

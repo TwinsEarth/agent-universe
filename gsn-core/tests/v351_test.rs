@@ -12,6 +12,10 @@
 
 use gsn_core::api::market_actor::{MarketActorHandle, MarketResponse};
 use gsn_core::marketplace::*;
+
+#[path = "common/mod.rs"]
+mod helpers;
+
 use gsn_core::Keypair;
 use std::sync::Arc;
 
@@ -76,7 +80,7 @@ fn make_bid(agent: &str, task: &str, price: i64) -> Bid {
 }
 
 fn deposit_and_register(market: &mut AgentMarket, id: &str, stake: i64) {
-    market.deposit(id, Money::new(stake)).unwrap();
+    helpers::deposit(market, id, Money::new(stake));
     market.register_agent(make_agent_card(id, stake)).unwrap();
 }
 
@@ -86,7 +90,7 @@ fn deposit_and_register(market: &mut AgentMarket, id: &str, stake: i64) {
 fn setup_task_awaiting_qa(market: &mut AgentMarket) -> (String, String) {
     let exec = "did:nau:executor";
     deposit_and_register(market, exec, 100);
-    market.deposit("did:nau:requester", Money::new(50)).unwrap();
+    helpers::deposit(market, "did:nau:requester", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "did:nau:requester"))
         .unwrap();
@@ -102,6 +106,7 @@ fn setup_task_awaiting_qa(market: &mut AgentMarket) -> (String, String) {
             trace_ref: "trace://t1/1".to_string(),
             evidence_grade: EvidenceGrade::Verified, // 自报 Verified（AU-18 会被降为 Unverified）
             latency_ms: 100,
+            pocv: None,
         })
         .unwrap();
     ("task-1".to_string(), exec.to_string())
@@ -269,7 +274,7 @@ fn au18_submitted_self_reported_verified_is_downgraded() {
     let mut market = AgentMarket::new();
     let exec = "did:nau:executor";
     deposit_and_register(&mut market, exec, 100);
-    market.deposit("did:nau:requester", Money::new(50)).unwrap();
+    helpers::deposit(&mut market, "did:nau:requester", Money::new(50));
     market
         .publish_task(make_task("task-1", 50, "did:nau:requester"))
         .unwrap();
@@ -287,6 +292,7 @@ fn au18_submitted_self_reported_verified_is_downgraded() {
             trace_ref: "trace://t1/1".to_string(),
             evidence_grade: EvidenceGrade::Verified,
             latency_ms: 100,
+            pocv: None,
         })
         .unwrap();
 

@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.9.8");
+            println!("agent-universe v3.9.9");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -42,6 +42,10 @@ async fn main() {
         }
         "update" => run_update(&argv[1..]).await,
         "daemon" => {
+            // Docker 健康探针：`gsn daemon --healthcheck` 只做一次 HTTP GET，不启动节点。
+            if node::wants_healthcheck(&argv[1..]) {
+                std::process::exit(node::run_healthcheck_now().await);
+            }
             let args = node::parse_daemon_args(&argv[1..]);
             match node::run_daemon(args).await {
                 Ok(_) => 0,

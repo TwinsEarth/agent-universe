@@ -164,20 +164,6 @@ impl MarketMcpBridge {
                 .unwrap_or("")
                 .to_string()
         };
-        let get_money = |key: &str| -> Result<crate::marketplace::Money, ToolResult> {
-            // v2.8.6（GAP §4.1）：金额入口只接受整数（i64），拒绝 JSON 浮点
-            // （10.5 截断、10.0 亦为 f64）。非法值由 validate_arguments 先返 -32602，
-            // 此处纵深防御，绝不做浮点→整数截断。
-            // v3.5.3（AU-36）：取不到合法整数时旧实现 `unwrap_or(Money::ZERO)` 会把金额
-            // 静默写成 0（往账户存 0，脚枪）。改为显式工具错误，不得静默当 0。
-            match args.get(key).and_then(|v| v.as_i64()) {
-                Some(n) => Ok(crate::marketplace::Money::new(n)),
-                None => Err(ToolResult::error(format!(
-                    "INVALID_PARAM(-32602): {key} 必须为整数金额，实际: {}",
-                    args.get(key).cloned().unwrap_or(serde_json::Value::Null)
-                ))),
-            }
-        };
 
         let result: MarketResponse = match name {
             "market_register_agent" => self.market.register_agent(args.clone()).await,
@@ -233,30 +219,51 @@ impl MarketMcpBridge {
             "market_reject_task" => self.market.reject_task(get_str("task_id")).await,
             "market_open_dispute" => self.market.open_dispute(get("dispute")).await,
             "market_arbitrate" => {
-                let guilty = args
-                    .get("guilty")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                // v2.8.5：仲裁者身份必填，罚没金额服务端规则决定。
-                let arbitrator = args
-                    .get("arbitrator")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                if arbitrator.trim().is_empty() {
-                    MarketResponse::err("缺少仲裁者身份（arbitrator）")
-                } else {
-                    self.market
-                        .arbitrate(get_str("dispute_id"), arbitrator, guilty)
-                        .await
-                }
+                // P0-4：仲裁是特权写，必须传签名治理信封 args["governance"]
+                // （SignedGovernanceCommand，capability=governance:arbitrate，
+                // target=dispute_id，claim.guilty）。
+                let cmd: crate::marketplace::SignedGovernanceCommand =
+                    match args.get("governance").cloned() {
+                        Some(v) => match serde_json::from_value(v) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                return ToolResult::error(format!(
+                                    "治理信封解析失败: {e}（需 SignedGovernanceCommand）"
+                                ))
+                            }
+                        },
+                        None => {
+                            return ToolResult::error(
+                                "缺少签名治理信封 args.governance（P0-4：仲裁需 governance:arbitrate 签名命令）"
+                            )
+                        }
+                    };
+                self.market
+                    .arbitrate_signed(cmd, crate::api::rest::unix_now())
+                    .await
             }
             "market_deposit" => {
-                let amount = match get_money("amount") {
-                    Ok(m) => m,
-                    Err(e) => return e,
-                };
-                self.market.deposit(get_str("account"), amount).await
+                // P0-4：off-chain 授信是特权写，必须传签名治理信封 args["governance"]
+                // （capability=governance:credit，target=account，claim.amount）。
+                let cmd: crate::marketplace::SignedGovernanceCommand =
+                    match args.get("governance").cloned() {
+                        Some(v) => match serde_json::from_value(v) {
+                            Ok(c) => c,
+                            Err(e) => {
+                                return ToolResult::error(format!(
+                                    "治理信封解析失败: {e}（需 SignedGovernanceCommand）"
+                                ))
+                            }
+                        },
+                        None => {
+                            return ToolResult::error(
+                                "缺少签名治理信封 args.governance（P0-4：授信需 governance:credit 签名命令）"
+                            )
+                        }
+                    };
+                self.market
+                    .deposit_signed(cmd, crate::api::rest::unix_now())
+                    .await
             }
             "market_balance" => self.market.balance(get_str("account")).await,
             "market_conservation" => self.market.conservation().await,

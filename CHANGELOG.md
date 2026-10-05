@@ -1,3 +1,17 @@
+## [v3.9.6] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（7/9）——BTC HTLC 纯链下确定性校验 + RGB 客户端验证承诺位置校验（P2WSH 脚本结构解析 + SHA256 hashlock/CLTV 超时/整数 sats 守恒/witness program 比对 + opret-first/tapret-first 承诺锚点定位；零新依赖复用 sha2/hex+l402::PaymentHash/Preimage，只做链下结构自洽，不连 BTC 节点、不广播、不持私钥、不签 HTLC、不真转资产、不解真实区块、不做完整 Script 解释器、不做 RGB 状态转换与 tapret tweak 推导，finalize 默认 HTLC_NODE_NOT_CONFIGURED fail-closed）（#129，patch）
+
+- 新增 `gsn-core/src/economy/payment/htlc.rs`、`rgb.rs`：零新依赖（复用仓内 sha2 0.10 / hex 0.4 + std serde，PaymentHash/Preimage 复用 l402 不重复定义），零浮点/零 syscall/零 unsafe/零 IO/无生产 panic。
+- HTLC：parse_htlc_script 逐字节识别标准 OP_IF…OP_HASH256/<32>/OP_EQUALVERIFY/OP_DROP/<33 recv>/OP_CHECKSIG/OP_ELSE/<locktime>/CLTV/OP_DROP/<33 send>/OP_CHECKSIG/OP_ENDIF 模板，结构偏差 HTLC_MALFORMED_SCRIPT、坏 hex HTLC_BAD_SCRIPT_HEX；CLTV 锁定期最小小端 1..=4 字节（末字节 0 非最小、bit7 置位拒绝、0 无效，低位零合法 256=[0x00,0x01]），500_000_000 分界 block_height/unix_seconds；p2wsh_program=SHA256(script) BIP141。
+- verify_hashlock（标准单 SHA256(preimage)==payment_hash）、verify_amount_conservation（offered+fee==total u64 checked，正金额，HTLC_SETTLEMENT_MISMATCH）、verify_timeout（current>=locktime EXPIRED，剩余<min_remaining MARGIN_TOO_SMALL，current 调用方传入不读时钟）；HtlcOffer.validate 汇总，HtlcReceipt 回显 locktime_units/u64 金额/witness_program_matches/onchain_packed_or_confirmed=false。
+- finalize_htlc 无节点后端一律 HTLC_NODE_NOT_CONFIGURED fail-closed，不构造/签名/广播赎回交易、不产出原像；HtlcError 全 HTLC_* 前缀 Display+Error，生产具名返回不 panic。
+- RGB：CommitmentScheme 实现 std::str::FromStr（opret_first/opret、tapret_first/tapret）；verify_opret_commitment 定位唯一精确 6a 20 <32> 输出回索引（裸 OP_RETURN 放行、非规范推送 RGB_OPRET_MALFORMED_OUTPUT、双锚点 malformed、找不到 RGB_OPRET_COMMITMENT_NOT_FOUND）；verify_tapret_placement 目标须 51 20 <32> 首个 Taproot（越界 INDEX_OUT_OF_RANGE），require_derivation=true 一律 RGB_TAPRET_DERIVATION_NOT_IMPLEMENTED、derivation_verified 恒 false；CommitmentClaim.verify 分派出 CommitmentReceipt（rgb_state_transition_validated=false）；RgbError 全 RGB_* 前缀。
+- T0 系统插件 payment-router 新注册 btc_htlc_verify/btc_htlc_finalize/rgb_commitment_verify（空/坏 JSON 运行时拒），连旧共 19 handler；status 增 btc_htlc_introduced_in/rgb_introduced_in=v3.9.6 与诚实块（不连节点/不广播/无完整解释器/整数守恒/finalize fail-closed；rgb 不做 tweak 推导/状态转换/链上锚写），enforceable 增 2 位，provided 增 2 true+btc_node_connection=false，capabilities_declared 6→8（加 btc:htlc:read、rgb:commitment:read），链上写/节点/tweak 登记保留。
+- 全量 gsn-core lib **607/0**（较 595 净增 12：htlc 5 + rgb 5 + payment 字节桥 2；系统插件 spawn E2E 在既有用例内扩三方法真实 call 覆盖正例/金额拒绝/finalize fail-closed/opret 索引/tapret 未实现）、fmt --check、clippy --all-targets -D warnings（删死常量 OP_PUSH_20、CommitmentScheme 改 FromStr+.parse()、两处 is_multiple_of、RangeInclusive::contains，无 allow 掩盖）、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO）、js test(22)、check-version 3.9.6（十声明点）全绿；release daemon --version=0.3.96。
+- 版本 npm 3.9.6 ↔ gsn-core/gsn-daemon 0.3.96。
+- 诚实边界：纯链下结构校验非比特币节点/RGB Core 集成——不打包/签名/广播、不读 mempool/UTXO/区块、不查确认数、不产出原像、不真转资产；不做完整 Script 解释器（OP_HASH256 双哈希与凭证单 SHA256 语义统一不强制，仅保证两处 32B 与声明 hash 一致）；CLTV 仅 nLockTime 口径不涉 sequence/CSV；金额整数守恒不含费率市场；RGB 不做状态转换/tapret tweak（require_derivation 具名未实现）；finalize 默认 fail-closed，current/快照显式传入。锚定/桥风控 v3.9.7、ZK 意图/OWS/合规 v3.9.8；外部生态数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.5] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（6/9）——ERC-4337 账户抽象 Paymaster 纯确定性赞助决策内核（UserOperation 气体/费用校验 + v0.6 paymasterAndData/v0.7 paymaster+paymasterData 解析对齐 + 五类气体 checked 求和×maxFee 整数上估 + SponsorPolicy 开关/链/时间窗/白名单/单笔上限/累计预算 fail-closed；零新依赖复用 hex+x402::EvmAddress，只决策是否代付 gas，不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥、不垫付 gas、不链上质押）（#128，patch）

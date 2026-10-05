@@ -68,6 +68,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reed-solomon-erasure = "6.0.0"
 
+# 第三轮：链上信任锚完整接入（Base / Arbitrum 测试网+主网双就绪）。
+# 仅新增两项最小密码学原语（均 RustCrypto 出品、MSRV 1.88 兼容），不引入
+# ethers/alloy/reqwest 等重型栈：
+# - sha3：EVM 全链路使用 Keccak-256（EIP-712 域分隔、RLP 交易哈希、地址派生）；
+# - k256：secp256k1 ECDSA 签名 + recovery id（EVM 交易签名 / EIP-3009 授权）。
+# JSON-RPC 走已有的 rustls + 手写 HTTP/1.1 POST（见 chain/rpc.rs），无 HTTP 客户端新依赖。
+sha3 = "0.10"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+
 # v3.6.1 自动更新：最小 HTTPS 能力（rustls + ring + webpki 根证书，无 native-tls/OpenSSL）。
 # rustls 已由 libp2p(wss) 传递进依赖树并锁定同版本，直接声明为正式依赖不扩大依赖图。
 # 注意：rustls 0.23 用的是 rustls-pki-types 1.x 的 TrustAnchor，因此根证书必须用

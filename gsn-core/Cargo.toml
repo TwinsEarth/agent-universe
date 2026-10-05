@@ -90,3 +90,13 @@ windows-sys = { version = "0.52", features = [
 ] }
 
 [dev-dependencies]
+
+# ===== 生产发布优化（第二轮工程加固，P2）=====
+# - lto = "fat"：全 crate（含依赖）过程间优化，跨边界内联，缩小体积、提升运行期性能；
+# - codegen-units = 1：单一代码生成单元，换取更激进的整体优化（以编译时间为代价）；
+# - strip = "symbols"：剥离符号表与调试信息，显著缩小最终二进制。
+# 注意：刻意不设置 panic = "abort"——保持 unwind 语义与下游/FFI 兼容性。
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

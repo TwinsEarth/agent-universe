@@ -1,0 +1,41 @@
+# .dockerignore —— 限定 Docker 构建上下文，避免把本地构建产物 / 密钥 / 无关目录传进 daemon。
+# 构建上下文为仓库根。
+
+# Rust 构建产物（builder 阶段会重新编译，绝不拷贝宿主 target）
+**/target
+gsn-core/target
+
+# Git 元数据
+.git
+.gitignore
+
+# 本地验证 / 调试残留（仓库根下大量 verify* 目录与日志）
+verify*
+buildlogs
+**/*.log
+**/*.out
+meta_err.log
+
+# Node / 前端依赖与产物（镜像只跑 Rust 二进制，不需要）
+node_modules
+**/node_modules
+dist
+**/dist
+desktop/dist
+js/dist
+
+# 语言环境 / IDE
+.DS_Store
+.idea
+.vscode
+
+# 本地环境变量与密钥（容器通过 compose env 注入，不进镜像层）
+.env
+.env.*
+deploy/env
+
+# 文档与非构建目录（缩小上下文；如构建需要可按需放开）
+docs
+README.md
+CHANGELOG.md
+RELEASES.md

@@ -1,0 +1,135 @@
+# =============================================================================
+# Agent Universe —— 本地 5 节点组网（1 boot + 4 worker）
+# -----------------------------------------------------------------------------
+# 用法（仓库根执行）：
+#   docker build -t agent-universe/gsn-daemon .
+#   docker compose -f deploy/docker-compose.5nodes.yml up
+#
+# 与 docker-compose.yml 同构，仅多两个 worker（node3/node4）。宿主机端口步长 10：
+#   boot  4001/4002 · node1 4011/4012 · node2 4021/4022 ·
+#   node3 4031/4032 · node4 4041/4042
+#
+# 所有 worker 统一 --bootstrap=/dns4/boot/tcp/4001（裸地址，靠 Identify 学 PeerId）。
+# =============================================================================
+
+x-common-worker: &worker
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  image: agent-universe/gsn-daemon:local
+  environment: &worker-env
+    HOME: /data
+    REST_BEARER_TOKEN: CHANGE_ME_local_dev_token_only
+    GSN_CRDT_SNAPSHOT_INTERVAL_SECS: "15"
+    # 按需启用治理集：
+    # GSN_GOVERNANCE_FILE: /data/governance.json
+    # REST_ALLOW_UNAUTHENTICATED: "0"
+    # 容器内以 nonroot 运行，无需 GSN_ALLOW_ROOT。
+  networks: [gsnnet]
+  depends_on:
+    boot: { condition: service_healthy }
+  healthcheck: &hc
+    test: ["CMD", "gsn-daemon", "--healthcheck"]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 25s
+  restart: unless-stopped
+
+services:
+  boot:
+    build: { context: .., dockerfile: Dockerfile }
+    image: agent-universe/gsn-daemon:local
+    container_name: node-boot
+    hostname: boot
+    command:
+      - --data-dir=/data
+      - --listen=0.0.0.0
+      - --port=4001
+      - --api-port=4002
+    environment:
+      HOME: /data
+      REST_BEARER_TOKEN: CHANGE_ME_local_dev_token_only
+      GSN_CRDT_SNAPSHOT_INTERVAL_SECS: "15"
+    volumes: [boot_data:/data]
+    ports:
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+      - "4002:4002/tcp"
+    networks: [gsnnet]
+    healthcheck: *hc
+    restart: unless-stopped
+
+  node1:
+    <<: *worker
+    container_name: node1
+    hostname: node1
+    command:
+      - "--data-dir=/data"
+      - "--listen=0.0.0.0"
+      - "--port=4001"
+      - "--api-port=4002"
+      - "--bootstrap=/dns4/boot/tcp/4001"
+    volumes: [n1_data:/data]
+    ports:
+      - "4011:4001/tcp"
+      - "4011:4001/udp"
+      - "4012:4002/tcp"
+
+  node2:
+    <<: *worker
+    container_name: node2
+    hostname: node2
+    command:
+      - "--data-dir=/data"
+      - "--listen=0.0.0.0"
+      - "--port=4001"
+      - "--api-port=4002"
+      - "--bootstrap=/dns4/boot/tcp/4001"
+    volumes: [n2_data:/data]
+    ports:
+      - "4021:4001/tcp"
+      - "4021:4001/udp"
+      - "4022:4002/tcp"
+
+  node3:
+    <<: *worker
+    container_name: node3
+    hostname: node3
+    command:
+      - "--data-dir=/data"
+      - "--listen=0.0.0.0"
+      - "--port=4001"
+      - "--api-port=4002"
+      - "--bootstrap=/dns4/boot/tcp/4001"
+    volumes: [n3_data:/data]
+    ports:
+      - "4031:4001/tcp"
+      - "4031:4001/udp"
+      - "4032:4002/tcp"
+
+  node4:
+    <<: *worker
+    container_name: node4
+    hostname: node4
+    command:
+      - "--data-dir=/data"
+      - "--listen=0.0.0.0"
+      - "--port=4001"
+      - "--api-port=4002"
+      - "--bootstrap=/dns4/boot/tcp/4001"
+    volumes: [n4_data:/data]
+    ports:
+      - "4041:4001/tcp"
+      - "4041:4001/udp"
+      - "4042:4002/tcp"
+
+networks:
+  gsnnet: { driver: bridge }
+
+volumes:
+  boot_data:
+  n1_data:
+  n2_data:
+  n3_data:
+  n4_data:

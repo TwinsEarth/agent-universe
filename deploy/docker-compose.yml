@@ -1,0 +1,151 @@
+# =============================================================================
+# Agent Universe —— 本地 3 节点组网（1 boot + 2 worker）
+# -----------------------------------------------------------------------------
+# 用法（仓库根执行）：
+#   docker build -t agent-universe/gsn-daemon .
+#   docker compose -f deploy/docker-compose.yml up
+#
+# 端口模型（每节点容器内固定监听 4001/tcp(libp2p) + 4001/udp(quic) + 4002/tcp(api)）：
+#   boot  (n0): 宿主机 4001/tcp, 4001/udp, 4002
+#   node1 (n1): 宿主机 4011/tcp, 4011/udp, 4012
+#   node2 (n2): 宿主机 4021/tcp, 4021/udp, 4022
+#
+# worker 用裸 multiaddr `/dns4/boot/tcp/4001` 引导（不带 /p2p/<PeerId>）：
+# 避免“先要 PeerId 才能连、要连了才知道 PeerId”的鸡生蛋问题；libp2p dial 后经
+# Identify 协议对端会学到 boot 的 PeerId，再据此进 KAD/订阅。
+#
+# ⚠️ REST_BEARER_TOKEN 为示例占位值，生产/对外部署前必须改成高熵随机值（见
+#    deploy/env.example）。本文件默认不挂治理集（GSN_GOVERNANCE_FILE 未设置 →
+#    治理门写操作 fail-closed，仅影响需治理签名的接口，本地组网足够）。
+# =============================================================================
+
+services:
+  boot:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: agent-universe/gsn-daemon:local
+    container_name: node-boot
+    hostname: boot
+    # boot 本身是根节点，不设 --bootstrap；身份/数据落在命名卷。
+    command:
+      - --data-dir=/data
+      - --listen=0.0.0.0
+      - --port=4001
+      - --api-port=4002
+    environment:
+      HOME: /data
+      # 写门 Bearer（POST/PUT/PATCH/DELETE 需携带 Authorization: Bearer <token>）。
+      REST_BEARER_TOKEN: CHANGE_ME_local_dev_token_only
+      # 如需治理集，取消注释并把 deploy/governance.example.json 填好后挂进 /data。
+      # GSN_GOVERNANCE_FILE: /data/governance.json
+      # CRDT 快照落盘间隔（秒），默认 15。
+      GSN_CRDT_SNAPSHOT_INTERVAL_SECS: "15"
+    volumes:
+      - boot_data:/data
+      # 治理集挂载示例（按需）：
+      # - ./governance.json:/data/governance.json:ro
+    ports:
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+      - "4002:4002/tcp"
+    networks:
+      - gsnnet
+    healthcheck:
+      test: ["CMD", "gsn-daemon", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    restart: unless-stopped
+
+  node1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: agent-universe/gsn-daemon:local
+    container_name: node1
+    hostname: node1
+    command:
+      - --data-dir=/data
+      - --listen=0.0.0.0
+      - --port=4001
+      - --api-port=4002
+      - --bootstrap=/dns4/boot/tcp/4001
+    environment:
+      HOME: /data
+      REST_BEARER_TOKEN: CHANGE_ME_local_dev_token_only
+      GSN_CRDT_SNAPSHOT_INTERVAL_SECS: "15"
+    volumes:
+      - n1_data:/data
+    # 容器内仍监听 4001/4002；宿主机映射到 4011/4012（步长 10）。
+    ports:
+      - "4011:4001/tcp"
+      - "4011:4001/udp"
+      - "4012:4002/tcp"
+    networks:
+      - gsnnet
+    depends_on:
+      boot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "gsn-daemon", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    restart: unless-stopped
+
+  node2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: agent-universe/gsn-daemon:local
+    container_name: node2
+    hostname: node2
+    command:
+      - --data-dir=/data
+      - --listen=0.0.0.0
+      - --port=4001
+      - --api-port=4002
+      - --bootstrap=/dns4/boot/tcp/4001
+    environment:
+      HOME: /data
+      REST_BEARER_TOKEN: CHANGE_ME_local_dev_token_only
+      GSN_CRDT_SNAPSHOT_INTERVAL_SECS: "15"
+    volumes:
+      - n2_data:/data
+    ports:
+      - "4021:4001/tcp"
+      - "4021:4001/udp"
+      - "4022:4002/tcp"
+    networks:
+      - gsnnet
+    depends_on:
+      boot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "gsn-daemon", "--healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    restart: unless-stopped
+
+# -----------------------------------------------------------------------------
+# 水平扩展提示：
+#   - 临时加 worker：复制 node2 段，改 container_name/hostname/卷名/宿主机端口
+#     （n3→4031/4032，n4→4041/4042 ……），--bootstrap 一律用 /dns4/boot/tcp/4001。
+#   - 或直接用 deploy/docker-compose.5nodes.yml（1 boot + 4 worker）。
+#   - 不建议 `docker compose up --scale node1=3`：同一服务多副本会撞宿主机映射端口，
+#     且共享同一卷名会冲突；扩节点应显式定义服务。
+# -----------------------------------------------------------------------------
+
+networks:
+  gsnnet:
+    driver: bridge
+
+volumes:
+  boot_data:
+  n1_data:
+  n2_data:

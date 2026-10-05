@@ -1,0 +1,14 @@
+[
+  {
+    "did": "did:example:REPLACE_WITH_GOVERNANCE_MEMBER_1_DID",
+    "pubkey_hex": "REPLACE_WITH_64_HEX_CHARS_ED25519_PUBLIC_KEY_1"
+  },
+  {
+    "did": "did:example:REPLACE_WITH_GOVERNANCE_MEMBER_2_DID",
+    "pubkey_hex": "REPLACE_WITH_64_HEX_CHARS_ED25519_PUBLIC_KEY_2"
+  },
+  {
+    "did": "did:example:REPLACE_WITH_GOVERNANCE_MEMBER_3_DID",
+    "pubkey_hex": "REPLACE_WITH_64_HEX_CHARS_ED25519_PUBLIC_KEY_3"
+  }
+]

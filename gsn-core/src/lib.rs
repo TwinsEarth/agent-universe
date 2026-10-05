@@ -1,4 +1,7 @@
-//! Agent Universe gsn-core v3.9.7
+// payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
+// 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
+#![recursion_limit = "256"]
+//! Agent Universe gsn-core v3.9.8
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!

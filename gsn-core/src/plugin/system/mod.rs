@@ -527,6 +527,18 @@ mod tests {
         assert_eq!(st["rgb"]["onchain_anchor_write"], false);
         assert_eq!(st["provided"]["btc_htlc_verify"], true);
         assert_eq!(st["provided"]["rgb_commitment_verify"], true);
+        // v3.9.7 锚定最终性 / 跨链桥风控纯决策面。
+        assert_eq!(st["anchor_finality"]["introduced_in"], "v3.9.7");
+        assert_eq!(st["anchor_finality"]["onchain_read_in_kernel"], false);
+        assert_eq!(st["anchor_finality"]["finality_fail_closed"], true);
+        assert_eq!(st["bridge_risk"]["introduced_in"], "v3.9.7");
+        assert_eq!(st["bridge_risk"]["bridge_or_contract_connection"], false);
+        assert_eq!(st["bridge_risk"]["bridge_relay_fail_closed"], true);
+        assert_eq!(st["provided"]["anchor_finality_check"], true);
+        assert_eq!(st["provided"]["bridge_transfer_decide"], true);
+        assert_eq!(st["provided"]["crosschain_message_relay"], false);
+        assert_eq!(st["anchor_finality_introduced_in"], "v3.9.7");
+        assert_eq!(st["bridge_risk_introduced_in"], "v3.9.7");
         assert_eq!(st["provided"]["btc_node_connection"], false);
         assert_eq!(
             st["enforceable"]["htlc_fail_closed_when_node_unconfigured"],
@@ -537,8 +549,9 @@ mod tests {
             true
         );
         // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster
-        // 只读协议能力；v3.9.6 再 + btc:htlc:read / rgb:commitment:read（共 8 个）；执行/链上写仅登记后续。
-        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 8);
+        // 只读协议能力；v3.9.6 再 + btc:htlc:read / rgb:commitment:read（共 8 个）；
+        // v3.9.7 再 + chain:anchor:read / bridge:risk:decide（共 10 个）；执行/链上写仅登记后续。
+        assert_eq!(st["capabilities_declared"].as_array().unwrap().len(), 10);
 
         // v3.9.1：wallet_sign_preview 已注册且对合法意图可用（不产出签名）。
         let digest = serde_json::Value::Array(vec![serde_json::Value::Number(7.into()); 32]);
@@ -862,6 +875,69 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("RGB_TAPRET_DERIVATION_NOT_IMPLEMENTED"));
+
+        // v3.9.7 锚定最终性：合法取证快照放行，确认数不足具名拒绝。
+        let anchor_commitment = format!("0x{}", "ab".repeat(32));
+        let anchor_ok = serde_json::to_vec(&serde_json::json!({
+            "policy": {"required_confirmations": 6, "require_finalized": false, "max_tolerated_reorg_depth": 1},
+            "evidence": {
+                "source_chain": "bitcoin",
+                "confirmations": 7,
+                "finalized": false,
+                "observed_reorg_depth": 0,
+                "anchor_commitment_hex": anchor_commitment,
+                "claimed_commitment_hex": anchor_commitment
+            }
+        }))
+        .unwrap();
+        let anchor_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("anchor_finality_check", &anchor_ok).unwrap())
+                .unwrap();
+        assert_eq!(anchor_out["anchor_safe"], true);
+        assert_eq!(anchor_out["commitment_verified"], true);
+        let anchor_bad = serde_json::to_vec(&serde_json::json!({
+            "policy": {"required_confirmations": 6, "require_finalized": false, "max_tolerated_reorg_depth": 1},
+            "evidence": {
+                "source_chain": "bitcoin",
+                "confirmations": 2,
+                "finalized": false,
+                "observed_reorg_depth": 0,
+                "claimed_commitment_hex": anchor_commitment
+            }
+        }))
+        .unwrap();
+        assert!(inst
+            .call("anchor_finality_check", &anchor_bad)
+            .unwrap_err()
+            .to_string()
+            .contains("ANCHOR_INSUFFICIENT_CONFIRMATIONS"));
+
+        // v3.9.7 跨链桥风控：白名单内放行，暂停具名拒绝，真实中继无后端 fail-closed。
+        let bridge_ok = serde_json::to_vec(&serde_json::json!({
+            "policy": {
+                "enabled": true, "paused": false,
+                "allowed_directions": ["btc->evm"], "allowed_assets": ["WBTC"],
+                "require_allowlisted_destination": true,
+                "min_transfer": 100, "per_transfer_cap": 1_000_000,
+                "rate_window_max_count": 3, "cumulative_cap": 5_000_000
+            },
+            "transfer": {
+                "direction": "btc->evm", "asset": "WBTC", "amount": 500_000,
+                "destination_allowlisted": true,
+                "window_prior_count": 1, "cumulative_prior": 1_000_000
+            }
+        }))
+        .unwrap();
+        let bridge_out: serde_json::Value =
+            serde_json::from_slice(&inst.call("bridge_transfer_decide", &bridge_ok).unwrap())
+                .unwrap();
+        assert_eq!(bridge_out["approved"], true);
+        assert_eq!(bridge_out["bridge_relay_executed"], false);
+        assert!(inst
+            .call("bridge_relay", b"{}")
+            .unwrap_err()
+            .to_string()
+            .contains("BRIDGE_NOT_CONFIGURED"));
 
         // pay_execute 尚未接线（NotFound），不伪造可用。
         assert!(inst.call("pay_execute", b"{}").is_err());

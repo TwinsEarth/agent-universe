@@ -33,6 +33,7 @@
 //! 外部报道的各项数字（x402 交易量、BlackRock 模型储蓄占比、ERC-8004 采用量、
 //! A402 性能等）均为**第三方报道口径，非本仓复测**；本内核不内置这些数字作为事实。
 
+pub mod anchorguard;
 pub mod erc8004;
 pub mod htlc;
 pub mod l402;
@@ -42,6 +43,12 @@ pub mod router;
 pub mod signer;
 pub mod x402;
 
+pub use anchorguard::{
+    decide_bridge_transfer as bridge_transfer_decide,
+    relay_bridge_transfer as bridge_relay_fail_closed,
+    verify_anchor_finality as anchor_finality_verify, AnchorError, AnchorEvidence, AnchorPolicy,
+    AnchorReceipt, BridgeDecision, BridgeError, BridgePolicy, BridgeTransfer,
+};
 pub use erc8004::{
     aggregate_feedback, hash_token_uri, validate_did, validate_pubkey_hex, Erc8004Error, Feedback,
     IdentityRecord, IdentityRegistry, ReputationAccumulator, ReputationDimension,
@@ -142,6 +149,15 @@ pub const METHOD_BTC_HTLC_FINALIZE: &str = "btc_htlc_finalize";
 
 /// PMB 方法：RGB 客户端验证承诺位置校验（opret/tapret-first 锚定形状，纯只读，不做状态转换）。
 pub const METHOD_RGB_COMMITMENT_VERIFY: &str = "rgb_commitment_verify";
+
+/// PMB 方法：链上锚定最终性校验（确认数/最终性/重组深度/承诺一致性，取证快照传入，纯只读）。
+pub const METHOD_ANCHOR_FINALITY_CHECK: &str = "anchor_finality_check";
+
+/// PMB 方法：跨链桥风控放行决策（开关/暂停/白名单/额度/速率/累计，纯决策 fail-closed）。
+pub const METHOD_BRIDGE_TRANSFER_DECIDE: &str = "bridge_transfer_decide";
+
+/// PMB 方法：真实跨链中继（锁仓/铸造/广播）。本版无桥后端，一律 BRIDGE_NOT_CONFIGURED。
+pub const METHOD_BRIDGE_RELAY: &str = "bridge_relay";
 
 /// 结算/支付域领域错误（类型化拒绝，不静默降级、不动钱）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -314,6 +330,41 @@ pub fn status_payload() -> serde_json::Value {
         "btc_node_connection": false,
         "note": "只做 RGB 承诺锚定的链下位置/形状校验：opret-first 定位唯一的 OP_RETURN <32 commitment> 输出并逐字节比对；tapret-first 校验被锚定输出是 segwit v1 OP_1 <32> 程序且为交易中第一个 Taproot 输出（本版不做内部键 tweak 密码学推导，receipt.derivation_verified 诚实置 false，require_derivation=true 一律 RGB_TAPRET_DERIVATION_NOT_IMPLEMENTED）。不做 RGB 状态转换/genesis/seal/inventory 客户端验证，不解析 bech32m，不连节点、不读区块、不构造广播交易、不持私钥。"
     });
+    let anchor_status = serde_json::json!({
+        "introduced_in": "v3.9.7",
+        "methods": ["anchor_finality_check"],
+        "decision_inputs": ["required_confirmations", "require_finalized", "max_tolerated_reorg_depth", "confirmations (evidence)", "finalized (evidence)", "observed_reorg_depth (evidence)", "anchor/claimed 32B commitment"],
+        "integer_confirmations": true,
+        "safety_gate_required": true,
+        "reorg_checked_before_confirmations": true,
+        "commitment_exact_32byte_match_when_provided": true,
+        "finality_fail_closed": true,
+        "merkle_proof_or_light_client_verify": false,
+        "signature_or_aggregate_signature_verify": false,
+        "onchain_read_in_kernel": false,
+        "clock_read_in_kernel": false,
+        "evm_or_btc_rpc_connection": false,
+        "anchor_safe_meaning": "仅表示调用方取证快照按策略自洽，不代表链上真实不可回滚",
+        "note": "只做链下确定性最终性决策：重组深度超容忍先拒、require_finalized 未给 finalized 即拒（不以确认数代替最终性）、确认数严格不足即拒（恰好达门槛通过）、提供 32B 锚点承诺时须与声明承诺逐字节一致（不提供则诚实置 commitment_verified=false）；策略既不要求 finalized 又把确认数门槛设 0 视为无闸门拒绝。确认数/重组深度/最终性均由调用方取证传入，内核不读区块/不连 RPC/不读时钟/不做默克尔或轻客户端证明。"
+    });
+    let bridge_status = serde_json::json!({
+        "introduced_in": "v3.9.7",
+        "methods": ["bridge_transfer_decide", "bridge_relay"],
+        "amount_unit": "internal integer micro (u128, no float)",
+        "decision_chain": ["enabled", "paused", "policy valid", "direction whitelist (empty=deny all)", "asset whitelist (empty=deny all)", "destination allowlist (optional)", "amount>0", "min", "per-transfer cap", "rate window count", "cumulative cap (checked add)"],
+        "integer_checked_arithmetic": true,
+        "whitelist_empty_denies_all_by_default": true,
+        "spend_to_zero_allowed": true,
+        "cumulative_cap_zero_denies_first_transfer": true,
+        "bridge_fail_closed_when_disabled_paused_or_over_limit": true,
+        "bridge_relay_fail_closed": true,
+        "fabricated_lock_or_mint_on_failure": false,
+        "bridge_or_contract_connection": false,
+        "crosschain_message_signing_or_broadcast": false,
+        "asset_locking_minting_or_release": false,
+        "clock_read_in_kernel": false,
+        "note": "只做链下确定性跨链风控决策：总开关/紧急暂停/方向与资产白名单（空默认全拒）/可选目的白名单/最小额/单笔上限/速率窗口笔数/累计额度（u128 checked，恰好花完允许、cumulative_cap=0 首笔即拒）逐条短路判定；策略非法（单笔上限 0、窗口上限 0、最小额>单笔上限）具名 BRIDGE_BAD_POLICY。window_prior_count/cumulative_prior/now 均由调用方传入，内核不持久化、不连桥与锁仓/铸造合约、不构造签名广播跨链消息、不锁定/铸造/释放资产；bridge_relay 一律 BRIDGE_NOT_CONFIGURED fail-closed。"
+    });
     let enforceable = serde_json::json!({
         "deterministic_route_decision": true,
         "integer_thresholds": true,
@@ -338,6 +389,14 @@ pub fn status_payload() -> serde_json::Value {
         "rgb_opret_commitment_exact_match": true,
         "rgb_tapret_first_output_check": true,
         "rgb_tapret_derivation_honestly_not_claimed": true,
+        "anchor_integer_confirmation_gate": true,
+        "anchor_reorg_depth_gate": true,
+        "anchor_finality_fail_closed": true,
+        "anchor_commitment_exact_match": true,
+        "bridge_fail_closed_when_paused_or_over_limit": true,
+        "bridge_default_deny_non_whitelisted_direction_asset": true,
+        "bridge_integer_checked_cumulative": true,
+        "bridge_relay_not_configured_fail_closed": true,
         "fund_movement": false,
         "key_holding_in_sandbox": false,
         "transaction_signing": false,
@@ -365,6 +424,9 @@ pub fn status_payload() -> serde_json::Value {
         "btc_htlc_verify": true,
         "btc_htlc_finalize_when_btc_node_configured": true,
         "rgb_commitment_verify": true,
+        "anchor_finality_check": true,
+        "bridge_transfer_decide": true,
+        "bridge_relay_when_bridge_configured": true,
         "router_persistence": false,
         "lightning_node_connection": false,
         "evm_rpc_connection": false,
@@ -374,7 +436,12 @@ pub fn status_payload() -> serde_json::Value {
         "rgb_tapret_tweak_derivation": false,
         "erc8004_onchain_registry_write": false,
         "erc4337_bundler_relay": false,
-        "erc4337_paymaster_stake_write": false
+        "erc4337_paymaster_stake_write": false,
+        "anchor_onchain_read_in_kernel": false,
+        "anchor_merkle_or_lightclient_proof": false,
+        "bridge_or_contract_connection": false,
+        "crosschain_message_relay": false,
+        "asset_locking_minting_or_release": false
     });
     serde_json::json!({
         "plugin": PAYMENT_ROUTER_PLUGIN,
@@ -388,6 +455,8 @@ pub fn status_payload() -> serde_json::Value {
         "paymaster_introduced_in": "v3.9.5",
         "btc_htlc_introduced_in": "v3.9.6",
         "rgb_introduced_in": "v3.9.6",
+        "anchor_finality_introduced_in": "v3.9.7",
+        "bridge_risk_introduced_in": "v3.9.7",
         "amount_unit": {
             "name": "credits",
             "micro_units_per_credit": 1_000_000,
@@ -417,11 +486,14 @@ pub fn status_payload() -> serde_json::Value {
             "erc8004:registry:read",
             "erc4337:paymaster:decide",
             "btc:htlc:read",
-            "rgb:commitment:read"
+            "rgb:commitment:read",
+            "chain:anchor:read",
+            "bridge:risk:decide"
         ],
         "capabilities_reserved_later": [
             "pay:execute",
             "chain:anchor:write",
+            "bridge:relay:execute",
             "erc8004:registry:write",
             "erc4337:bundler:relay",
             "erc4337:paymaster:stake:write",
@@ -517,9 +589,11 @@ pub fn status_payload() -> serde_json::Value {
         "paymaster": paymaster_status,
         "btc_htlc": htlc_status,
         "rgb": rgb_status,
+        "anchor_finality": anchor_status,
+        "bridge_risk": bridge_status,
         "enforceable": enforceable,
         "provided": provided,
-        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。v3.9.5：ERC-4337 Paymaster 纯决策面——校验 UserOperation 气体/费用字段、解析并对齐 v0.6 paymasterAndData 与 v0.7 paymaster/paymasterData、按五类气体上限之和×maxFeePerGas 整数 checked 上估 gas 成本，在显式赞助策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不链上质押。v3.9.6：BTC HTLC + RGB 纯校验面——HTLC 做 SHA256 哈希锁、BIP65 CLTV 超时（高度/秒由阈值区分，规范最小编码，当前值调用方传入）、整数 sats 守恒（offered+fee==total）、P2WSH witnessProgram=SHA256(witnessScript) 与标准 IF/ELSE 模板逐字节校验；RGB 做 opret-first（唯一 OP_RETURN<32 commitment>）与 tapret-first（第一个 OP_1<32> Taproot 输出）锚定位置/形状校验，tapret tweak 推导诚实标注未实现；不连比特币节点、不读 UTXO/区块、不构造/签名/广播交易、不持私钥、不做 RGB 状态转换、不结算 HTLC（btc_htlc_finalize 一律 HTLC_NODE_NOT_CONFIGURED fail-closed）。锚定/桥风控 v3.9.7、ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。"
+        "note": "v3.9.0：结算路由 PaymentRouter 纯确定性选路（只决策不动钱，缺轨 fail-closed）。v3.9.1：宿主签名闸门 HostSignerGate——wallet_sign_preview 只校验/规范化待签载荷不碰密钥，wallet_sign 仅宿主经 SignatureBroker 签发，私钥/seed 不进沙盒、回执只含公钥+签名；生产默认 UnconfiguredBroker，wallet_sign 一律 SignerNotConfigured 具名拒签、绝不伪造。v3.9.2：EVM x402(USDC) 纯协议内核——校验 402 challenge、用无依赖 keccak256 构造 EIP-3009 transferWithAuthorization 的 EIP-712 待签 digest（只预览不签）、按精确金额守恒校验 facilitator 回执；x402_sign 因本版无 secp256k1 宿主后端一律 X402_EVM_SIGNER_NOT_CONFIGURED fail-closed，不连 RPC、不广播、不划转、不兑换、不持久化、内核不读时钟。v3.9.3：闪电 L402 纯协议内核——解析 402 挑战头与 BOLT11 整数金额前缀（msat）、校验 SHA256(preimage)==payment_hash 与精确金额守恒；l402_pay 因本版不连闪电节点一律具名 fail-closed，不解码 bech32 数据/节点签名、不持私钥、不创建或结算 HTLC。v3.9.4：ERC-8004 三注册表纯协议面——身份句柄（tokenId↔DID↔Ed25519↔tokenURI SHA-256 承诺）绑定校验、四维整数信誉聚合（守恒/自评拦截/nonce 重放拦截）、独立验证者 BFT-lite（n≥3f+1）裁决；不铸造 ERC-721、不连 RPC、不读写链上注册表、不持私钥。v3.9.5：ERC-4337 Paymaster 纯决策面——校验 UserOperation 气体/费用字段、解析并对齐 v0.6 paymasterAndData 与 v0.7 paymaster/paymasterData、按五类气体上限之和×maxFeePerGas 整数 checked 上估 gas 成本，在显式赞助策略（开关/链/时间窗/白名单/单笔上限/累计预算）下决定是否赞助；不连 bundler/EntryPoint、不广播 UserOp、不持 Paymaster 私钥（paymaster_sign 一律 PAYMASTER_SIGNER_NOT_CONFIGURED fail-closed）、不垫付 gas、不链上质押。v3.9.6：BTC HTLC + RGB 纯校验面——HTLC 做 SHA256 哈希锁、BIP65 CLTV 超时（高度/秒由阈值区分，规范最小编码，当前值调用方传入）、整数 sats 守恒（offered+fee==total）、P2WSH witnessProgram=SHA256(witnessScript) 与标准 IF/ELSE 模板逐字节校验；RGB 做 opret-first（唯一 OP_RETURN<32 commitment>）与 tapret-first（第一个 OP_1<32> Taproot 输出）锚定位置/形状校验，tapret tweak 推导诚实标注未实现；不连比特币节点、不读 UTXO/区块、不构造/签名/广播交易、不持私钥、不做 RGB 状态转换、不结算 HTLC（btc_htlc_finalize 一律 HTLC_NODE_NOT_CONFIGURED fail-closed）。v3.9.7：锚定最终性 + 跨链桥风控纯决策面——anchor_finality_check 按重组深度（超容忍先拒）、require_finalized（未给 finalized 即拒，不以确认数代替最终性）、确认数严格门槛（恰好达门槛通过）、32B 锚点/声明承诺逐字节一致判定可否据以行动，策略无任何安全闸门（既不要求 finalized 又 required_confirmations=0）直接拒；bridge_transfer_decide 按总开关/紧急暂停/方向与资产白名单（空默认全拒）/可选目的白名单/最小额/单笔上限/速率窗口笔数/累计额度（u128 checked，恰好花完允许、cumulative_cap=0 首笔即拒）逐条短路放行；确认数/重组深度/窗口计数/累计已用均由调用方取证传入，内核不读区块与时钟、不连 RPC/桥/锁仓或铸造合约、不做默克尔或轻客户端证明、不构造签名广播跨链消息、不锁定/铸造/释放资产，bridge_relay 一律 BRIDGE_NOT_CONFIGURED fail-closed；anchor_safe/approved 仅表取证快照按策略自洽，不代表链上真实不可回滚或桥已执行。ZK/OWS/合规 v3.9.8。外部协议采用量与性能数字均为第三方报道口径、非本仓复测。",
     })
 }
 
@@ -1039,6 +1113,56 @@ fn handle_rgb_commitment_verify(_method: &str, payload: &[u8]) -> PluginResult<V
     .map_err(|e| PluginError::Runtime(format!("rgb_commitment_verify 序列化失败: {e}")))
 }
 
+/// 字节桥：`anchor_finality_check`（锚定最终性链下纯决策，取证快照传入）。
+fn handle_anchor_finality_check(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let req: AnchorFinalityRequest = parse_json("anchor_finality_check", payload)?;
+    let receipt = anchor_finality_verify(&req.policy, &req.evidence)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&serde_json::json!({
+        "anchor_safe": receipt.anchor_safe,
+        "source_chain": receipt.source_chain,
+        "confirmations": receipt.confirmations,
+        "required_confirmations": receipt.required_confirmations,
+        "finalized": receipt.finalized,
+        "require_finalized": receipt.require_finalized,
+        "observed_reorg_depth": receipt.observed_reorg_depth,
+        "max_tolerated_reorg_depth": receipt.max_tolerated_reorg_depth,
+        "commitment_verified": receipt.commitment_verified,
+        "onchain_read_in_kernel": false
+    }))
+    .map_err(|e| PluginError::Runtime(format!("anchor_finality_check 序列化失败: {e}")))
+}
+
+/// 字节桥：`bridge_transfer_decide`（跨链风控链下纯决策，fail-closed）。
+fn handle_bridge_transfer_decide(_method: &str, payload: &[u8]) -> PluginResult<Vec<u8>> {
+    let req: BridgeTransferRequest = parse_json("bridge_transfer_decide", payload)?;
+    let decision = bridge_transfer_decide(&req.policy, &req.transfer)
+        .map_err(|e| PluginError::Runtime(e.to_string()))?;
+    serde_json::to_vec(&decision)
+        .map_err(|e| PluginError::Runtime(format!("bridge_transfer_decide 序列化失败: {e}")))
+}
+
+/// 字节桥：`bridge_relay`（真实跨链中继）。本版无桥后端，一律 BRIDGE_NOT_CONFIGURED。
+fn handle_bridge_relay(_method: &str, _payload: &[u8]) -> PluginResult<Vec<u8>> {
+    Err(PluginError::Runtime(
+        BridgeError::BridgeNotConfigured.to_string(),
+    ))
+}
+
+/// `anchor_finality_check` 请求体：策略 + 取证快照均由调用方传入。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct AnchorFinalityRequest {
+    policy: AnchorPolicy,
+    evidence: AnchorEvidence,
+}
+
+/// `bridge_transfer_decide` 请求体：策略 + 转移请求均由调用方传入。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+struct BridgeTransferRequest {
+    policy: BridgePolicy,
+    transfer: BridgeTransfer,
+}
+
 fn parse_json<'a, T: serde::Deserialize<'a>>(method: &str, payload: &'a [u8]) -> PluginResult<T> {
     if payload.is_empty() {
         return Err(PluginError::Runtime(format!(
@@ -1145,6 +1269,22 @@ pub fn register(rt: &mut NativeRuntime) {
         METHOD_RGB_COMMITMENT_VERIFY,
         handle_rgb_commitment_verify,
     );
+    // v3.9.7 锚定最终性 + 跨链桥风控：链下纯决策 fail-closed；中继无后端具名拒绝，不连桥/RPC、不广播、不转资产。
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_ANCHOR_FINALITY_CHECK,
+        handle_anchor_finality_check,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_BRIDGE_TRANSFER_DECIDE,
+        handle_bridge_transfer_decide,
+    );
+    rt.register_handler(
+        PAYMENT_ROUTER_PLUGIN,
+        METHOD_BRIDGE_RELAY,
+        handle_bridge_relay,
+    );
 }
 
 #[cfg(test)]
@@ -1220,7 +1360,8 @@ mod tests {
         assert_eq!(s["tracks"].as_array().unwrap().len(), 3);
         // v3.9.1 两个 + v3.9.2 x402 + v3.9.3 l402 + v3.9.4 erc8004 + v3.9.5 paymaster 只读协议能力。
         // v3.9.6 再 + btc:htlc:read + rgb:commitment:read = 8。
-        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 8);
+        // v3.9.7 再 + chain:anchor:read + bridge:risk:decide = 10。
+        assert_eq!(s["capabilities_declared"].as_array().unwrap().len(), 10);
         assert_eq!(
             s["enforceable"]["fail_closed_when_evm_signer_unconfigured"],
             true
@@ -1297,6 +1438,41 @@ mod tests {
         assert_eq!(s["provided"]["rgb_state_transition_validation"], false);
         assert_eq!(s["btc_htlc_introduced_in"], "v3.9.6");
         assert_eq!(s["rgb_introduced_in"], "v3.9.6");
+        // v3.9.7 锚定最终性 / 跨链桥风控纯决策面。
+        assert_eq!(s["anchor_finality"]["introduced_in"], "v3.9.7");
+        assert_eq!(s["anchor_finality"]["onchain_read_in_kernel"], false);
+        assert_eq!(s["anchor_finality"]["evm_or_btc_rpc_connection"], false);
+        assert_eq!(s["anchor_finality"]["finality_fail_closed"], true);
+        assert_eq!(
+            s["anchor_finality"]["reorg_checked_before_confirmations"],
+            true
+        );
+        assert_eq!(s["bridge_risk"]["introduced_in"], "v3.9.7");
+        assert_eq!(s["bridge_risk"]["bridge_or_contract_connection"], false);
+        assert_eq!(
+            s["bridge_risk"]["crosschain_message_signing_or_broadcast"],
+            false
+        );
+        assert_eq!(s["bridge_risk"]["asset_locking_minting_or_release"], false);
+        assert_eq!(s["bridge_risk"]["bridge_relay_fail_closed"], true);
+        assert_eq!(
+            s["bridge_risk"]["whitelist_empty_denies_all_by_default"],
+            true
+        );
+        assert_eq!(s["enforceable"]["anchor_finality_fail_closed"], true);
+        assert_eq!(
+            s["enforceable"]["bridge_fail_closed_when_paused_or_over_limit"],
+            true
+        );
+        assert_eq!(
+            s["enforceable"]["bridge_relay_not_configured_fail_closed"],
+            true
+        );
+        assert_eq!(s["provided"]["anchor_finality_check"], true);
+        assert_eq!(s["provided"]["bridge_transfer_decide"], true);
+        assert_eq!(s["provided"]["crosschain_message_relay"], false);
+        assert_eq!(s["anchor_finality_introduced_in"], "v3.9.7");
+        assert_eq!(s["bridge_risk_introduced_in"], "v3.9.7");
     }
 
     #[test]
@@ -1744,5 +1920,91 @@ mod tests {
 
         // 空负载 → Runtime（不 panic）。
         assert!(handle_rgb_commitment_verify(METHOD_RGB_COMMITMENT_VERIFY, b"").is_err());
+    }
+
+    #[test]
+    fn anchor_finality_handler_roundtrip_and_fail_closed() {
+        let commitment = format!("0x{}", "ab".repeat(32));
+        let ok = serde_json::json!({
+            "policy": {"required_confirmations": 6, "require_finalized": false, "max_tolerated_reorg_depth": 1},
+            "evidence": {
+                "source_chain": "bitcoin",
+                "confirmations": 7,
+                "finalized": false,
+                "observed_reorg_depth": 0,
+                "anchor_commitment_hex": commitment,
+                "claimed_commitment_hex": commitment
+            }
+        });
+        let bytes = handle_anchor_finality_check(
+            METHOD_ANCHOR_FINALITY_CHECK,
+            serde_json::to_vec(&ok).unwrap().as_slice(),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["anchor_safe"], true);
+        assert_eq!(v["commitment_verified"], true);
+        assert_eq!(v["onchain_read_in_kernel"], false);
+
+        // 确认数不足 → 具名 ANCHOR_* Runtime 拒绝。
+        let mut bad = ok.clone();
+        bad["evidence"]["confirmations"] = serde_json::json!(2);
+        let err = handle_anchor_finality_check(
+            METHOD_ANCHOR_FINALITY_CHECK,
+            serde_json::to_vec(&bad).unwrap().as_slice(),
+        )
+        .unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("ANCHOR_INSUFFICIENT_CONFIRMATIONS"));
+        assert!(handle_anchor_finality_check(METHOD_ANCHOR_FINALITY_CHECK, b"").is_err());
+    }
+
+    #[test]
+    fn bridge_handler_decide_and_relay_named_refused() {
+        let ok = serde_json::json!({
+            "policy": {
+                "enabled": true,
+                "paused": false,
+                "allowed_directions": ["btc->evm"],
+                "allowed_assets": ["WBTC"],
+                "require_allowlisted_destination": true,
+                "min_transfer": 100,
+                "per_transfer_cap": 1_000_000,
+                "rate_window_max_count": 3,
+                "cumulative_cap": 5_000_000
+            },
+            "transfer": {
+                "direction": "btc->evm",
+                "asset": "WBTC",
+                "amount": 500_000,
+                "destination_allowlisted": true,
+                "window_prior_count": 1,
+                "cumulative_prior": 1_000_000
+            }
+        });
+        let bytes = handle_bridge_transfer_decide(
+            METHOD_BRIDGE_TRANSFER_DECIDE,
+            serde_json::to_vec(&ok).unwrap().as_slice(),
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["approved"], true);
+        assert_eq!(v["bridge_relay_executed"], false);
+
+        // 暂停 → 具名 BRIDGE_PAUSED。
+        let mut paused = ok.clone();
+        paused["policy"]["paused"] = serde_json::json!(true);
+        let err = handle_bridge_transfer_decide(
+            METHOD_BRIDGE_TRANSFER_DECIDE,
+            serde_json::to_vec(&paused).unwrap().as_slice(),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("BRIDGE_PAUSED"));
+        assert!(handle_bridge_transfer_decide(METHOD_BRIDGE_TRANSFER_DECIDE, b"").is_err());
+
+        // 真实中继无后端 → BRIDGE_NOT_CONFIGURED。
+        let relay_err = handle_bridge_relay(METHOD_BRIDGE_RELAY, b"{}").unwrap_err();
+        assert!(relay_err.to_string().contains("BRIDGE_NOT_CONFIGURED"));
     }
 }

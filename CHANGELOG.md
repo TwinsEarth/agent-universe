@@ -1,3 +1,15 @@
+## [v3.9.7] - 2026-10-05
+
+### 修订版：比特币/以太坊 Agent 经济体（8/9）——链上锚定最终性 + 跨链桥风控的纯链下确定性决策（确认数/显式最终性/重组深度/32B 承诺一致 + 开关/暂停/方向资产目的白名单/最小额/单笔上限/速率窗口/累计额度；零新依赖仅 std+serde，只做链下 fail-closed 整数决策，不连 RPC/桥/合约、不读区块与时钟、不做默克尔或轻客户端证明、不签名广播跨链消息、不锁定/铸造/释放资产，relay 默认 BRIDGE_NOT_CONFIGURED fail-closed）（#130，patch）
+
+- 新增 `gsn-core/src/economy/payment/anchorguard.rs`：零新依赖（std + serde），零浮点/零 syscall/零 unsafe/零 IO/无生产 panic；金额 u128、计数 u64，全 checked 整数。
+- verify_anchor_finality(policy,evidence) 严格短路：无任何安全闸门（require_finalized=false 且 required_confirmations=0）ANCHOR_POLICY_NO_SAFETY_GATE；source_chain 空 ANCHOR_BAD_CHAIN；重组 observed>tolerated 先拒 ANCHOR_REORG_EXCEEDED（恰好等于含放行，先于确认数）；require_finalized 但 finalized=false 拒 ANCHOR_NOT_FINALIZED（不以确认数代替最终性）；confirmations<required 拒 ANCHOR_INSUFFICIENT_CONFIRMATIONS（恰好达门槛通过）；32B 承诺规范化（可选 0x/hex/大小写不敏感），提供锚点承诺须与声明承诺逐字节一致（ANCHOR_COMMITMENT_MISMATCH / ANCHOR_BAD_COMMITMENT_HEX），不提供则 commitment_verified=false 不报错；AnchorReceipt 恒 onchain_read_in_kernel=false，anchor_safe 仅表取证快照自洽。
+- decide_bridge_transfer(policy,req) fail-closed 短路：enabled/paused/validate（per_transfer_cap>0、rate_window_max_count>0、min<=cap，否则 BRIDGE_BAD_POLICY）/方向白名单（空默认全拒）/资产白名单（空默认全拒）/可选目的白名单/金额>0/最小额/单笔上限/速率窗口（prior+1 checked 超限 BRIDGE_RATE_LIMITED）/累计（prior+amount checked，超限 BRIDGE_EXCEEDS_CUMULATIVE_CAP，恰好花完允许，cumulative_cap=0 首笔即拒）；BridgeDecision 恒 bridge_relay_executed=false。relay_bridge_transfer 无桥后端一律 BRIDGE_NOT_CONFIGURED，不连锁仓/铸造合约、不构造签名广播、不锁定/铸造/释放。AnchorError 全 ANCHOR_*、BridgeError 全 BRIDGE_* 前缀 Display+Error。
+- T0 系统插件 payment-router 新注册 anchor_finality_check/bridge_transfer_decide/bridge_relay（空/坏 JSON 运行时拒），连旧共 22 handler；status 增 anchor_finality/bridge_risk 诚实块与 anchor_finality_introduced_in/bridge_risk_introduced_in=v3.9.7，enforceable 增 8 位（锚定 4 + 桥 4），provided 增 3 true 与 anchor_onchain_read/merkle/bridge_connection/relay/asset_lock 等 false，capabilities_declared 8→10（加 chain:anchor:read、bridge:risk:decide），bridge:relay:execute、chain:anchor:write 登记保留。
+- 全量 gsn-core lib **622/0**（较 607 净增 15：anchorguard 13 + payment 字节桥 2；系统插件 spawn E2E 在既有用例内扩 anchor/bridge/relay 真实 call 覆盖正例/确认数拒绝/暂停拒绝/relay fail-closed）、fmt --check、clippy --all-targets -D warnings、metadata --locked、check-no-panics(prod=0)、unsafe-containment（payment 域零 unsafe/零 IO，仅 winjob.rs 3 项带 SAFETY）、js test(22)、check-version 3.9.7（十声明点）全绿；release daemon --version=0.3.97。
+- 版本 npm 3.9.7 ↔ gsn-core/gsn-daemon 0.3.97。
+- 诚实边界：纯链下决策非节点/桥集成——不查真实确认数/不读区块事件/不做默克尔或轻客户端证明/不验签名聚合签名/不连合约/不真转资产；anchor_safe/approved 仅表取证快照按策略自洽，不代表链上不可回滚或桥已执行；承诺仅 32B 形状与逐字节一致不证链上存在；风控不持久化（prior 用量调用方传入）；relay 默认 fail-closed；不内置任何链确认数/最终性常数。ZK 意图/OWS/合规 v3.9.8；外部生态数字均为第三方报道口径、非本仓复测。
+
 ## [v3.9.6] - 2026-10-05
 
 ### 修订版：比特币/以太坊 Agent 经济体（7/9）——BTC HTLC 纯链下确定性校验 + RGB 客户端验证承诺位置校验（P2WSH 脚本结构解析 + SHA256 hashlock/CLTV 超时/整数 sats 守恒/witness program 比对 + opret-first/tapret-first 承诺锚点定位；零新依赖复用 sha2/hex+l402::PaymentHash/Preimage，只做链下结构自洽，不连 BTC 节点、不广播、不持私钥、不签 HTLC、不真转资产、不解真实区块、不做完整 Script 解释器、不做 RGB 状态转换与 tapret tweak 推导，finalize 默认 HTLC_NODE_NOT_CONFIGURED fail-closed）（#129，patch）

@@ -27,7 +27,6 @@
 **质量与社区**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Safety Gates](https://img.shields.io/badge/safety-no%20panic%20%E2%80%A2%20unsafe%20contained-success)](https://github.com/TwinsEarth/agent-universe/actions/workflows/ci.yml)
 [![Contributors](https://img.shields.io/github/contributors/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/graphs/contributors)
 [![Issues](https://img.shields.io/github/issues/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues)
 [![Issues Closed](https://img.shields.io/github/issues-closed/TwinsEarth/agent-universe)](https://github.com/TwinsEarth/agent-universe/issues?q=is%3Aissue+is%3Aclosed)

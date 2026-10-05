@@ -21,7 +21,10 @@ fn faucet() -> (String, gsn_core::Keypair) {
     let mut seed = [0u8; 32];
     seed[0] = 7;
     let kp = gsn_core::Keypair::from_seed(&seed);
-    (gsn_core::Did::from_public_key(kp.public_key()).to_string(), kp)
+    (
+        gsn_core::Did::from_public_key(kp.public_key()).to_string(),
+        kp,
+    )
 }
 
 /// 启动带 faucet 治理成员的市场 actor。
@@ -393,7 +396,10 @@ fn test_mcp_tools_call_real_execution() {
         // 充值 + 余额查询，验证带参工具真实执行
         // v2.8.6：金额入口只接受整数，500.0 浮点会被拒（GAP §4.1）。
         let r = bridge
-            .call("market_deposit", &json!({"account":"c1","amount":500,"governance": deposit_cmd("c1",500)}))
+            .call(
+                "market_deposit",
+                &json!({"account":"c1","amount":500,"governance": deposit_cmd("c1",500)}),
+            )
             .await;
         assert!(!r.is_error);
 

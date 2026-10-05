@@ -218,12 +218,12 @@ impl SignedProofOfComputation {
         // 5. 实际产出一致性（claimed 哈希必须匹配调用方传入的真实字节）
         if sha256(actual_input) != self.input_hash {
             return Err(
-                "POCV_INPUT_MISMATCH: 实际输入 SHA-256 与证明 input_hash 不一致".to_string()
+                "POCV_INPUT_MISMATCH: 实际输入 SHA-256 与证明 input_hash 不一致".to_string(),
             );
         }
         if sha256(actual_output) != self.output_hash {
             return Err(
-                "POCV_OUTPUT_MISMATCH: 实际输出 SHA-256 与证明 output_hash 不一致".to_string()
+                "POCV_OUTPUT_MISMATCH: 实际输出 SHA-256 与证明 output_hash 不一致".to_string(),
             );
         }
 
@@ -310,7 +310,16 @@ mod tests {
         let (did, kp) = prover(1);
         let input = b"task-42 input";
         let output = b"the result payload";
-        let proof = SignedProofOfComputation::sign(&did, &kp, input, output, 1000, "n1", NOW - 10, POCV_DEFAULT_TTL_SECS);
+        let proof = SignedProofOfComputation::sign(
+            &did,
+            &kp,
+            input,
+            output,
+            1000,
+            "n1",
+            NOW - 10,
+            POCV_DEFAULT_TTL_SECS,
+        );
         let mut seen = HashSet::new();
         proof.verify(input, output, &mut seen, NOW).unwrap();
     }
@@ -323,16 +332,23 @@ mod tests {
         let mut bad = proof.clone();
         bad.prover_did = "did:nau:deadbeefdeadbeef".to_string();
         let mut seen = HashSet::new();
-        assert!(bad.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("DID_MISMATCH"));
+        assert!(bad
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("DID_MISMATCH"));
     }
 
     #[test]
     fn weak_pubkey_rejected() {
         let (did, kp) = prover(1);
-        let mut proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
+        let mut proof =
+            SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
         proof.prover_pubkey = hex::encode([0u8; 32]);
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("WEAK_PUBKEY"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("WEAK_PUBKEY"));
     }
 
     #[test]
@@ -340,7 +356,10 @@ mod tests {
         let (did, kp) = prover(1);
         let proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW + 100, 600);
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("NOT_YET_VALID"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("NOT_YET_VALID"));
     }
 
     #[test]
@@ -348,16 +367,23 @@ mod tests {
         let (did, kp) = prover(1);
         let proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 1000, 60);
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("EXPIRED"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("EXPIRED"));
     }
 
     #[test]
     fn forged_signature_rejected() {
         let (did, kp) = prover(1);
-        let mut proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
+        let mut proof =
+            SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
         proof.signature = "00".repeat(64);
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("BAD_SIGNATURE"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("BAD_SIGNATURE"));
     }
 
     #[test]
@@ -366,25 +392,44 @@ mod tests {
         let proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "once", NOW - 10, 600);
         let mut seen = HashSet::new();
         proof.verify(b"i", b"o", &mut seen, NOW).unwrap();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("REPLAY"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("REPLAY"));
     }
 
     #[test]
     fn tampered_output_rejected_by_consistency_check() {
         // 关键 P0-3 回归：自报哈希与真实输出不一致时，即使签名是真的也拒绝。
         let (did, kp) = prover(1);
-        let proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"honest output", 1, "n", NOW - 10, 600);
+        let proof = SignedProofOfComputation::sign(
+            &did,
+            &kp,
+            b"i",
+            b"honest output",
+            1,
+            "n",
+            NOW - 10,
+            600,
+        );
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"attacker-changed output", &mut seen, NOW).unwrap_err().contains("OUTPUT_MISMATCH"));
+        assert!(proof
+            .verify(b"i", b"attacker-changed output", &mut seen, NOW)
+            .unwrap_err()
+            .contains("OUTPUT_MISMATCH"));
     }
 
     #[test]
     fn tampered_field_after_signature_breaks_verify() {
         let (did, kp) = prover(1);
-        let mut proof = SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
+        let mut proof =
+            SignedProofOfComputation::sign(&did, &kp, b"i", b"o", 1, "n", NOW - 10, 600);
         proof.steps = 9999; // 篡改 steps → signing_bytes 变化 → 验签失败
         let mut seen = HashSet::new();
-        assert!(proof.verify(b"i", b"o", &mut seen, NOW).unwrap_err().contains("BAD_SIGNATURE"));
+        assert!(proof
+            .verify(b"i", b"o", &mut seen, NOW)
+            .unwrap_err()
+            .contains("BAD_SIGNATURE"));
     }
 
     #[test]

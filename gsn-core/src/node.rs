@@ -408,9 +408,7 @@ pub async fn run_healthcheck_now() -> i32 {
     let fut = async {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let mut stream = tokio::net::TcpStream::connect((host.as_str(), port)).await?;
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n"
-        );
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host_port}\r\nConnection: close\r\n\r\n");
         stream.write_all(req.as_bytes()).await?;
         stream.flush().await?;
         let mut resp = Vec::new();
@@ -481,8 +479,10 @@ async fn run_swarm_actor(
     let mut connecting: HashSet<PeerId> = HashSet::new();
     // 跨节点 DHT 查找：QueryId → 等待结果的回调（在 kad GetClosestPeers 结果
     // 事件到达时 resolve）。
-    let mut pending_finds: HashMap<libp2p::kad::QueryId, oneshot::Sender<Result<Vec<String>, String>>> =
-        HashMap::new();
+    let mut pending_finds: HashMap<
+        libp2p::kad::QueryId,
+        oneshot::Sender<Result<Vec<String>, String>>,
+    > = HashMap::new();
 
     loop {
         tokio::select! {
@@ -669,10 +669,7 @@ fn process_swarm_event(
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
     inbound_tx: &mpsc::Sender<InboundGossipMessage>,
-    pending_finds: &mut HashMap<
-        libp2p::kad::QueryId,
-        oneshot::Sender<Result<Vec<String>, String>>,
-    >,
+    pending_finds: &mut HashMap<libp2p::kad::QueryId, oneshot::Sender<Result<Vec<String>, String>>>,
 ) -> bool {
     use libp2p::swarm::SwarmEvent::*;
     let mut need_ensure = false;
@@ -811,11 +808,8 @@ fn process_swarm_event(
                     if let Some(tx) = pending_finds.remove(id) {
                         match outcome {
                             Ok(ok) => {
-                                let peers: Vec<String> = ok
-                                    .peers
-                                    .iter()
-                                    .map(|p| p.peer_id.to_string())
-                                    .collect();
+                                let peers: Vec<String> =
+                                    ok.peers.iter().map(|p| p.peer_id.to_string()).collect();
                                 let _ = tx.send(Ok(peers));
                             }
                             Err(err) => {
@@ -1007,10 +1001,7 @@ fn handle_peer_command(
     pending: &mut HashMap<PeerId, oneshot::Sender<Result<bool, String>>>,
     connecting: &mut HashSet<PeerId>,
     pending_publish: &mut Vec<(String, Vec<u8>, u8)>,
-    pending_finds: &mut HashMap<
-        libp2p::kad::QueryId,
-        oneshot::Sender<Result<Vec<String>, String>>,
-    >,
+    pending_finds: &mut HashMap<libp2p::kad::QueryId, oneshot::Sender<Result<Vec<String>, String>>>,
 ) {
     match cmd {
         PeerCommand::GetInfo { reply } => {
@@ -1045,12 +1036,10 @@ fn handle_peer_command(
                 Err(e) => eprintln!("⚠️ publish 失败 [{topic}]: {e}"),
             }
         }
-        PeerCommand::BootstrapDht => {
-            match peer.dht_bootstrap() {
-                Ok(()) => eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）"),
-                Err(e) => eprintln!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
-            }
-        }
+        PeerCommand::BootstrapDht => match peer.dht_bootstrap() {
+            Ok(()) => eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）"),
+            Err(e) => eprintln!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
+        },
         PeerCommand::AddBootstrap { addr, reply } => {
             let result = peer.add_bootstrap_from_str(&addr);
             match &result {
@@ -1844,10 +1833,7 @@ async fn handle_network_api(
             .map(|(_, v)| url_decode(v))
             .unwrap_or_default();
         if key.is_empty() {
-            return (
-                400,
-                serde_json::json!({"error":"missing_key"}).to_string(),
-            );
+            return (400, serde_json::json!({"error":"missing_key"}).to_string());
         }
         let (reply, rx) = oneshot::channel();
         if cmd_tx
@@ -1875,10 +1861,7 @@ async fn handle_network_api(
             ),
             Ok(Ok(Err(e))) => (502, serde_json::json!({"error": e}).to_string()),
             Ok(Err(_)) => (500, serde_json::json!({"error":"no_response"}).to_string()),
-            Err(_) => (
-                504,
-                serde_json::json!({"error":"find_timeout"}).to_string(),
-            ),
+            Err(_) => (504, serde_json::json!({"error":"find_timeout"}).to_string()),
         }
     } else {
         (
@@ -2216,8 +2199,7 @@ async fn run_api_server(
             let mut parts = request_line.split_whitespace();
             let method = parts.next().unwrap_or("GET").to_string();
             let raw_path = parts.next().unwrap_or("/").to_string();
-            let (path_part, query_string) =
-                raw_path.split_once('?').unwrap_or((&raw_path, ""));
+            let (path_part, query_string) = raw_path.split_once('?').unwrap_or((&raw_path, ""));
             let body_start = request.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
             let body = request[body_start..].to_string();
 
@@ -2328,13 +2310,8 @@ async fn run_api_server(
                     crdt.len(),
                     crdt.size_bytes(),
                 );
-                let resp = http_response(
-                    200,
-                    "OK",
-                    body,
-                    "text/plain; version=0.0.4",
-                    &cors_headers,
-                );
+                let resp =
+                    http_response(200, "OK", body, "text/plain; version=0.0.4", &cors_headers);
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 eprintln!("← {} {} (metrics 200)", method, path_part);
@@ -2531,8 +2508,7 @@ async fn run_api_server(
 
             let peer_info = fetch_peer_info(&peer_cmd_tx).await;
             let connected = peer_info.as_ref().map(|i| i.connected).unwrap_or(0);
-            let dht_routing_entries =
-                peer_info.as_ref().map(|i| i.routing_entries).unwrap_or(0);
+            let dht_routing_entries = peer_info.as_ref().map(|i| i.routing_entries).unwrap_or(0);
             let info = rest::NodeInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 mode: mode.clone(),
@@ -2832,9 +2808,15 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     }
     // 纠删码：订阅分片主题（分片分发 StoreShard / 拉取 NeedShards / ShardReply）。
     if let Err(e) = peer.subscribe(crate::erasure::wire::SHARD_TOPIC) {
-        eprintln!("⚠️ subscribe {} 失败: {e}", crate::erasure::wire::SHARD_TOPIC);
+        eprintln!(
+            "⚠️ subscribe {} 失败: {e}",
+            crate::erasure::wire::SHARD_TOPIC
+        );
     } else {
-        println!("✅ 纠删码分片主题已订阅: {}", crate::erasure::wire::SHARD_TOPIC);
+        println!(
+            "✅ 纠删码分片主题已订阅: {}",
+            crate::erasure::wire::SHARD_TOPIC
+        );
     }
 
     // 纠删码分片：原始报文通道（inbound consumer 转发）+ 控制通道（REST ingest/reconstruct）。
@@ -2877,16 +2859,16 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
             while let Some(msg) = inbound_rx.recv().await {
                 if msg.topic == CRDT_TOPIC {
                     match serde_json::from_slice::<CrdtMessage>(&msg.data) {
-                        Ok(CrdtMessage::Op(op)) => {
-                            match crdt_guard(&crdt_store).apply_op(op) {
-                                Ok(changed) => tracing::debug!(
-                                    changed,
-                                    source = %msg.source,
-                                    "📥 CRDT op applied"
-                                ),
-                                Err(e) => tracing::warn!(error = %e, source = %msg.source, "CRDT apply_op 失败"),
+                        Ok(CrdtMessage::Op(op)) => match crdt_guard(&crdt_store).apply_op(op) {
+                            Ok(changed) => tracing::debug!(
+                                changed,
+                                source = %msg.source,
+                                "📥 CRDT op applied"
+                            ),
+                            Err(e) => {
+                                tracing::warn!(error = %e, source = %msg.source, "CRDT apply_op 失败")
                             }
-                        }
+                        },
                         Ok(CrdtMessage::Snapshot(snap)) => {
                             let changed = crdt_guard(&crdt_store).merge_snapshot(snap);
                             tracing::debug!(changed, source = %msg.source, "📥 CRDT snapshot merged");
@@ -2925,8 +2907,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                 .ok()
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(15);
-            let mut ticker =
-                tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
             loop {
                 ticker.tick().await;
                 let snap = crdt_guard(&crdt_store).snapshot(now_millis());
@@ -3454,8 +3435,14 @@ mod crdt_wiring_tests {
             "gsn_crdt_applied_ops_total",
             "gsn_crdt_dropped_capped_total",
         ] {
-            assert!(body.contains(&format!("# TYPE {name}")), "missing TYPE for {name}");
-            assert!(body.contains(&format!("# HELP {name}")), "missing HELP for {name}");
+            assert!(
+                body.contains(&format!("# TYPE {name}")),
+                "missing TYPE for {name}"
+            );
+            assert!(
+                body.contains(&format!("# HELP {name}")),
+                "missing HELP for {name}"
+            );
         }
         assert!(body.contains("gsn_connected_peers 5"));
         assert!(body.contains("gsn_crdt_keys 9"));

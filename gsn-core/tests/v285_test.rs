@@ -198,10 +198,7 @@ fn test_arbitration_missing_dispute_not_found() {
     helpers::grant_governance(&mut m);
     // 受权成员签名命令打不存在的争议 → NOT_FOUND（治理校验已过）
     let err = helpers::arbitrate_result(&mut m, "nope", true).unwrap_err();
-    assert!(
-        err.contains("NOT_FOUND"),
-        "错误信息应指明 NOT_FOUND: {err}"
-    );
+    assert!(err.contains("NOT_FOUND"), "错误信息应指明 NOT_FOUND: {err}");
 }
 
 // ===== 5. 仲裁无过：不罚没，任务回到 Accepted =====

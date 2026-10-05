@@ -239,7 +239,9 @@ impl Governance {
                     g
                 }
                 Err(e) => {
-                    eprintln!("🚨 CRITICAL: {e}——降级为空治理集，特权经济写路径 fail-closed 不可用");
+                    eprintln!(
+                        "🚨 CRITICAL: {e}——降级为空治理集，特权经济写路径 fail-closed 不可用"
+                    );
                     Self::empty()
                 }
             },
@@ -260,10 +262,16 @@ impl Governance {
     /// 验证签名治理命令（见模块文档的校验顺序）。
     ///
     /// # 需外部审计
-    pub fn verify(&mut self, cmd: &SignedGovernanceCommand, now: u64) -> Result<GovernanceAction, String> {
+    pub fn verify(
+        &mut self,
+        cmd: &SignedGovernanceCommand,
+        now: u64,
+    ) -> Result<GovernanceAction, String> {
         // 1. fail-closed
         if self.members.is_empty() {
-            return Err("GOV_NO_MEMBERS: 治理集为空，特权经济写路径不可用（fail-closed）".to_string());
+            return Err(
+                "GOV_NO_MEMBERS: 治理集为空，特权经济写路径不可用（fail-closed）".to_string(),
+            );
         }
         if cmd.target.trim().is_empty() {
             return Err("GOV_BAD_TARGET: 命令缺少绑定目标".to_string());
@@ -322,7 +330,10 @@ impl Governance {
             return Err("GOV_EMPTY_NONCE: 命令缺少 nonce".to_string());
         }
         if !self.seen_nonces.insert(cmd.nonce.clone()) {
-            return Err(format!("GOV_REPLAY: nonce {} 已被消费过（重放）", cmd.nonce));
+            return Err(format!(
+                "GOV_REPLAY: nonce {} 已被消费过（重放）",
+                cmd.nonce
+            ));
         }
 
         Ok(GovernanceAction {
@@ -427,7 +438,15 @@ mod tests {
         let kp = Keypair::from_seed(&s);
         let did = Did::from_public_key(kp.public_key()).to_string();
         let cmd = SignedGovernanceCommand::sign(
-            "c", &did, &kp, GOV_CAP_ARBITRATE, "d1", json!({"guilty": true}), "n", NOW - 10, 300,
+            "c",
+            &did,
+            &kp,
+            GOV_CAP_ARBITRATE,
+            "d1",
+            json!({"guilty": true}),
+            "n",
+            NOW - 10,
+            300,
         );
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("NOT_MEMBER"));
     }
@@ -436,7 +455,15 @@ mod tests {
     fn forged_signature_rejected() {
         let (mut g, kps) = gov2();
         let mut cmd = SignedGovernanceCommand::sign(
-            "c", &kps[0].0, &kps[0].1, GOV_CAP_ARBITRATE, "d1", json!({"guilty": true}), "n", NOW - 10, 300,
+            "c",
+            &kps[0].0,
+            &kps[0].1,
+            GOV_CAP_ARBITRATE,
+            "d1",
+            json!({"guilty": true}),
+            "n",
+            NOW - 10,
+            300,
         );
         cmd.signature = "00".repeat(64);
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("BAD_SIGNATURE"));
@@ -446,7 +473,15 @@ mod tests {
     fn replay_nonce_rejected() {
         let (mut g, kps) = gov2();
         let cmd = SignedGovernanceCommand::sign(
-            "c", &kps[0].0, &kps[0].1, GOV_CAP_CREDIT, "acct", json!({"amount": 5}), "once", NOW - 10, 300,
+            "c",
+            &kps[0].0,
+            &kps[0].1,
+            GOV_CAP_CREDIT,
+            "acct",
+            json!({"amount": 5}),
+            "once",
+            NOW - 10,
+            300,
         );
         g.verify(&cmd, NOW).unwrap();
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("REPLAY"));
@@ -456,7 +491,15 @@ mod tests {
     fn expired_command_rejected() {
         let (mut g, kps) = gov2();
         let cmd = SignedGovernanceCommand::sign(
-            "c", &kps[0].0, &kps[0].1, GOV_CAP_CREDIT, "acct", json!({"amount": 5}), "n", NOW - 1000, 30,
+            "c",
+            &kps[0].0,
+            &kps[0].1,
+            GOV_CAP_CREDIT,
+            "acct",
+            json!({"amount": 5}),
+            "n",
+            NOW - 1000,
+            30,
         );
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("EXPIRED"));
     }
@@ -465,7 +508,15 @@ mod tests {
     fn wrong_capability_rejected() {
         let (mut g, kps) = gov2();
         let cmd = SignedGovernanceCommand::sign(
-            "c", &kps[0].0, &kps[0].1, "governance:hack", "d1", json!({}), "n", NOW - 10, 300,
+            "c",
+            &kps[0].0,
+            &kps[0].1,
+            "governance:hack",
+            "d1",
+            json!({}),
+            "n",
+            NOW - 10,
+            300,
         );
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("BAD_CAPABILITY"));
     }
@@ -474,7 +525,15 @@ mod tests {
     fn tampered_claim_after_signature_breaks_verify() {
         let (mut g, kps) = gov2();
         let mut cmd = SignedGovernanceCommand::sign(
-            "c", &kps[0].0, &kps[0].1, GOV_CAP_CREDIT, "acct", json!({"amount": 5}), "n", NOW - 10, 300,
+            "c",
+            &kps[0].0,
+            &kps[0].1,
+            GOV_CAP_CREDIT,
+            "acct",
+            json!({"amount": 5}),
+            "n",
+            NOW - 10,
+            300,
         );
         cmd.claim = json!({"amount": 999999});
         assert!(g.verify(&cmd, NOW).unwrap_err().contains("BAD_SIGNATURE"));
@@ -482,7 +541,10 @@ mod tests {
 
     #[test]
     fn credit_claim_parses_nonnegative_amount() {
-        assert_eq!(parse_credit_claim(&json!({"amount": 100})).unwrap(), crate::marketplace::Money::new(100));
+        assert_eq!(
+            parse_credit_claim(&json!({"amount": 100})).unwrap(),
+            crate::marketplace::Money::new(100)
+        );
         assert!(parse_credit_claim(&json!({"amount": -1})).is_err());
         assert!(parse_credit_claim(&json!({"amount": 1.5})).is_err());
         assert!(parse_credit_claim(&json!({})).is_err());

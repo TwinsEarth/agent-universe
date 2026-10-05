@@ -24,9 +24,7 @@ use serde_json::Value;
 
 use crate::chain::config::ChainConfig;
 use crate::chain::eip712::{Eip712Domain, TransferWithAuthorization};
-use crate::chain::keys::{
-    evm_address_from_signing_key, load_signing_key, to_checksum_address,
-};
+use crate::chain::keys::{evm_address_from_signing_key, load_signing_key, to_checksum_address};
 use crate::chain::rpc::RpcClient;
 use crate::chain::tx::TxEip1559;
 
@@ -119,7 +117,13 @@ async fn chain_send_tx(body: &str) -> (u16, String) {
     };
     let onchain_chain_id = match client.chain_id().await {
         Ok(id) => id,
-        Err(e) => return err(502, "RPC", format!("eth_chainId 失败（未验证真实节点）: {e}")),
+        Err(e) => {
+            return err(
+                502,
+                "RPC",
+                format!("eth_chainId 失败（未验证真实节点）: {e}"),
+            )
+        }
     };
     if onchain_chain_id != cfg.chain_id {
         return err(
@@ -223,11 +227,13 @@ async fn chain_authorize(body: &str) -> (u16, String) {
         Some(s) => s,
         None => match cfg.contracts.get("usdc") {
             Some(u) => u,
-            None => return err(
-                400,
-                "BAD_BODY",
-                "缺少 usdc 合约地址（请求体 usdc 字段或 GSEN_CONTRACTS_FILE）",
-            ),
+            None => {
+                return err(
+                    400,
+                    "BAD_BODY",
+                    "缺少 usdc 合约地址（请求体 usdc 字段或 GSEN_CONTRACTS_FILE）",
+                )
+            }
         },
     };
     let usdc_addr = match parse_address_hex(usdc) {

@@ -101,8 +101,7 @@ pub struct PaymentRequired402 {
 impl PaymentRequired402 {
     /// 从 HTTP 响应体（JSON）解析 402 信封。
     pub fn from_json(body: &str) -> Result<Self, ChainError> {
-        serde_json::from_str(body)
-            .map_err(|e| ChainError::Rpc(format!("402 信封解析失败: {e}")))
+        serde_json::from_str(body).map_err(|e| ChainError::Rpc(format!("402 信封解析失败: {e}")))
     }
 
     /// 选第一条支付要求（本 MVP 不做多要求选择）。

@@ -131,12 +131,22 @@ impl SignedTx {
 
 /// 从 Signature 取 r 的最小大端字节串。
 fn scalar_bytes_minimal(sig: &k256::ecdsa::Signature) -> Vec<u8> {
-    let r: [u8; 32] = sig.r().to_bytes().as_slice().try_into().unwrap_or([0u8; 32]);
+    let r: [u8; 32] = sig
+        .r()
+        .to_bytes()
+        .as_slice()
+        .try_into()
+        .unwrap_or([0u8; 32]);
     strip_leading_zeros(&r)
 }
 
 fn scalar_s_bytes_minimal(sig: &k256::ecdsa::Signature) -> Vec<u8> {
-    let s: [u8; 32] = sig.s().to_bytes().as_slice().try_into().unwrap_or([0u8; 32]);
+    let s: [u8; 32] = sig
+        .s()
+        .to_bytes()
+        .as_slice()
+        .try_into()
+        .unwrap_or([0u8; 32]);
     strip_leading_zeros(&s)
 }
 
@@ -181,8 +191,7 @@ mod tests {
     use crate::chain::keys::evm_address_from_signing_key;
     use k256::ecdsa::SigningKey;
 
-    const TEST_PRIV: &str =
-        "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de";
+    const TEST_PRIV: &str = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de";
 
     fn test_key() -> SigningKey {
         let bytes = crate::chain::keys::parse_private_hex_pub(TEST_PRIV).unwrap();
@@ -224,9 +233,12 @@ mod tests {
         s32[32 - s.len()..].copy_from_slice(s);
         let sig = k256::ecdsa::Signature::from_scalars(r32, s32).unwrap();
         let recid = RecoveryId::try_from(yp as u8).unwrap();
-        let vk =
-            VerifyingKey::recover_from_digest(Keccak256::new_with_prefix(signed.signing_hash()), &sig, recid)
-                .unwrap();
+        let vk = VerifyingKey::recover_from_digest(
+            Keccak256::new_with_prefix(signed.signing_hash()),
+            &sig,
+            recid,
+        )
+        .unwrap();
         let point = vk.to_encoded_point(false);
         let recovered = crate::chain::keys::evm_address_from_pubkey(point.as_bytes()).unwrap();
         assert_eq!(recovered, expected, "recover 出的地址必须等于签名地址");

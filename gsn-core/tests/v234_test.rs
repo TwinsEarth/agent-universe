@@ -15,7 +15,6 @@ use gsn_core::marketplace::*;
 #[path = "common/mod.rs"]
 mod helpers;
 
-
 // ===== 辅助函数 =====
 
 fn make_agent_card(id: &str, stake: i64) -> MarketAgentCard {

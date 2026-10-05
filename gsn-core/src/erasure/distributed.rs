@@ -171,11 +171,7 @@ impl InMemoryShardNet {
 
     /// 所有收件箱是否均已排空（用于测试判断 quiescence）。
     pub fn is_idle(&self) -> bool {
-        self.shared
-            .borrow()
-            .inboxes
-            .values()
-            .all(|q| q.is_empty())
+        self.shared.borrow().inboxes.values().all(|q| q.is_empty())
     }
 
     /// (delivered, dropped) 统计。
@@ -207,9 +203,7 @@ impl ShardTransport for NetHandle {
 
     fn next(&mut self) -> Option<(String, ShardEnvelope)> {
         let mut bus = self.shared.borrow_mut();
-        bus.inboxes
-            .get_mut(&self.me)
-            .and_then(VecDeque::pop_front)
+        bus.inboxes.get_mut(&self.me).and_then(VecDeque::pop_front)
     }
 
     fn peers(&self) -> Vec<String> {
@@ -365,11 +359,7 @@ impl DistributedShardNode {
                     return;
                 }
                 // per-blob 分片数护栏：新分片且已达上限则丢弃（不 panic）。
-                let cnt = self
-                    .local
-                    .keys()
-                    .filter(|(b, _)| b == &blob_id)
-                    .count();
+                let cnt = self.local.keys().filter(|(b, _)| b == &blob_id).count();
                 let is_new = !self.local.contains_key(&(blob_id.clone(), index));
                 if is_new && cnt >= self.max_shards_per_blob {
                     return;
@@ -576,9 +566,7 @@ mod tests {
         let net = InMemoryShardNet::new(peers);
         let handles: Vec<NetHandle> = (0..N).map(|i| net.handle(&format!("n{i}"))).collect();
         let nodes: Vec<DistributedShardNode> = (0..N)
-            .map(|i| {
-                DistributedShardNode::new(format!("n{i}"), ErasureCoder::new(4, 2).unwrap())
-            })
+            .map(|i| DistributedShardNode::new(format!("n{i}"), ErasureCoder::new(4, 2).unwrap()))
             .collect();
         (net, handles, nodes)
     }
@@ -628,7 +616,9 @@ mod tests {
         let (net, mut handles, mut nodes) = make_cluster();
         let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
 
-        nodes[0].ingest_blob("blob1", &data, &mut handles[0]).unwrap();
+        nodes[0]
+            .ingest_blob("blob1", &data, &mut handles[0])
+            .unwrap();
         pump(&mut nodes, &mut handles, 100);
 
         // 从任一其它节点（n3）重建，逐字节相等。
@@ -641,7 +631,9 @@ mod tests {
         let (net, mut handles, mut nodes) = make_cluster();
         let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
 
-        nodes[0].ingest_blob("blob1", &data, &mut handles[0]).unwrap();
+        nodes[0]
+            .ingest_blob("blob1", &data, &mut handles[0])
+            .unwrap();
         pump(&mut nodes, &mut handles, 100);
 
         // 随机/确定性丢掉恰好 parity_shards(=2) 个分片（含数据片 index 0、1）。
@@ -666,7 +658,9 @@ mod tests {
         let (net, mut handles, mut nodes) = make_cluster();
         let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
 
-        nodes[0].ingest_blob("blob1", &data, &mut handles[0]).unwrap();
+        nodes[0]
+            .ingest_blob("blob1", &data, &mut handles[0])
+            .unwrap();
         pump(&mut nodes, &mut handles, 100);
 
         // 丢掉超过 parity_shards(=2)：3 个分片（index 0、1、2）。
@@ -717,7 +711,9 @@ mod tests {
         // 非 data_shards 整数倍长度：考验 original_size 元数据是否被正确携带/截断。
         let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
 
-        nodes[0].ingest_blob("blob1", &data, &mut handles[0]).unwrap();
+        nodes[0]
+            .ingest_blob("blob1", &data, &mut handles[0])
+            .unwrap();
         pump(&mut nodes, &mut handles, 100);
 
         let got = run_reconstruct(&net, &mut nodes, &mut handles, "blob1", 1, 20).unwrap();

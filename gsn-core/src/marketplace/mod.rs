@@ -1068,7 +1068,7 @@ impl AgentMarket {
                 .find(|d| d.dispute_id == dispute_id)
                 .ok_or_else(|| format!("NOT_FOUND: 争议 {dispute_id} 不存在"))?;
             if dispute.resolved {
-                return Err(format!("争议 {dispute_id} 已仲裁，不能重复仲裁", ));
+                return Err(format!("争议 {dispute_id} 已仲裁，不能重复仲裁",));
             }
             (dispute.respondent.clone(), dispute.task_id.clone())
         };
@@ -1621,7 +1621,13 @@ mod phase2_security_tests {
         );
         m.deposit_signed(&credit, NOW).unwrap();
         m.settlement
-            .lock("task-1", "evil", "__stake__:evil", Money::new(100), SettlementReason::Staked)
+            .lock(
+                "task-1",
+                "evil",
+                "__stake__:evil",
+                Money::new(100),
+                SettlementReason::Staked,
+            )
             .unwrap();
 
         let cmd = SignedGovernanceCommand::sign(

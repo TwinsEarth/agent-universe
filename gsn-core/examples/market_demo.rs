@@ -10,9 +10,9 @@
 
 use gsn_core::identity::{Did, Keypair};
 use gsn_core::marketplace::{
-    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, Governance, GOV_CAP_ARBITRATE,
-    GOV_CAP_CREDIT, MarketAgentCard, Money, Pricing, PricingModel, QaCommittee, QaVote,
-    ResultEnvelope, Sla, SignedGovernanceCommand, TaskSpec, TaskState, VerificationPolicy,
+    AgentMarket, Bid, Currency, ErrorType, EvidenceGrade, Governance, MarketAgentCard, Money,
+    Pricing, PricingModel, QaCommittee, QaVote, ResultEnvelope, SignedGovernanceCommand, Sla,
+    TaskSpec, TaskState, VerificationPolicy, GOV_CAP_ARBITRATE, GOV_CAP_CREDIT,
 };
 
 /// 演示用 faucet 治理成员（dev/faucet：生产授信须链上凭证，未验证）。

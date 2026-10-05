@@ -160,12 +160,7 @@ mod tests {
     /// 构造一个 total_stake=100、quorum_ratio=0.5（quorum=50）、含提案 "p1" 的共识器。
     fn setup() -> LightweightConsensus {
         let mut c = LightweightConsensus::new(100, 0.5);
-        c.propose(
-            "p1".into(),
-            "proposer".into(),
-            "some proposal".into(),
-            100,
-        );
+        c.propose("p1".into(), "proposer".into(), "some proposal".into(), 100);
         c
     }
 

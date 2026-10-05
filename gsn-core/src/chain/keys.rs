@@ -69,7 +69,8 @@ pub fn load_signing_key() -> Result<SigningKey, ChainError> {
     if let Ok(v) = std::env::var(ENV_PRIVATE_KEY) {
         let bytes = parse_private_hex(&v)?;
         // 主动清掉临时字符串，降低驻留。
-        return SigningKey::from_bytes(&bytes.into()).map_err(|e| ChainError::Key(format!("私钥曲线上非法: {e}")));
+        return SigningKey::from_bytes(&bytes.into())
+            .map_err(|e| ChainError::Key(format!("私钥曲线上非法: {e}")));
     }
     if let Ok(path) = std::env::var(ENV_KEY_FILE) {
         let raw = std::fs::read_to_string(&path)
@@ -139,8 +140,7 @@ mod tests {
     use k256::ecdsa::VerifyingKey;
 
     // Ganache 公开测试助记词派生账户 #0 的私钥（仅测试用，无资金，公开已知）。
-    const TEST_PRIV: &str =
-        "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de";
+    const TEST_PRIV: &str = "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de";
 
     #[test]
     fn derives_known_address() {
@@ -183,6 +183,9 @@ mod tests {
         let addr = evm_address_from_signing_key(&sk).unwrap();
         assert_eq!(to_checksum_address(&addr), to_checksum_address(&addr));
         // 小写形式全小写。
-        assert!(to_lower_address(&addr).chars().skip(2).all(|c| !c.is_ascii_uppercase()));
+        assert!(to_lower_address(&addr)
+            .chars()
+            .skip(2)
+            .all(|c| !c.is_ascii_uppercase()));
     }
 }

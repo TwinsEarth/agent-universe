@@ -26,13 +26,15 @@ pub mod http;
 pub mod keys;
 pub mod paymaster;
 pub mod pocv;
-pub mod rpc;
 pub mod rlp;
+pub mod rpc;
 pub mod tx;
 
 pub use config::{ChainConfig, ChainError, Network};
 pub use http::handle_chain_api;
-pub use keys::{evm_address_from_signing_key, load_signing_key, to_checksum_address, to_lower_address};
+pub use keys::{
+    evm_address_from_signing_key, load_signing_key, to_checksum_address, to_lower_address,
+};
 pub use paymaster::{PaymasterClient, PaymentRequired402, SponsorRequest, SponsorResponse};
 pub use rpc::RpcClient;
 pub use tx::{inspect_raw_tx, SignedTx, TxEip1559};

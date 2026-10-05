@@ -38,9 +38,8 @@ pub struct Eip712Domain {
 
 /// EIP712Domain 类型哈希 = keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")。
 pub const EIP712_DOMAIN_TYPEHASH: [u8; 32] = [
-    0x8b, 0x73, 0xc3, 0xc6, 0x9b, 0xb8, 0xfe, 0x3d, 0x51, 0x2e, 0xcc, 0x4c, 0xf7, 0x59, 0xcc,
-    0x79, 0x23, 0x9f, 0x7b, 0x17, 0x9b, 0x0f, 0xfa, 0xca, 0xa9, 0xa7, 0x5d, 0x52, 0x2b, 0x39,
-    0x40, 0x0f,
+    0x8b, 0x73, 0xc3, 0xc6, 0x9b, 0xb8, 0xfe, 0x3d, 0x51, 0x2e, 0xcc, 0x4c, 0xf7, 0x59, 0xcc, 0x79,
+    0x23, 0x9f, 0x7b, 0x17, 0x9b, 0x0f, 0xfa, 0xca, 0xa9, 0xa7, 0x5d, 0x52, 0x2b, 0x39, 0x40, 0x0f,
 ];
 
 impl Eip712Domain {
@@ -96,9 +95,8 @@ pub struct TransferWithAuthorization {
 
 /// transferWithAuthorization 结构体类型哈希。
 pub const TRANSFER_WITH_AUTHORIZATION_TYPEHASH: [u8; 32] = [
-    0x7c, 0x7c, 0x6c, 0xdb, 0x67, 0xa1, 0x87, 0x43, 0xf4, 0x9e, 0xc6, 0xfa, 0x9b, 0x35, 0xf5,
-    0x0d, 0x52, 0xed, 0x05, 0xcb, 0xed, 0x4c, 0xc5, 0x92, 0xe1, 0x3b, 0x44, 0x50, 0x1c, 0x1a,
-    0x22, 0x67,
+    0x7c, 0x7c, 0x6c, 0xdb, 0x67, 0xa1, 0x87, 0x43, 0xf4, 0x9e, 0xc6, 0xfa, 0x9b, 0x35, 0xf5, 0x0d,
+    0x52, 0xed, 0x05, 0xcb, 0xed, 0x4c, 0xc5, 0x92, 0xe1, 0x3b, 0x44, 0x50, 0x1c, 0x1a, 0x22, 0x67,
 ];
 
 impl TransferWithAuthorization {
@@ -136,8 +134,18 @@ impl TransferWithAuthorization {
         let (sig, recid) = sk
             .sign_digest_recoverable(Keccak256::new_with_prefix(digest))
             .map_err(ChainError::from)?;
-        let r: [u8; 32] = sig.r().to_bytes().as_slice().try_into().unwrap_or([0u8; 32]);
-        let s: [u8; 32] = sig.s().to_bytes().as_slice().try_into().unwrap_or([0u8; 32]);
+        let r: [u8; 32] = sig
+            .r()
+            .to_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap_or([0u8; 32]);
+        let s: [u8; 32] = sig
+            .s()
+            .to_bytes()
+            .as_slice()
+            .try_into()
+            .unwrap_or([0u8; 32]);
         Ok((r, s, recid.to_byte()))
     }
 }
@@ -160,7 +168,9 @@ mod tests {
     #[test]
     fn known_typehash_constants_match_keccak() {
         // 自校验：内置常量 == 对类型字符串算 keccak。
-        let t = keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+        let t = keccak256(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        );
         assert_eq!(t, EIP712_DOMAIN_TYPEHASH);
         let s = keccak256(
             b"TransferWithAuthorization(address from,address to,uint256 value,uint256 validAfter,uint256 validBefore,bytes32 nonce)",
@@ -209,9 +219,14 @@ mod tests {
 
     #[test]
     fn eip3009_signature_recovers() {
-        let sk = SigningKey::from_bytes(&parse_private_hex_pub(
-            "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de",
-        ).unwrap().into()).unwrap();
+        let sk = SigningKey::from_bytes(
+            &parse_private_hex_pub(
+                "4f3edf983ac636a65a842ce7c78d9aa706d3b113bce9c46f30d2d717b23f64de",
+            )
+            .unwrap()
+            .into(),
+        )
+        .unwrap();
         let d = domain();
         let auth = TransferWithAuthorization {
             from: [0x11u8; 20],

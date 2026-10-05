@@ -19,7 +19,6 @@ use gsn_core::marketplace::*;
 #[path = "common/mod.rs"]
 mod helpers;
 
-
 fn agent_card(id: &str, stake: i64) -> MarketAgentCard {
     MarketAgentCard {
         agent_id: id.to_string(),

@@ -897,19 +897,45 @@ mod crdt_health_tests {
         .await;
         assert_eq!(r.status, 201, "{:?}", r.body);
         // GET collection summary
-        let r = route("GET", "/api/v1/crdt", "", &market, None, Some(&crdt), &make_info()).await;
+        let r = route(
+            "GET",
+            "/api/v1/crdt",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
         assert_eq!(r.status, 200);
         assert_eq!(r.body["count"].as_u64().unwrap(), 1);
         let keys = r.body["keys"].as_array().unwrap();
         assert!(keys.iter().any(|v| v == "k"));
         // GET item
-        let r = route("GET", "/api/v1/crdt/k", "", &market, None, Some(&crdt), &make_info()).await;
+        let r = route(
+            "GET",
+            "/api/v1/crdt/k",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
         assert_eq!(r.status, 200);
         assert_eq!(r.body["value"], "v");
         assert_eq!(r.body["origin"], "peerX");
         // GET missing -> 404
-        let r =
-            route("GET", "/api/v1/crdt/nope", "", &market, None, Some(&crdt), &make_info()).await;
+        let r = route(
+            "GET",
+            "/api/v1/crdt/nope",
+            "",
+            &market,
+            None,
+            Some(&crdt),
+            &make_info(),
+        )
+        .await;
         assert_eq!(r.status, 404);
     }
 

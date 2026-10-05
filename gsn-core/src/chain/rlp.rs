@@ -144,7 +144,9 @@ pub fn decode(buf: &[u8]) -> Result<(RlpOwned, usize), ChainError> {
         // 长字符串
         let len_of_len = (b0 - 0xb7) as usize;
         if len_of_len == 0 || len_of_len > 8 {
-            return Err(ChainError::Rlp(format!("非法长字符串长度前缀长度 {len_of_len}")));
+            return Err(ChainError::Rlp(format!(
+                "非法长字符串长度前缀长度 {len_of_len}"
+            )));
         }
         let head = 1usize.saturating_add(len_of_len);
         if buf.len() < head {
@@ -175,7 +177,9 @@ pub fn decode(buf: &[u8]) -> Result<(RlpOwned, usize), ChainError> {
         // 长列表
         let len_of_len = (b0 - 0xf7) as usize;
         if len_of_len == 0 || len_of_len > 8 {
-            return Err(ChainError::Rlp(format!("非法长列表长度前缀长度 {len_of_len}")));
+            return Err(ChainError::Rlp(format!(
+                "非法长列表长度前缀长度 {len_of_len}"
+            )));
         }
         let head = 1usize.saturating_add(len_of_len);
         if buf.len() < head {
@@ -239,7 +243,10 @@ mod tests {
         // 空列表 = 0xc0
         assert_eq!(encode(&Rlp::List(vec![])), hex("c0"));
         // ["cat","dog"] = c8 83 636174 83 646f67
-        let v = Rlp::List(vec![Rlp::Bytes(b"cat".to_vec()), Rlp::Bytes(b"dog".to_vec())]);
+        let v = Rlp::List(vec![
+            Rlp::Bytes(b"cat".to_vec()),
+            Rlp::Bytes(b"dog".to_vec()),
+        ]);
         assert_eq!(encode(&v), hex("c88363617483646f67"));
         // [[], [[]], [[], [[]]]] = c7 c0 c1 c0 c3 c0 c1 c0
         let nested = Rlp::List(vec![

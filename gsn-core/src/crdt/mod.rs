@@ -6,8 +6,7 @@
 pub mod store;
 
 pub use store::{
-    CrdtMessage, CrdtOp, CrdtSnapshot, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC,
-    DEFAULT_MAX_KEYS,
+    CrdtMessage, CrdtOp, CrdtSnapshot, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC, DEFAULT_MAX_KEYS,
 };
 
 use std::collections::HashMap;

@@ -165,11 +165,7 @@ where
     while Instant::now() < end {
         let mut progressed = false;
         for node in nodes.iter_mut() {
-            match tokio::time::timeout(
-                Duration::from_millis(POLL_STEP_MS),
-                node.swarm.next(),
-            )
-            .await
+            match tokio::time::timeout(Duration::from_millis(POLL_STEP_MS), node.swarm.next()).await
             {
                 Ok(Some(ev)) => {
                     on_event(node, ev);
@@ -352,7 +348,8 @@ async fn gossipsub_survives_20pct_malicious_nonforwarders() {
             match nodes[0]
                 .swarm
                 .behaviour_mut()
-                .gossipsub.publish(topic.clone(), payload.clone())
+                .gossipsub
+                .publish(topic.clone(), payload.clone())
             {
                 Ok(_) => republish_count += 1,
                 Err(e) => panic!("node0 publish 失败: {e}"),
@@ -382,7 +379,10 @@ async fn gossipsub_survives_20pct_malicious_nonforwarders() {
     let elapsed = measure_start.elapsed();
 
     // ── 7. 打印明细 + 断言 ──
-    println!("\n--- 消息到达明细（最多 {}s）---", MEASURE_TIMEOUT.as_secs());
+    println!(
+        "\n--- 消息到达明细（最多 {}s）---",
+        MEASURE_TIMEOUT.as_secs()
+    );
     for node in &nodes {
         let got = received[node.idx];
         let src = prop_source[node.idx]

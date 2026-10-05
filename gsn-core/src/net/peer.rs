@@ -931,7 +931,7 @@ mod p0_tests {
         assert!(d.first_seen(b"a"), "首次应放行");
         assert!(!d.first_seen(b"a"), "重复应丢弃");
         assert!(d.first_seen(b"b")); // 窗口 [a,b] 满
-        // 再入 c → 淘汰最旧 a；窗口 [b,c]
+                                     // 再入 c → 淘汰最旧 a；窗口 [b,c]
         assert!(d.first_seen(b"c"));
         assert!(!d.first_seen(b"b"), "b 仍在窗口内，应判重");
         assert!(!d.first_seen(b"c"), "c 仍在窗口内，应判重");

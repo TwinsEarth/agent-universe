@@ -990,37 +990,33 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 }
             }
         }
-        MarketCommand::Arbitrate { cmd, now, reply } => {
-            match market.arbitrate_signed(&cmd, now) {
-                Ok((verdict, slashed)) => {
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "arbitrated",
-                        "dispute_id": cmd.target,
-                        "arbitrator": cmd.sender_did,
-                        "capability": cmd.capability,
-                        "verdict": verdict,
-                        "slash_amount": slashed,
-                    })));
-                }
-                Err(e) => {
-                    let _ = reply.send(MarketResponse::err(e));
-                }
+        MarketCommand::Arbitrate { cmd, now, reply } => match market.arbitrate_signed(&cmd, now) {
+            Ok((verdict, slashed)) => {
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "arbitrated",
+                    "dispute_id": cmd.target,
+                    "arbitrator": cmd.sender_did,
+                    "capability": cmd.capability,
+                    "verdict": verdict,
+                    "slash_amount": slashed,
+                })));
             }
-        }
-        MarketCommand::Deposit { cmd, now, reply } => {
-            match market.deposit_signed(&cmd, now) {
-                Ok(_) => {
-                    let bal = market.balance(&cmd.target);
-                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                        "status": "deposited",
-                        "account": cmd.target,
-                        "capability": cmd.capability,
-                        "balance": bal,
-                    })));
-                }
-                Err(e) => {
-                    let _ = reply.send(MarketResponse::err(e));
-                }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
+            }
+        },
+        MarketCommand::Deposit { cmd, now, reply } => match market.deposit_signed(&cmd, now) {
+            Ok(_) => {
+                let bal = market.balance(&cmd.target);
+                let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                    "status": "deposited",
+                    "account": cmd.target,
+                    "capability": cmd.capability,
+                    "balance": bal,
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(MarketResponse::err(e));
             }
         },
         MarketCommand::Balance { account, reply } => {

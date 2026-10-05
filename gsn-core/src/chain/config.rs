@@ -170,7 +170,11 @@ impl Contracts {
     }
 }
 
-fn insert_addr(map: &mut BTreeMap<String, String>, name: &str, raw: String) -> Result<(), ChainError> {
+fn insert_addr(
+    map: &mut BTreeMap<String, String>,
+    name: &str,
+    raw: String,
+) -> Result<(), ChainError> {
     let trimmed = raw.trim();
     let hex_part = trimmed.strip_prefix("0x").unwrap_or(trimmed);
     if hex_part.len() != 40 || !hex_part.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
@@ -178,7 +182,10 @@ fn insert_addr(map: &mut BTreeMap<String, String>, name: &str, raw: String) -> R
             "合约地址 {name}={trimmed:?} 非法：应为 20 字节 hex（40 个 hex 字符）"
         )));
     }
-    map.insert(name.to_string(), format!("0x{hex_part}").to_ascii_lowercase());
+    map.insert(
+        name.to_string(),
+        format!("0x{hex_part}").to_ascii_lowercase(),
+    );
     Ok(())
 }
 
@@ -311,7 +318,10 @@ mod tests {
 
     #[test]
     fn parses_known_networks() {
-        assert_eq!(Network::from_env_str("base-sepolia").unwrap(), Network::BaseSepolia);
+        assert_eq!(
+            Network::from_env_str("base-sepolia").unwrap(),
+            Network::BaseSepolia
+        );
         assert_eq!(Network::from_env_str("BASE").unwrap(), Network::Base);
         assert_eq!(Network::Base.chain_id(), 8453);
         assert_eq!(Network::BaseSepolia.chain_id(), 84532);
@@ -343,9 +353,16 @@ mod tests {
         let dir = std::env::temp_dir();
         let f = dir.join("gsen_contracts_test.json");
         // 合法合约文件解析路径
-        std::fs::write(&f, r#"{"usdc":"0x0000000000000000000000000000000000000001"}"#).unwrap();
+        std::fs::write(
+            &f,
+            r#"{"usdc":"0x0000000000000000000000000000000000000001"}"#,
+        )
+        .unwrap();
         let c = Contracts::from_file(&f).unwrap();
-        assert_eq!(c.get("usdc"), Some("0x0000000000000000000000000000000000000001"));
+        assert_eq!(
+            c.get("usdc"),
+            Some("0x0000000000000000000000000000000000000001")
+        );
         // 非法长度地址被拒
         std::fs::write(&f, r#"{"usdc":"0x1234"}"#).unwrap();
         assert!(Contracts::from_file(&f).is_err());

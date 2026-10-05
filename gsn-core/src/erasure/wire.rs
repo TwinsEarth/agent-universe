@@ -18,7 +18,7 @@
 //! 需外部审计：自研的目标封装/过滤、队列与节点驱动逻辑（纠删码数学本身委托
 //! vetted 库）。
 
-use std::collections::{VecDeque};
+use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
@@ -91,7 +91,8 @@ impl GossipShardTransport {
     /// 网络消费者在收到 `wire` 且目标为本节点时调用：把信封投递到入站队列。
     pub fn deliver(&mut self, wire: &ShardWire) {
         if wire.targets(&self.self_id) {
-            self.inbound.push_back((wire.from.clone(), wire.env.clone()));
+            self.inbound
+                .push_back((wire.from.clone(), wire.env.clone()));
         }
     }
 

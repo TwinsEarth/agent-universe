@@ -250,10 +250,8 @@ mod tests {
         let faucet_kp = Keypair::from_seed(&seed);
         let faucet_did = Did::from_public_key(faucet_kp.public_key()).to_string();
         let faucet_pk: [u8; 32] = faucet_kp.public_key().try_into().unwrap();
-        let market = MarketActorHandle::spawn_with_governance_members(vec![(
-            faucet_did.clone(),
-            faucet_pk,
-        )]);
+        let market =
+            MarketActorHandle::spawn_with_governance_members(vec![(faucet_did.clone(), faucet_pk)]);
         let orch = PluginOrchestratorHandle::new(booted_host(), market.clone());
         // 先由 faucet 签名授信 100 到注册方账户，满足注册质押锁定门槛。
         let now = 1_000_000u64;

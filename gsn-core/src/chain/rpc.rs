@@ -91,7 +91,8 @@ fn connect_addrs(
     }
     Err(ChainError::Rpc(format!(
         "RPC 节点不可达: {}",
-        last.map(|e| e.to_string()).unwrap_or_else(|| "无地址".into())
+        last.map(|e| e.to_string())
+            .unwrap_or_else(|| "无地址".into())
     )))
 }
 
@@ -127,9 +128,9 @@ struct Proxy {
 }
 
 fn parse_proxy_url(raw: &str) -> Result<Proxy, ChainError> {
-    let rest = raw.strip_prefix("http://").ok_or_else(|| {
-        ChainError::Rpc(format!("仅支持 http 正向代理(CONNECT)，拒绝: {raw:?}"))
-    })?;
+    let rest = raw
+        .strip_prefix("http://")
+        .ok_or_else(|| ChainError::Rpc(format!("仅支持 http 正向代理(CONNECT)，拒绝: {raw:?}")))?;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let (userinfo, hostport) = match authority.rsplit_once('@') {
         Some((u, hp)) => (Some(u), hp),
@@ -297,7 +298,10 @@ fn decode_http_response(raw: &[u8]) -> Result<HttpResponse, ChainError> {
     let body = match content_length {
         Some(len) => {
             if len > body.len() {
-                return Err(ChainError::Rpc(format!("RPC 响应截断: 声明 {len}, 实得 {}", body.len())));
+                return Err(ChainError::Rpc(format!(
+                    "RPC 响应截断: 声明 {len}, 实得 {}",
+                    body.len()
+                )));
             }
             body[..len].to_vec()
         }
@@ -461,9 +465,7 @@ impl RpcClient {
 
     /// eth_estimateGas（返回 gas 估算；调用方加安全余量）。
     pub async fn estimate_gas(&self, tx: Value) -> Result<u64, ChainError> {
-        let v = self
-            .call("eth_estimateGas", Value::Array(vec![tx]))
-            .await?;
+        let v = self.call("eth_estimateGas", Value::Array(vec![tx])).await?;
         hex_u64(&v)
     }
 
@@ -519,7 +521,10 @@ mod tests {
         assert_eq!(hex_u64(&serde_json::json!("0x84532")).unwrap(), 0x84532);
         assert_eq!(hex_u64(&serde_json::json!("0x0")).unwrap(), 0);
         assert_eq!(hex_u64(&serde_json::json!("0x")).unwrap(), 0);
-        assert_eq!(hex_u128(&serde_json::json!("0xde0b6b3a7640000")).unwrap(), 1_000_000_000_000_000_000);
+        assert_eq!(
+            hex_u128(&serde_json::json!("0xde0b6b3a7640000")).unwrap(),
+            1_000_000_000_000_000_000
+        );
     }
 
     #[test]

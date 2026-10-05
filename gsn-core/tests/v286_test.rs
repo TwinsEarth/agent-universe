@@ -20,7 +20,10 @@ fn faucet() -> (String, gsn_core::Keypair) {
     let mut seed = [0u8; 32];
     seed[0] = 7;
     let kp = gsn_core::Keypair::from_seed(&seed);
-    (gsn_core::Did::from_public_key(kp.public_key()).to_string(), kp)
+    (
+        gsn_core::Did::from_public_key(kp.public_key()).to_string(),
+        kp,
+    )
 }
 fn spawn_market() -> MarketActorHandle {
     let (did, kp) = faucet();
@@ -29,10 +32,20 @@ fn spawn_market() -> MarketActorHandle {
 }
 fn deposit_cmd(account: &str, amount: i64) -> Value {
     let (did, kp) = faucet();
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let cmd = gsn_core::marketplace::SignedGovernanceCommand::sign(
-        "v286", &did, &kp, gsn_core::marketplace::GOV_CAP_CREDIT, account,
-        serde_json::json!({"amount": amount}), &format!("v286-{account}-{amount}"), now - 10, 300,
+        "v286",
+        &did,
+        &kp,
+        gsn_core::marketplace::GOV_CAP_CREDIT,
+        account,
+        serde_json::json!({"amount": amount}),
+        &format!("v286-{account}-{amount}"),
+        now - 10,
+        300,
     );
     serde_json::to_value(cmd).unwrap()
 }

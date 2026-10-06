@@ -768,44 +768,56 @@ mod p0_tests {
         b.add_bootstrap(dial).unwrap();
 
         // 驱动连接，双方都把对端登记进 kbucket。
+        // 必须用 select 并发驱动 A、B：任一侧暂时没有事件都不能阻塞另一侧，
+        // 否则在高负载 CI 上会把对端已到达的事件饿死（对齐同模块
+        // p01_dht_add_address_populates_kbucket 的成熟写法）。
         let conn_deadline = Instant::now() + Duration::from_secs(15);
         while b.routing_table_size() < 1 && Instant::now() < conn_deadline {
-            if let Some(SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
-            }) = b.next_event().await
-            {
-                b.add_kad_address(peer_id, endpoint.get_remote_address().clone());
-            }
-            if let Some(SwarmEvent::ConnectionEstablished {
-                peer_id, endpoint, ..
-            }) = a.next_event().await
-            {
-                if endpoint.is_dialer() {
-                    a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+            tokio::select! {
+                ev = b.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished {
+                        peer_id, endpoint, ..
+                    }) = ev
+                    {
+                        b.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                    }
                 }
+                ev = a.next_event() => {
+                    if let Some(SwarmEvent::ConnectionEstablished {
+                        peer_id, endpoint, ..
+                    }) = ev
+                    {
+                        if endpoint.is_dialer() {
+                            a.add_kad_address(peer_id, endpoint.get_remote_address().clone());
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
         assert!(b.routing_table_size() >= 1, "B 应先与 A 建立连接");
 
-        // B 发起 bootstrap 查询。
+        // B 发起 bootstrap 查询。同样用 select 并发驱动 A（让它响应入站查询）
+        // 与 B（收查询结果）：不能先阻塞等 A 的事件再读 B，否则 A 安静时
+        // B 已到达的 Bootstrap(Ok) 会被饿死，在高负载 runner 上表现为偶发超时。
         b.dht_bootstrap().unwrap();
-        // 轮询等待查询成功（PeerEvent::Kademlia → OutboundQueryProgressed
-        // → Bootstrap(Ok)）；Client 模式下这里永远收不到成功，只会有
-        // "Request to peer in query failed"。
         let mut saw_success = false;
         let q_deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < q_deadline {
-            // 同时驱动 A（让它响应查询）。
-            let _ = a.next_event().await;
-            if let Some(SwarmEvent::Behaviour(PeerEvent::Kademlia(
-                libp2p::kad::Event::OutboundQueryProgressed {
-                    result: libp2p::kad::QueryResult::Bootstrap(Ok(_)),
-                    ..
-                },
-            ))) = b.next_event().await
-            {
-                saw_success = true;
-                break;
+        while !saw_success && Instant::now() < q_deadline {
+            tokio::select! {
+                _ = a.next_event() => {}
+                ev = b.next_event() => {
+                    if let Some(SwarmEvent::Behaviour(PeerEvent::Kademlia(
+                        libp2p::kad::Event::OutboundQueryProgressed {
+                            result: libp2p::kad::QueryResult::Bootstrap(Ok(_)),
+                            ..
+                        },
+                    ))) = ev
+                    {
+                        saw_success = true;
+                    }
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
             }
         }
         assert!(saw_success, "Server 模式下 B 对 A 的 bootstrap 查询应成功");

@@ -1,4 +1,4 @@
-// Agent Universe v3.9.11 — Tauri 2 跨平台客户端
+// Agent Universe v3.9.12 — Tauri 2 跨平台客户端
 // 一套源码覆盖 macOS / Windows / Linux / iOS / Android
 
 #[tauri::command]

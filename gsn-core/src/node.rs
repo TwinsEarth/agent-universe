@@ -7,7 +7,7 @@ use crate::api::market_actor::MarketActorHandle;
 use crate::api::rest::url_decode;
 use crate::crdt::{CrdtMessage, CrdtOp, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC};
 use crate::erasure::distributed::{
-    DistributedShardNode, ShardTransport, DEFAULT_DATA_SHARDS, DEFAULT_PARITY_SHARDS,
+    DistributedShardNode, ShardEnvelope, ShardTransport, DEFAULT_DATA_SHARDS, DEFAULT_PARITY_SHARDS,
 };
 use crate::erasure::wire::{GossipShardTransport, ShardWire, SHARD_TOPIC};
 use crate::erasure::ErasureCoder;
@@ -2685,6 +2685,88 @@ pub fn current_euid() -> Option<u32> {
 }
 
 /// 启动节点（核心入口，gsn-daemon 与 gsn daemon 共用）
+/// 接管终止信号（P1-ops，真机根因修复）。
+///
+/// 现象：守护进程对 `kill -TERM`/`docker stop` 无反应，只能 `kill -9`。
+///
+/// 根因（真机 + 最小复现双重实证）：在部分监督 shell / 编排环境里，子进程在
+/// fork-exec 前同时继承了两样东西，且二者都会跨 exec 保留：
+/// 1. SIGTERM/SIGINT 的处置位被置为 `SIG_IGN`；
+/// 2. 更关键的是 SIGTERM/SIGINT 被放进了**信号阻塞掩码（blocked mask）**。
+///
+/// Rust 运行时不会在启动时重置这两者；即便用 tokio 注册了信号处理器（其内部
+/// sigaction 会覆盖 handler），信号仍因处于 blocked 状态而永远无法投递，表现为
+/// 进程“活着但收不到 SIGTERM”。仅把 handler 复位为 SIG_DFL 也无效——阻塞位仍在。
+///
+/// 修复（顺序不可省）：
+/// 1. 启动最早期用 `pthread_sigmask(SIG_UNBLOCK)` 解除 SIGTERM/SIGINT/SIGHUP 的
+///    继承阻塞；
+/// 2. 用 `signal(.., SIG_DFL)` 复位可能继承来的 SIG_IGN；
+/// 3. 再交给 tokio 注册异步处理器，收到首个终止信号即优雅退出。
+///
+/// SQLite 采用 WAL 且每笔提交均落盘，崩溃安全；kill -9 后账本可重放，因此信号
+/// 即时退出不破坏一致性。
+fn install_shutdown_handler() {
+    #[cfg(unix)]
+    {
+        // 第 1、2 步：解除继承阻塞并复位继承忽略。必须在 tokio 接管之前完成。
+        unsafe {
+            let mut set: libc::sigset_t = std::mem::zeroed();
+            if libc::sigemptyset(&mut set) == 0 {
+                libc::sigaddset(&mut set, libc::SIGTERM);
+                libc::sigaddset(&mut set, libc::SIGINT);
+                libc::sigaddset(&mut set, libc::SIGHUP);
+                // 非致命：解除失败时退回下方注册流程，由告警暴露。
+                let rc = libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+                if rc != 0 {
+                    eprintln!(
+                        "⚠️ pthread_sigmask(SIG_UNBLOCK) 失败 rc={rc}，终止信号可能仍被继承阻塞"
+                    );
+                }
+            }
+            // 复位可能继承自父进程的 SIG_IGN；tokio 随后会覆盖为自己的处理器。
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("⚠️ 无法接管 SIGTERM（将沿用系统默认处置）: {e}");
+                return;
+            }
+        };
+        let mut sigint = match signal(SignalKind::interrupt()) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("⚠️ 无法接管 SIGINT（将沿用系统默认处置）: {e}");
+                return;
+            }
+        };
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = sigterm.recv() => {
+                    eprintln!("🛑 收到 SIGTERM，gsn-daemon 退出。");
+                    std::process::exit(0);
+                }
+                _ = sigint.recv() => {
+                    eprintln!("🛑 收到 SIGINT，gsn-daemon 退出。");
+                    std::process::exit(0);
+                }
+            }
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                std::process::exit(0);
+            }
+        });
+    }
+}
+
 pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // v2.5.4: 初始化 tracing，使 libp2p 内部（relay/identify/autonat/dcutr/swarm）的
     // warn/error/trace 不再被静默丢弃；可用 RUST_LOG 控制粒度（如 libp2p_relay=trace）。
@@ -2698,6 +2780,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         .try_init();
 
     println!("=== GSN Daemon v{} ===", env!("CARGO_PKG_VERSION"));
+
+    // P1-ops（真机复现）：必须在启动最早期接管 SIGTERM/SIGINT。见函数说明。
+    install_shutdown_handler();
 
     // v3.6.1 自动更新：每次启动后台联网到 npm registry 检查版本（非阻塞、带超时、
     // 失败只告警不影响启动）。默认 minor 通道；白名单先锋/贡献者走 patch 通道。
@@ -2820,7 +2905,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     }
 
     // 纠删码分片：原始报文通道（inbound consumer 转发）+ 控制通道（REST ingest/reconstruct）。
-    let (shard_raw_tx, mut shard_raw_rx) = mpsc::channel::<Vec<u8>>(512);
+    // 元组首项为经 GossipSub 认证的真实发布者 PeerId（msg.source）。协议子网成员
+    // 发现只信任该 source，不信任报文 JSON 自报 from（可被任意伪造）。
+    let (shard_raw_tx, mut shard_raw_rx) = mpsc::channel::<(String, Vec<u8>)>(512);
     let (shard_ctrl_tx, mut shard_ctrl_rx) = mpsc::channel::<ShardControl>(32);
 
     // CRDT 状态存储（LWW-Map），origin = 本节点 PeerId。
@@ -2883,7 +2970,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                     }
                 } else if msg.topic == crate::erasure::wire::SHARD_TOPIC {
                     // 原始报文转发给分片驱动；通道满只告警丢弃（不阻塞/不 panic）。
-                    if let Err(e) = shard_raw_tx.try_send(msg.data.clone()) {
+                    if let Err(e) =
+                        shard_raw_tx.try_send((msg.source.to_string(), msg.data.clone()))
+                    {
                         tracing::warn!(source = %msg.source, "分片报文转发失败: {e}");
                     }
                 } else {
@@ -2948,9 +3037,14 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                 ticker.tick().await;
 
                 // 1) 排空原始入站报文，解析后投递（目标匹配才入队）。
-                while let Ok(bytes) = shard_raw_rx.try_recv() {
+                while let Ok((source, bytes)) = shard_raw_rx.try_recv() {
                     match ShardWire::from_bytes(&bytes) {
-                        Ok(wire) => transport.deliver(&wire),
+                        Ok(mut wire) => {
+                            // 用 GossipSub 认证的真实发布者覆盖自报 from：成员发现只
+                            // 信任传输层 source，防止伪造 from 污染纠删码放置集合。
+                            wire.from = source;
+                            transport.deliver(&wire);
+                        }
                         Err(e) => tracing::warn!(error = %e, "分片报文解析失败，已跳过"),
                     }
                 }
@@ -2960,6 +3054,21 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                 if refresh_ticks.is_multiple_of(4) {
                     if let Some(ids) = fetch_peer_ids(&peer_cmd).await {
                         transport.set_peers(ids);
+                    }
+                    // 周期广播 Hello 心跳：对端据此把本节点记入协议子网 observed 集合。
+                    // Hello 为广播(to="*")，直接 publish，不经确定性放置出站队列。
+                    let hello = ShardWire::direct(
+                        "*",
+                        self_id.clone(),
+                        ShardEnvelope::Hello {
+                            node: self_id.clone(),
+                        },
+                    );
+                    if let Err(e) = peer_cmd.try_send(PeerCommand::Publish {
+                        topic: SHARD_TOPIC.into(),
+                        data: hello.to_bytes(),
+                    }) {
+                        tracing::warn!("分片 Hello 心跳 publish 失败: {e}");
                     }
                 }
 

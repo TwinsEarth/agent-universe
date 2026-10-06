@@ -1143,6 +1143,19 @@ impl AgentMarket {
         cmd: &SignedGovernanceCommand,
         now: u64,
     ) -> Result<(), String> {
+        let (target, amount) = self.verify_governance_credit(cmd, now)?;
+        self.credit_deposit(&target, amount)
+    }
+
+    /// 只完成签名治理授信命令的「成员/权限/时间窗/验签/内存 nonce」校验与金额
+    /// 解析，**不落钱、不做跨进程持久化**。生产数据面在调用本方法后，必须先由
+    /// 持久层确认该 nonce 首次消费（[`AgentMarket::credit_deposit`] 之前），再入账，
+    /// 以修复 daemon 重启后内存去重集丢失导致的窗口内重放重复授信问题（v3.9.12）。
+    pub fn verify_governance_credit(
+        &mut self,
+        cmd: &SignedGovernanceCommand,
+        now: u64,
+    ) -> Result<(String, Money), String> {
         let action = self.governance.verify(cmd, now)?;
         if action.capability != GOV_CAP_CREDIT {
             return Err(format!(
@@ -1151,7 +1164,12 @@ impl AgentMarket {
             ));
         }
         let amount = parse_credit_claim(&action.claim)?;
-        self.settlement.deposit(&action.target, amount)
+        Ok((action.target, amount))
+    }
+
+    /// 在签名治理命令的 nonce 已被持久层确认首次消费后，执行授信入账。
+    pub fn credit_deposit(&mut self, target: &str, amount: Money) -> Result<(), String> {
+        self.settlement.deposit(target, amount)
     }
 
     /// 余额

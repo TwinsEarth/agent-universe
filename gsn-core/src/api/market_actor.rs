@@ -351,7 +351,7 @@ impl MarketActorHandle {
         tokio::spawn(async move {
             let mut market = AgentMarket::new();
             while let Some(cmd) = rx.recv().await {
-                dispatch(&mut market, cmd);
+                dispatch(&mut market, cmd, None);
             }
         });
         Self { tx }
@@ -363,7 +363,7 @@ impl MarketActorHandle {
         tokio::spawn(async move {
             let mut market = AgentMarket::with_min_stake(min_stake);
             while let Some(cmd) = rx.recv().await {
-                dispatch(&mut market, cmd);
+                dispatch(&mut market, cmd, None);
             }
         });
         Self { tx }
@@ -380,7 +380,7 @@ impl MarketActorHandle {
             let mut market = AgentMarket::new();
             market.set_governance(crate::marketplace::Governance::from_members(members));
             while let Some(cmd) = rx.recv().await {
-                dispatch(&mut market, cmd);
+                dispatch(&mut market, cmd, None);
             }
         });
         Self { tx }
@@ -518,7 +518,7 @@ impl MarketActorHandle {
             let mut ledger_water = restored;
 
             while let Some(cmd) = rx.recv().await {
-                dispatch(&mut market, cmd);
+                dispatch(&mut market, cmd, Some(store.as_ref()));
 
                 // ── 写后增量持久化（v2.8.3：逐条 append，失败不推进水位，GAP §3.6）──
                 let records = market.settlement_records();
@@ -731,7 +731,7 @@ impl MarketActorHandle {
 }
 
 /// 在 Actor 内部分发命令到 AgentMarket
-fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
+fn dispatch(market: &mut AgentMarket, cmd: MarketCommand, store: Option<&PersistentStore>) {
     match cmd {
         MarketCommand::RegisterAgent { card, reply } => {
             match serde_json::from_value::<RegisterAgentInput>(card) {
@@ -1005,20 +1005,46 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand) {
                 let _ = reply.send(MarketResponse::err(e));
             }
         },
-        MarketCommand::Deposit { cmd, now, reply } => match market.deposit_signed(&cmd, now) {
-            Ok(_) => {
-                let bal = market.balance(&cmd.target);
-                let _ = reply.send(MarketResponse::ok(serde_json::json!({
-                    "status": "deposited",
-                    "account": cmd.target,
-                    "capability": cmd.capability,
-                    "balance": bal,
-                })));
+        MarketCommand::Deposit { cmd, now, reply } => {
+            // v3.9.12 GOV 重启重放修复：持久化数据面先完整验签（成员/权限/时间窗/
+            // 签名/进程内 nonce），通过后再由 SQLite 原子确认该 nonce 为跨重启首次
+            // 消费，最后才入账。此前内存 HashSet 只在单次进程内去重，daemon 崩溃
+            // 重启后在命令有效期窗口内重放同一签名命令会被再次接受、重复授信。
+            let outcome: Result<(), String> = match store {
+                Some(store) => match market.verify_governance_credit(&cmd, now) {
+                    Ok((target, amount)) => {
+                        match store.consume_gov_nonce(&cmd.nonce, &cmd.sender_did, &cmd.target) {
+                            Ok(true) => market.credit_deposit(&target, amount),
+                            Ok(false) => Err(format!(
+                                "GOV_REPLAY: nonce {} 已被消费过（跨重启持久化去重，重放）",
+                                cmd.nonce
+                            )),
+                            // 无法确认 nonce 是否已消费：fail-closed，绝不放款。
+                            Err(e) => Err(format!(
+                                "GOV_NONCE_STORE: 治理 nonce 持久化失败，已拒绝授信：{e}"
+                            )),
+                        }
+                    }
+                    Err(e) => Err(e),
+                },
+                // 无持久层（测试/dev 内存 actor）：保留原有进程内验签+去重行为。
+                None => market.deposit_signed(&cmd, now),
+            };
+            match outcome {
+                Ok(_) => {
+                    let bal = market.balance(&cmd.target);
+                    let _ = reply.send(MarketResponse::ok(serde_json::json!({
+                        "status": "deposited",
+                        "account": cmd.target,
+                        "capability": cmd.capability,
+                        "balance": bal,
+                    })));
+                }
+                Err(e) => {
+                    let _ = reply.send(MarketResponse::err(e));
+                }
             }
-            Err(e) => {
-                let _ = reply.send(MarketResponse::err(e));
-            }
-        },
+        }
         MarketCommand::Balance { account, reply } => {
             let _ = reply.send(MarketResponse::ok(serde_json::json!({
                 "account": account, "balance": market.balance(&account),

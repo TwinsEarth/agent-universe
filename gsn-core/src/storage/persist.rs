@@ -155,6 +155,16 @@ impl PersistentStore {
                 value TEXT NOT NULL
             );
 
+            -- v3.9.12: 已消费的签名治理命令 nonce（跨重启防重放，GOV 重启重放修复）。
+            -- 内存 HashSet 只覆盖单次进程；授信动钱，必须落盘，崩溃/SIGKILL 重启后
+            -- 在命令有效期窗口内重放同一签名命令仍须拒绝，避免重复入账破坏资金守恒。
+            CREATE TABLE IF NOT EXISTS gov_nonce (
+                nonce      TEXT PRIMARY KEY,
+                sender_did TEXT NOT NULL DEFAULT '',
+                target     TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL
+            );
+
             -- v2.5.5: Circuit Relay 节点池
             CREATE TABLE IF NOT EXISTS relays (
                 relay_id   TEXT PRIMARY KEY,
@@ -345,6 +355,35 @@ impl PersistentStore {
             return Ok(Some(r?));
         }
         Ok(None)
+    }
+
+    /// v3.9.12: 原子消费一个已签名治理命令的 nonce（跨重启防重放）。
+    ///
+    /// 返回 `Ok(true)` 表示该 nonce 首次出现、本次已登记（调用方可以继续入账）；
+    /// 返回 `Ok(false)` 表示该 nonce 此前已被消费（重放，调用方必须拒绝且不得入账）。
+    /// 依赖 SQLite 主键唯一约束 + `INSERT OR IGNORE` 的原子性；调用方是单任务
+    /// market actor，天然串行，但该语句在并发下同样安全。数据库出错一律向上传
+    /// 播，由调用方 **fail-closed** 拒绝授信，禁止在无法确认 nonce 状态时放款。
+    pub fn consume_gov_nonce(
+        &self,
+        nonce: &str,
+        sender_did: &str,
+        target: &str,
+    ) -> anyhow::Result<bool> {
+        let created_at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().to_string())
+            .unwrap_or_else(|_| "0".to_string());
+        let conn = self.conn.lock().unwrap_or_else(|e| {
+            eprintln!("⚠️ persist: 连接锁曾毒化，恢复后继续（可能处于半写状态，请人工核查）");
+            e.into_inner()
+        });
+        conn.execute(
+            "INSERT OR IGNORE INTO gov_nonce (nonce, sender_did, target, created_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![nonce, sender_did, target, created_at],
+        )?;
+        Ok(conn.changes() == 1)
     }
 
     /// v2.8.4: 写入 JSON 行（结果信封/信誉/质押通用，GAP §3.2）。

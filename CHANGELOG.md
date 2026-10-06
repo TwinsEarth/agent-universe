@@ -1,3 +1,18 @@
+## [v3.9.12] - 2026-10-06
+
+### Linux 真机安全修复：签名治理授信命令 nonce 跨重启持久化去重，堵住崩溃重启后窗口内重放重复授信（#137，patch）
+
+- 真机发现（Linux 云机三节点 SIGKILL + 同 data-dir 重启）：治理授信命令 `SignedGovernanceCommand` 的 nonce 防重放此前只存在于内存 `Governance.seen_nonces: HashSet<String>`，daemon 被硬杀重启后该集合从空开始，在命令有效期窗口内重放同一条已签名授信命令会被再次接受，导致同一账户被重复授信、资金守恒被破坏（实测 requester 余额 100 被污染为 400）。时间窗校验是重启后唯一防线，窗内重放即重复入账。
+- 根因：`marketplace/governance.rs` 的 nonce 去重 `insert` 从不落盘；生产授信经 actor `MarketCommand::Deposit` 处理，但无任何持久层去重门禁。
+- 修复（api 层持久化门禁，marketplace 不反向依赖 storage，保持架构兼容、零新增第三方依赖）：
+  - `storage/persist.rs` 新增 `gov_nonce` 表（nonce 主键 + sender_did/target/created_at）与 `PersistentStore::consume_gov_nonce()`：`INSERT OR IGNORE` 原子占用，`changes()==1` 才视为首次消费；DB 错误上抛由调用方 fail-closed。
+  - `marketplace/mod.rs` 将 `deposit_signed` 拆为 `verify_governance_credit()`（验签 + capability + 金额解析 + 进程内 nonce 消费，不落钱）与 `credit_deposit()`（实际入账）。
+  - `api/market_actor.rs` 的 `dispatch` 增加 `Option<&PersistentStore>`：持久化数据面先验签、再由 SQLite 原子确认 nonce 跨重启首次消费、最后才入账；重放返回 `GOV_REPLAY`，nonce 存储失败 fail-closed 返回 `GOV_NONCE_STORE` 拒绝授信；无持久层的测试/dev 内存 actor 保留原进程内行为。生产授信统一收口（rest.rs / mcp/market_tools.rs / plugin/orchestrator.rs 均经 actor handle，无旁路）。
+- 回归测试：新增 `tests/v3912_gov_nonce_restart.rs`，同一 SQLite 文件先后起两个 actor 模拟进程崩溃与同 data-dir 重启，断言首次授信成功、同进程重放拒绝、重启后窗口内重放仍拒绝且余额不翻倍（保持 300）、全新 nonce 合法授信仍成功（300+100=400）。已取得变异探针证据：临时回退为旧内存路径时测试如期失败在重启重放断言（RED），恢复后通过（GREEN）。
+- 全量关卡：`cargo fmt` + `fmt --check`、`cargo clippy --workspace --all-targets -- -D warnings`（0 warning）、全量 `cargo test` 35 个测试二进制 **1056 passed / 0 failed**（lib 746 + bin 8 + 集成含新增 v3912）全绿；干净 data-dir 三节点 + 硬杀重启真机复验通过（详见随版真机报告）。
+- 版本 npm/产物 3.9.12 ↔ gsn-core/gsn-daemon 0.3.102。
+- 诚实边界：本次仅修直接动钱的治理授信（GOV credit）nonce；同源的 `seen_qa_nonces`、`seen_pocv_nonces` 仍为进程内集（PoCV 侧现靠时间窗兜底，代码注释已自认），是否一并持久化留待后续评估。涉及 Ed25519 治理签名/防重放路径仍需外部安全审计（REQUIRE EXTERNAL AUDIT）。
+
 ## [v3.9.9] - 2026-10-05
 
 ### 主网就绪加固版：CRDT 状态同步接线 + 纠删码分布式分片接线 + 链上信任锚完整代码路径（Base/Arbitrum 测试网+主网双就绪）+ DHT Server 模式规模修复（真实多节点 3/5/10/20/50 回归 + 分区/恶意节点 + Docker/Compose/CI/可观测/部署运维手册）（#132，patch）

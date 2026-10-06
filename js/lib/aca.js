@@ -158,7 +158,7 @@ function buildManifest(identity, name, capabilities, opts = {}) {
   const manifest = {
     did: identity.did,
     name,
-    version: opts.version || '3.9.10',
+    version: opts.version || '3.9.11',
     capabilities: [...capabilities],
     endpoints: opts.endpoints || [],
     hardware: {

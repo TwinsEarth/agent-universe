@@ -87,6 +87,12 @@ pub enum ShardEnvelope {
         shard_size: u32,
         original_size: u64,
     },
+    /// 协议子网心跳：声明「本节点运行 gsn/shards 纠删码协议」。
+    ///
+    /// 真机上 libp2p 会连入大量公共 IPFS/kubo 节点，但它们**不**运行本协议。
+    /// 纠删码的放置/拉取集合只能包含在本主题上实际观测到的协议节点，否则
+    /// FNV 放置会把分片永久发给非协议节点（成员发现逻辑见 wire.rs）。
+    Hello { node: String },
 }
 
 /// 一个 blob 的元数据（随 StoreShard / BlobSealed 到达）。
@@ -307,24 +313,52 @@ impl DistributedShardNode {
         let total = self.coder.total_shards();
         let data_shards = self.coder.data_shards();
         let original_size = u64::try_from(data.len()).map_err(|_| "data 过长".to_string())?;
+        let me = self.node_id.clone();
 
         for s in &shards {
             let to = responsible_peer(&peers, blob_id, s.index);
-            transport.send(
-                to,
-                ShardEnvelope::StoreShard {
-                    blob_id: blob_id.to_string(),
-                    index: s.index,
+            if to == me {
+                // 真机 GossipSub 不会把本节点 publish 的报文回环给自己：
+                // 若某分片按确定性放置归本节点负责，必须直接在本地落地，
+                // 否则该分片既不会被自己收到、也无人保存，形成冗余空洞，
+                // 并导致「发起节点 ingest 后立即 reconstruct」因无元数据/分片而失败。
+                self.apply_store_shard(
+                    blob_id.to_string(),
+                    s.index,
                     total,
                     data_shards,
-                    shard_size: shard_size_u32,
+                    shard_size_u32,
                     original_size,
-                    payload: s.data.clone(),
-                },
-            );
+                    s.data.clone(),
+                );
+            } else {
+                transport.send(
+                    to,
+                    ShardEnvelope::StoreShard {
+                        blob_id: blob_id.to_string(),
+                        index: s.index,
+                        total,
+                        data_shards,
+                        shard_size: shard_size_u32,
+                        original_size,
+                        payload: s.data.clone(),
+                    },
+                );
+            }
         }
-        // 广播元数据：让不持有分片的节点也能发起重建。
+        // 元数据：本节点同样收不到自发的 BlobSealed，先在本地落元数据，
+        // 再仅向其它对端广播（跳过自己），让不持有分片的远端也能发起重建。
+        self.apply_seal(
+            blob_id.to_string(),
+            total,
+            data_shards,
+            shard_size_u32,
+            original_size,
+        );
         for p in &peers {
+            if p == &me {
+                continue;
+            }
             transport.send(
                 p,
                 ShardEnvelope::BlobSealed {
@@ -339,6 +373,67 @@ impl DistributedShardNode {
         Ok(())
     }
 
+    /// 落地一个归属本节点的分片（含全部护栏）。
+    ///
+    /// 入站 `StoreShard` 与发起节点本地落地共用同一逻辑，确保护栏语义一致：
+    /// `index < total`、payload 长度与 `shard_size` 相符、per-blob 分片数上限。
+    #[allow(clippy::too_many_arguments)]
+    fn apply_store_shard(
+        &mut self,
+        blob_id: String,
+        index: u8,
+        total: u8,
+        data_shards: u8,
+        shard_size: u32,
+        original_size: u64,
+        payload: Vec<u8>,
+    ) {
+        // B-6: 不信任外部长度——用携带的 shard_size 校验 payload。
+        if index >= total {
+            return;
+        }
+        if payload.len() != shard_size as usize {
+            return;
+        }
+        // per-blob 分片数护栏：新分片且已达上限则丢弃（不 panic）。
+        let cnt = self.local.keys().filter(|(b, _)| b == &blob_id).count();
+        let is_new = !self.local.contains_key(&(blob_id.clone(), index));
+        if is_new && cnt >= self.max_shards_per_blob {
+            return;
+        }
+        self.meta.entry(blob_id.clone()).or_insert(BlobMeta {
+            total,
+            data_shards,
+            shard_size,
+            original_size,
+        });
+        self.local.insert((blob_id, index), payload);
+    }
+
+    /// 记录一个 blob 的元数据（含 blob 总数上限护栏）。
+    /// 入站 `BlobSealed` 与发起节点本地落地共用同一逻辑。
+    fn apply_seal(
+        &mut self,
+        blob_id: String,
+        total: u8,
+        data_shards: u8,
+        shard_size: u32,
+        original_size: u64,
+    ) {
+        if !self.meta.contains_key(&blob_id) && self.meta.len() >= self.max_blobs {
+            return;
+        }
+        self.meta.insert(
+            blob_id,
+            BlobMeta {
+                total,
+                data_shards,
+                shard_size,
+                original_size,
+            },
+        );
+    }
+
     /// 处理一条入站信封。
     pub fn handle(&mut self, env: ShardEnvelope, transport: &mut dyn ShardTransport) {
         match env {
@@ -351,26 +446,16 @@ impl DistributedShardNode {
                 original_size,
                 payload,
             } => {
-                // B-6: 不信任外部长度——用携带的 shard_size 校验 payload。
-                if index >= total {
-                    return;
-                }
-                if payload.len() != shard_size as usize {
-                    return;
-                }
-                // per-blob 分片数护栏：新分片且已达上限则丢弃（不 panic）。
-                let cnt = self.local.keys().filter(|(b, _)| b == &blob_id).count();
-                let is_new = !self.local.contains_key(&(blob_id.clone(), index));
-                if is_new && cnt >= self.max_shards_per_blob {
-                    return;
-                }
-                self.meta.entry(blob_id.clone()).or_insert(BlobMeta {
+                // 与发起节点本地落地共用同一套护栏（长度/上限/元数据）。
+                self.apply_store_shard(
+                    blob_id,
+                    index,
                     total,
                     data_shards,
                     shard_size,
                     original_size,
-                });
-                self.local.insert((blob_id, index), payload);
+                    payload,
+                );
             }
 
             ShardEnvelope::NeedShards {
@@ -417,18 +502,13 @@ impl DistributedShardNode {
                 shard_size,
                 original_size,
             } => {
-                if !self.meta.contains_key(&blob_id) && self.meta.len() >= self.max_blobs {
-                    return;
-                }
-                self.meta.insert(
-                    blob_id,
-                    BlobMeta {
-                        total,
-                        data_shards,
-                        shard_size,
-                        original_size,
-                    },
-                );
+                // 与发起节点本地落地共用同一套元数据护栏（blob 总数上限）。
+                self.apply_seal(blob_id, total, data_shards, shard_size, original_size);
+            }
+
+            ShardEnvelope::Hello { node: _ } => {
+                // 心跳只用于传输层的协议子网成员发现（GossipShardTransport 在投递
+                // 报文时记录发送者）；节点逻辑层无需维护额外状态。
             }
         }
     }
@@ -719,5 +799,120 @@ mod tests {
         let got = run_reconstruct(&net, &mut nodes, &mut handles, "blob1", 1, 20).unwrap();
         assert_eq!(got.len(), data.len());
         assert_eq!(got, data);
+    }
+
+    /// 模拟真机 GossipSub 的传输：`peers()` 含本节点（与 `GossipShardTransport::set_peers`
+    /// 一致），但 `send` 给本节点的消息被直接丢弃——真实 libp2p GossipSub 不会把自己
+    /// publish 的报文回环给自己。远端消息这里不排空（本测试只验证发起节点本地状态）。
+    struct NoLoopbackTransport {
+        me: String,
+        peers: Vec<String>,
+    }
+
+    impl ShardTransport for NoLoopbackTransport {
+        fn send(&mut self, to: &str, _env: ShardEnvelope) {
+            // 发给自己的消息不会回环；发给对端的消息由真实网络承载，此处不回投。
+            debug_assert_ne!(to, self.me, "发起节点不应再向自己发送信封");
+        }
+        fn next(&mut self) -> Option<(String, ShardEnvelope)> {
+            None
+        }
+        fn peers(&self) -> Vec<String> {
+            self.peers.clone()
+        }
+    }
+
+    #[test]
+    fn origin_node_locally_lands_meta_and_self_owned_shards() {
+        // 复现真机 P1：单节点网络（根种子在任何对端加入前，peer 列表仅含自身）。
+        // 真机 GossipSub 不会回环自发报文；此时 6 个分片全部按放置归本节点，
+        // 必须直接本地落地并能立即逐字节重建（旧实现本地无 meta/分片，必报拒绝盲解码）。
+        let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let blob_id = "blob-solo-rootseed";
+
+        let mut node = DistributedShardNode::new("solo", ErasureCoder::new(4, 2).unwrap());
+        let mut transport = NoLoopbackTransport {
+            me: "solo".to_string(),
+            peers: vec!["solo".to_string()],
+        };
+
+        node.ingest_blob(blob_id, &data, &mut transport).unwrap();
+
+        assert!(
+            node.has_meta(blob_id),
+            "发起节点 ingest 后本地必须有 BlobMeta"
+        );
+        // 全部 6 片（4 数据 + 2 校验）都应在本地。
+        assert_eq!(node.local_shard_count(), 6, "单节点网络应本地持有全部分片");
+        for i in 0..6u8 {
+            assert!(node.local.contains_key(&(blob_id.to_string(), i)));
+        }
+
+        let got = node
+            .reconstruct_blob(blob_id, &mut transport)
+            .expect("单节点应基于本地全部分片立即重建，而非拒绝盲解码");
+        assert_eq!(got, data);
+    }
+
+    #[test]
+    fn origin_node_placement_matches_in_multinode_no_loopback() {
+        // 5 节点 + 不回环传输：验证发起节点本地落地的分片集合与 FNV 放置逐一对应，
+        // 多一片少一片都不行（确保只落地归自己的分片，不越权保存他人分片）。
+        let peers: Vec<String> = (0..N).map(|i| format!("n{i}")).collect();
+        let data: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        let blob_id = "blob-placement";
+
+        let mut node = DistributedShardNode::new("n0", ErasureCoder::new(4, 2).unwrap());
+        let mut transport = NoLoopbackTransport {
+            me: "n0".to_string(),
+            peers: peers.clone(),
+        };
+        node.ingest_blob(blob_id, &data, &mut transport).unwrap();
+
+        assert!(node.has_meta(blob_id));
+        for i in 0..6u8 {
+            let owner = responsible_peer(&peers, blob_id, i);
+            let present = node.local.contains_key(&(blob_id.to_string(), i));
+            assert_eq!(
+                present,
+                owner == "n0",
+                "分片 {i} 本地存在性必须与其归属节点一致"
+            );
+        }
+    }
+
+    #[test]
+    fn origin_node_without_enough_local_shards_does_not_blind_decode() {
+        // 多节点下发起节点本地自有分片通常不足 data_shards：应返回 pending 拉取，
+        // 而不是「拒绝盲解码」（因为元数据已在本地），也不能返回错误数据。
+        let peers: Vec<String> = (0..N).map(|i| format!("n{i}")).collect();
+        let data: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+
+        let mut node = DistributedShardNode::new("n0", ErasureCoder::new(4, 2).unwrap());
+        let mut transport = NoLoopbackTransport {
+            me: "n0".to_string(),
+            peers,
+        };
+
+        node.ingest_blob("blob-pending-x", &data, &mut transport)
+            .unwrap();
+        assert!(node.has_meta("blob-pending-x"));
+
+        match node.reconstruct_blob("blob-pending-x", &mut transport) {
+            Ok(got) => {
+                // 若本地恰够 4 片也合法：必须逐字节正确。
+                assert_eq!(got, data);
+            }
+            Err(e) => {
+                assert!(
+                    e.contains("pending"),
+                    "本地分片不足时应 pending 拉取，实际错误: {e}"
+                );
+                assert!(
+                    !e.contains("拒绝盲解码"),
+                    "已有本地元数据，不得再报拒绝盲解码: {e}"
+                );
+            }
+        }
     }
 }

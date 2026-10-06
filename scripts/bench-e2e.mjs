@@ -24,7 +24,8 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import * as crypto from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -62,15 +63,87 @@ const statsOf = (samples) => {
   };
 };
 
+// ── 治理授信自举（仅本地回环基准）──────────────────────────────────────
+// 基准进程本地生成一个 1 成员治理集，按与生产完全一致的规范签发
+// SignedGovernanceCommand（域标签 AU-GOV-CMD/v1 + 固定字段序 +
+// claim 递归按键排序的紧凑 JSON + Ed25519）。守护进程仍走真实签名校验闸门，
+// 不使用任何旁路；生产授信必须由链上支付凭证支撑（纯协议内核，需外部审计）。
+function makeGovernance() {
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519');
+  const seed = privateKey.export({ type: 'pkcs8', format: 'der' }).subarray(16); // 32B seed
+  const pub = crypto
+    .createPublicKey(privateKey)
+    .export({ type: 'spki', format: 'der' })
+    .subarray(12); // 32B 公钥
+  if (seed.length !== 32 || pub.length !== 32) throw new Error('Ed25519 原始密钥长度异常');
+  const did =
+    'did:nau:' + crypto.createHash('sha256').update(pub).digest().subarray(0, 8).toString('hex');
+  const pubkeyHex = pub.toString('hex');
+
+  // 与 Rust canonical_claim 等价：递归按 key 排序、紧凑 JSON（无空白）。
+  const canonical = (v) => {
+    if (Array.isArray(v)) return '[' + v.map(canonical).join(',') + ']';
+    if (v !== null && typeof v === 'object') {
+      return (
+        '{' +
+        Object.keys(v)
+          .sort()
+          .map((k) => JSON.stringify(k) + ':' + canonical(v[k]))
+          .join(',') +
+        '}'
+      );
+    }
+    return JSON.stringify(v);
+  };
+
+  const credit = (target, amount, nonce, nowSec) => {
+    const issuedAt = nowSec - 5;
+    const expiresAt = issuedAt + 600;
+    const id = 'bench-' + nonce;
+    const claim = { amount };
+    const msg =
+      'AU-GOV-CMD/v1\n' +
+      `id=${id}\n` +
+      `sender_did=${did}\n` +
+      `sender_pubkey=${pubkeyHex}\n` +
+      'capability=governance:credit\n' +
+      `target=${target}\n` +
+      `claim=${canonical(claim)}\n` +
+      `nonce=${nonce}\n` +
+      `issued_at=${issuedAt}\n` +
+      `expires_at=${expiresAt}`;
+    const signature = crypto.sign(null, Buffer.from(msg, 'utf8'), privateKey).toString('hex');
+    return {
+      id,
+      sender_did: did,
+      sender_pubkey: pubkeyHex,
+      capability: 'governance:credit',
+      target,
+      claim,
+      nonce,
+      issued_at: issuedAt,
+      expires_at: expiresAt,
+      signature,
+    };
+  };
+
+  return { member: { did, pubkey_hex: pubkeyHex }, credit };
+}
+
 async function main() {
   const cfg = parseArgs(process.argv);
   if (!cfg.bin) throw new Error('必须用 --bin 指定 release 版 gsn-daemon 路径');
 
   const base = `http://127.0.0.1:${cfg.port}`;
   const dataDir = mkdtempSync(join(tmpdir(), 'gsn-bench-'));
+  // 本地自举治理集并通过 GSN_GOVERNANCE_FILE 装载（与生产同一签名校验路径）。
+  const gov = makeGovernance();
+  const govPath = join(dataDir, 'governance.json');
+  writeFileSync(govPath, JSON.stringify([gov.member]));
   const env = {
     ...process.env,
-    REST_ALLOW_UNAUTHENTICATED: '1', // 基准环境显式放开写操作；生产默认 fail-closed
+    REST_ALLOW_UNAUTHENTICATED: '1', // 基准环境显式放开 bearer；治理授信闸门仍然生效
+    GSN_GOVERNANCE_FILE: govPath,
     RUST_LOG: 'error',
   };
 
@@ -134,7 +207,9 @@ async function main() {
   const agentId = 'did:bench:agent-1';
 
   // 注册一个执行者：充值质押 100 + 注册卡片（资金闭环每轮复用，质押不消耗）。
-  await call('POST', `/api/v1/accounts/${agentId}/deposit`, { amount: 100 });
+  await call('POST', `/api/v1/accounts/${agentId}/deposit`,
+    gov.credit(agentId, 100, 'nonce-bench-agent', Math.floor(Date.now() / 1000)),
+  );
   const card = {
     agent_id: agentId,
     version: '3.5.8',
@@ -161,7 +236,9 @@ async function main() {
   // 需求方一次性充入全部轮次预算（每轮托管 50，结算后退余款 40，实付 10）。
   const total = cfg.n + cfg.warmup;
   const { dt: depDt } = await call(
-    'POST', `/api/v1/accounts/${reqId}/deposit`, { amount: 50 * total + 1000 },
+    'POST',
+    `/api/v1/accounts/${reqId}/deposit`,
+    gov.credit(reqId, 50 * total + 1000, 'nonce-bench-req', Math.floor(Date.now() / 1000)),
   );
   timings.deposit.push(depDt);
 

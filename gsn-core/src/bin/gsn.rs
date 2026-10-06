@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.9.9");
+            println!("agent-universe v3.9.10");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -406,7 +406,7 @@ async fn run_market(args: &[String]) -> i32 {
 fn print_market_help() {
     println!("用法: gsn market <操作> [参数] [--api url]\n");
     println!("操作:");
-    println!("  deposit <account> <amount>          充值（amount 必须为整数，非法即报错）");
+    println!("  deposit @signed-envelope.json      授信充值（提交治理成员签名的 governance:credit 信封，CLI 不替签）");
     println!("  balance <account>                   查询余额");
     println!("  register <card.json|inline-json>    注册智能体");
     println!("  get <agent_id>                      查询智能体");
@@ -440,40 +440,50 @@ fn read_json_arg(arg: &str) -> String {
     }
 }
 
-/// 严格解析金额：只接受十进制整数（可选前导 +/-），拒绝浮点、空串、"lots" 等。
-/// 与服务端 deposit 契约一致（body amount 必须是 JSON 整数 i64），非法即报错，
-/// 绝不静默退化为 0（v3.5.5 / GAP §8.1：旧实现 `parse::<i64>().unwrap_or(0)`
-/// 会把 `market_deposit {"amount":"lots"}` 存成 0 却返回成功）。
-fn parse_amount(raw: &str) -> Result<i64, String> {
-    let s = raw.trim();
-    if s.is_empty() {
-        return Err("amount 为空".into());
-    }
-    // 拒绝任何含小数点/指数/非数字的写法，避免 f64 截断。
-    let digits = s
-        .strip_prefix('+')
-        .or_else(|| s.strip_prefix('-'))
-        .unwrap_or(s);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(format!("amount 必须是十进制整数，收到非法值 {raw:?}"));
-    }
-    s.parse::<i64>()
-        .map_err(|_| format!("amount 超出 i64 范围: {raw:?}"))
-}
-
 /// 构造市场请求三元组。返回 Err(可读原因) 表示参数不合法（调用方以退出码 2 终止，
 /// 绝不发出会被服务端误解为 0 的请求）。
 #[allow(clippy::type_complexity)]
 fn build_market_request(op: &str, p: &[String]) -> Result<(String, String, String), String> {
     use serde_json::json;
     match op {
-        "deposit" if p.len() >= 2 => {
-            let amount = parse_amount(&p[1])?;
+        // P0-4：授信（credit）是特权写，必须提交受权治理成员已签名的
+        // SignedGovernanceCommand 信封（capability=governance:credit、
+        // target=受信账户、claim.amount>=0）。CLI 不持有治理私钥，绝不替用户
+        // 签名；生产授信必须由链上支付凭证支撑（纯协议内核，需外部审计）。
+        // 用法：gsn market deposit @deposit-envelope.json
+        "deposit" if p.len() == 1 => {
+            let body = read_json_arg(&p[0]);
+            let env: serde_json::Value = serde_json::from_str(&body).map_err(|e| {
+                format!("deposit 需提交签名治理信封 JSON 文件（SignedGovernanceCommand）: {e}")
+            })?;
+            let target = env
+                .get("target")
+                .and_then(|x| x.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| "签名治理信封缺少非空字符串字段 target".to_string())?;
+            match env.get("capability").and_then(|x| x.as_str()) {
+                Some("governance:credit") => {}
+                other => {
+                    return Err(format!(
+                        "deposit 要求 capability=governance:credit，当前为 {:?}；CLI 不替治理成员签名，请提交受权信封",
+                        other.unwrap_or("")
+                    ));
+                }
+            }
             Ok((
                 "POST".into(),
-                format!("/api/v1/accounts/{}/deposit", p[0]),
-                json!({"amount": amount}).to_string(),
+                format!("/api/v1/accounts/{}/deposit", target),
+                body,
             ))
+        }
+        "deposit" => {
+            Err(
+                "deposit 用法已变更（授信为特权写，需治理成员签名，CLI 不替签）：\n\
+                 正确：gsn market deposit @deposit-envelope.json\n\
+                 信封由受权治理成员生成（参考 examples/market_demo.rs / examples/mac_gov_fixture.rs）；\n\
+                 不再支持 gsn market deposit <account> <amount>（裸 amount 必被服务端拒绝）。"
+                    .to_string(),
+            )
         }
         "balance" if !p.is_empty() => Ok((
             "GET".into(),
@@ -948,7 +958,7 @@ async fn http_call(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_market_request, evaluate_ledger, parse_amount, LedgerIssue};
+    use super::{build_market_request, evaluate_ledger, LedgerIssue};
     use gsn_core::marketplace::{Money, SettlementReason, SettlementRecord};
     use gsn_core::storage::PersistentStore;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1073,37 +1083,51 @@ mod tests {
     }
 
     #[test]
-    fn amount_accepts_plain_integers_and_signs() {
-        assert_eq!(parse_amount("100").unwrap(), 100);
-        assert_eq!(parse_amount("  42 ").unwrap(), 42);
-        assert_eq!(parse_amount("+7").unwrap(), 7);
-        assert_eq!(parse_amount("-5").unwrap(), -5);
-        assert_eq!(parse_amount("0").unwrap(), 0);
-    }
-
-    #[test]
-    fn amount_rejects_non_integer_instead_of_defaulting_to_zero() {
-        // 旧实现 parse::<i64>().unwrap_or(0) 会把这些静默存成 0。
-        for bad in [
-            "lots", "", "  ", "10.5", "10.0", "1e3", "0x10", "1,000", "nan",
-        ] {
-            assert!(parse_amount(bad).is_err(), "应拒绝 {bad:?}");
-        }
-        let overflow = format!("{}", i64::MAX as u128 + 1);
-        assert!(parse_amount(&overflow).is_err(), "应拒绝 i64 溢出值");
-    }
-
-    #[test]
-    fn deposit_body_carries_parsed_integer_and_rejects_bad_amount() {
+    fn deposit_forwards_signed_governance_envelope_and_derives_target() {
+        // P0-4：deposit 必须提交治理成员已签名的授信信封；CLI 只转发、不替签。
+        let envelope = serde_json::json!({
+            "id": "cmd-1",
+            "sender_did": "did:nau:gov",
+            "sender_pubkey": "00".repeat(32),
+            "capability": "governance:credit",
+            "target": "did:nau:beneficiary",
+            "claim": { "amount": 250 },
+            "nonce": "n-1",
+            "issued_at": 1000,
+            "expires_at": 2000,
+            "signature": "ab".repeat(64)
+        })
+        .to_string();
         let (method, path, body) =
-            build_market_request("deposit", &["acct".into(), "250".into()]).unwrap();
+            build_market_request("deposit", std::slice::from_ref(&envelope)).unwrap();
         assert_eq!(method, "POST");
-        assert_eq!(path, "/api/v1/accounts/acct/deposit");
-        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(v["amount"], serde_json::json!(250));
+        assert_eq!(path, "/api/v1/accounts/did:nau:beneficiary/deposit");
+        // 信封原样转发，CLI 不重排/不篡改字段，签名才可继续验证。
+        assert_eq!(body, envelope);
+    }
 
-        assert!(build_market_request("deposit", &["acct".into(), "lots".into()]).is_err());
-        assert!(build_market_request("deposit", &["acct".into(), "10.5".into()]).is_err());
+    #[test]
+    fn deposit_rejects_legacy_positional_and_invalid_envelope() {
+        // 旧的 deposit <account> <amount>（裸 amount）必被拒绝，不再构造请求。
+        assert!(build_market_request("deposit", &["acct".into(), "250".into()]).is_err());
+        assert!(build_market_request("deposit", &[]).is_err());
+
+        let no_target = serde_json::json!({
+            "capability": "governance:credit",
+            "claim": { "amount": 1 }
+        })
+        .to_string();
+        assert!(build_market_request("deposit", &[no_target]).is_err());
+
+        let bad_cap = serde_json::json!({
+            "capability": "governance:arbitrate",
+            "target": "did:nau:x",
+            "claim": {}
+        })
+        .to_string();
+        assert!(build_market_request("deposit", &[bad_cap]).is_err());
+
+        assert!(build_market_request("deposit", &["not-json".into()]).is_err());
     }
 
     #[test]

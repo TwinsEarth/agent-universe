@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "gsn-core"
-version = "0.3.99"
+version = "0.3.100"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -956,6 +956,7 @@ dependencies = [
  "hex",
  "hmac",
  "k256",
+ "libc",
  "libp2p",
  "rand 0.8.8",
  "reed-solomon-erasure",

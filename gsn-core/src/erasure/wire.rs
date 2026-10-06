@@ -18,7 +18,7 @@
 //! 需外部审计：自研的目标封装/过滤、队列与节点驱动逻辑（纠删码数学本身委托
 //! vetted 库）。
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -69,27 +69,53 @@ impl ShardWire {
 /// 它本身不直接做网络 IO，而是：
 /// - `inbound`：由网络消费者在收到且目标匹配时推入；
 /// - `outbound`：节点逻辑产生的待发送报文，由外部驱动 drain 后经 GossipSub publish；
-/// - `peers`：由外部驱动周期性刷新（来自已连接 peer 列表，含本节点）。
+/// - **放置集合（协议子网成员发现）**：真机 libp2p 的已连接 peer 里混有大量公共
+///   IPFS/kubo 节点，它们不运行 `gsn/shards` 协议。若直接拿「全部连接」做 FNV 放置，
+///   分片会被永久发给这些外部节点、NeedShards 也无人应答，导致重建硬失败。
+///
+/// 因此放置集合不等于全部连接，而等于：
+/// ```text
+///   (曾在 gsn/shards 上实际观测到的协议节点) ∩ (当前仍连接的节点) ∪ { self }
+/// ```
+/// - `observed`：只要收到一条来自 `from` 的合法分片报文（含 Hello 心跳），就证明
+///   `from` 在运行本协议，记入观测集（只增）；
+/// - `alive`：外部驱动周期性用「当前真实连接集合」调用 [`GossipShardTransport::set_peers`]
+///   作为存活上界，把已断连的旧协议成员裁剪掉，避免成员表只增不减。
 pub struct GossipShardTransport {
     self_id: String,
-    peers: Vec<String>,
+    /// 累计观测到的协议节点（曾在 gsn/shards 上发出过合法报文的节点）。
+    observed: HashSet<String>,
+    /// 当前存活的协议成员 = (observed ∩ connected) ∪ { self }；即纠删码放置集合。
+    alive: HashSet<String>,
     inbound: VecDeque<(String, ShardEnvelope)>,
     outbound: VecDeque<(String, ShardEnvelope)>,
 }
 
 impl GossipShardTransport {
-    /// 创建；`self_id` 为本节点 PeerId，`initial_peers` 至少包含本节点。
-    pub fn new(self_id: impl Into<String>, initial_peers: Vec<String>) -> Self {
+    /// 创建；`self_id` 为本节点 PeerId。初始放置集合仅含本节点（尚无任何协议对端观测）。
+    pub fn new(self_id: impl Into<String>, _initial_peers: Vec<String>) -> Self {
+        let self_id = self_id.into();
+        let mut alive = HashSet::new();
+        alive.insert(self_id.clone());
         Self {
-            self_id: self_id.into(),
-            peers: initial_peers,
+            self_id,
+            observed: HashSet::new(),
+            alive,
             inbound: VecDeque::new(),
             outbound: VecDeque::new(),
         }
     }
 
-    /// 网络消费者在收到 `wire` 且目标为本节点时调用：把信封投递到入站队列。
+    /// 网络消费者在收到 `wire` 时调用：
+    /// 1) 无论报文是否定向给本节点，只要它是来自 `from` 的合法 gsn/shards 报文，
+    ///    就把 `from` 记为协议成员（能在本主题发出可解析报文即证明其运行本协议）；
+    /// 2) 仅当目标匹配本节点（或广播 `*`）才把信封投递到入站队列。
     pub fn deliver(&mut self, wire: &ShardWire) {
+        if !wire.from.is_empty() && wire.from != self.self_id {
+            self.observed.insert(wire.from.clone());
+            // 刚收到该成员的报文，它必然在线，立即纳入存活放置集。
+            self.alive.insert(wire.from.clone());
+        }
         if wire.targets(&self.self_id) {
             self.inbound
                 .push_back((wire.from.clone(), wire.env.clone()));
@@ -101,14 +127,21 @@ impl GossipShardTransport {
         self.outbound.pop_front()
     }
 
-    /// 刷新已知 peer 列表（应包含本节点；驱动会在放入前确保本节点在列）。
-    pub fn set_peers(&mut self, mut peers: Vec<String>) {
-        if !peers.iter().any(|p| p == &self.self_id) {
-            peers.push(self.self_id.clone());
-        }
-        peers.sort();
-        peers.dedup();
-        self.peers = peers;
+    /// 用「当前真实的 libp2p 已连接 peer 集合」裁剪存活协议成员。
+    ///
+    /// 注意：这里传入的是**全部连接**（含公共 IPFS），但只有此前在 gsn/shards 上
+    /// 被观测过的节点才会保留——公共 IPFS 从未进入 `observed`，故永不进入放置集合。
+    /// 本节点始终在存活集中（即使它暂时不在连接列表里，例如根种子启动瞬间）。
+    pub fn set_peers(&mut self, connected: Vec<String>) {
+        let connected_set: HashSet<String> = connected.into_iter().collect();
+        let mut next: HashSet<String> = self
+            .observed
+            .iter()
+            .filter(|p| connected_set.contains(*p))
+            .cloned()
+            .collect();
+        next.insert(self.self_id.clone());
+        self.alive = next;
     }
 
     /// 当前入站队列长度（测试/可观测用）。
@@ -119,6 +152,11 @@ impl GossipShardTransport {
     /// 当前出站队列长度（测试/可观测用）。
     pub fn outbound_len(&self) -> usize {
         self.outbound.len()
+    }
+
+    /// 当前存活协议成员数（含本节点；用于 /metrics 与放置集合可观测）。
+    pub fn protocol_peer_count(&self) -> usize {
+        self.alive.len()
     }
 }
 
@@ -131,8 +169,13 @@ impl ShardTransport for GossipShardTransport {
         self.inbound.pop_front()
     }
 
+    /// 纠删码确定性放置/拉取集合：仅返回存活的 gsn 协议子网成员（含本节点），
+    /// 已排序去重，保证所有节点对同一集合的 FNV 放置决策一致。
     fn peers(&self) -> Vec<String> {
-        self.peers.clone()
+        let mut v: Vec<String> = self.alive.iter().cloned().collect();
+        v.sort();
+        v.dedup();
+        v
     }
 }
 
@@ -181,17 +224,55 @@ mod tests {
     }
 
     #[test]
-    fn transport_set_peers_includes_self_and_dedups() {
+    fn transport_peers_only_include_observed_protocol_members() {
         let mut t = GossipShardTransport::new("nodeA", vec!["nodeA".to_string()]);
+        // 初始：放置集合只含本节点，即便随后喂入大量「全部连接」也不扩大。
         t.set_peers(vec![
-            "nodeC".to_string(),
+            "ipfs-x".to_string(),
+            "ipfs-y".to_string(),
+            "nodeA".to_string(),
+        ]);
+        assert_eq!(t.peers(), vec!["nodeA"]);
+        assert_eq!(t.protocol_peer_count(), 1);
+
+        // 收到一条来自 nodeC 的合法 gsn/shards 报文 → nodeC 被观测为协议成员。
+        let from_c = ShardWire::direct("nodeA", "nodeC", sample_envelope());
+        t.deliver(&from_c);
+        assert_eq!(t.peers(), vec!["nodeA", "nodeC"]);
+
+        // 再用「全部连接」刷新：nodeC 仍连接则保留；公共 IPFS 永不进入。
+        t.set_peers(vec![
+            "ipfs-x".to_string(),
+            "ipfs-y".to_string(),
             "nodeA".to_string(),
             "nodeC".to_string(),
         ]);
-        let mut peers = t.peers();
-        peers.sort();
-        peers.dedup();
-        assert_eq!(peers, vec!["nodeA", "nodeC"]);
+        assert_eq!(t.peers(), vec!["nodeA", "nodeC"]);
+    }
+
+    #[test]
+    fn transport_set_peers_prunes_disconnected_members() {
+        let mut t = GossipShardTransport::new("nodeA", vec!["nodeA".to_string()]);
+        // nodeC 曾被观测为协议成员。
+        t.deliver(&ShardWire::direct("nodeA", "nodeC", sample_envelope()));
+        assert_eq!(t.protocol_peer_count(), 2);
+        // 下一轮刷新时 nodeC 已不在连接集合 → 从存活放置集裁剪（self 恒在）。
+        t.set_peers(vec!["ipfs-x".to_string(), "nodeA".to_string()]);
+        assert_eq!(t.peers(), vec!["nodeA"]);
+    }
+
+    #[test]
+    fn transport_does_not_register_self_or_empty_from() {
+        // deliver 只记录「报文真实来源」；调用方（node.rs 驱动）用 GossipSub 认证
+        // source 覆盖 wire.from。self 与空来源都不应产生额外放置成员。
+        let mut t = GossipShardTransport::new("nodeA", vec!["nodeA".to_string()]);
+        let from_self = ShardWire::direct("nodeA", "nodeA", sample_envelope());
+        t.deliver(&from_self);
+        assert_eq!(t.peers(), vec!["nodeA"]);
+        let mut empty = ShardWire::direct("nodeA", "nodeA", sample_envelope());
+        empty.from = String::new();
+        t.deliver(&empty);
+        assert_eq!(t.peers(), vec!["nodeA"]);
     }
 
     #[test]

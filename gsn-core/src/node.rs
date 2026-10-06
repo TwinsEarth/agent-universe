@@ -2710,6 +2710,15 @@ fn install_shutdown_handler() {
     #[cfg(unix)]
     {
         // 第 1、2 步：解除继承阻塞并复位继承忽略。必须在 tokio 接管之前完成。
+        // SAFETY: 下面只通过 libc FFI 修改“本进程自身”的信号掩码与处置位，不做任何
+        // 裸内存或外来指针解引用：(1) libc::sigset_t 是只含整数/数组的 POD 类型，
+        // zeroed() 的全零位模式是其合法表示，且 sigemptyset 会在任何 addset/
+        // pthread_sigmask 使用前把它完整初始化，故不会读取未初始化内存；(2) 传入的
+        // 集合指针仅来自 &mut set（非空、对齐、生命周期覆盖整次调用），
+        // pthread_sigmask 的 old-set 显式传 null_mut()，这是 POSIX 明确允许的；
+        // (3) SIGTERM/SIGINT/SIGHUP 均为合法信号编号，signal() 返回值被有意忽略
+        // （此处只需复位处置为 SIG_DFL，随后由 tokio 覆盖）。满足这些 FFI 前置条件即
+        // 保持健全；信号 FFI 的正确性仍属 REQUIRE EXTERNAL AUDIT 范围。
         unsafe {
             let mut set: libc::sigset_t = std::mem::zeroed();
             if libc::sigemptyset(&mut set) == 0 {

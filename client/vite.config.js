@@ -8,6 +8,9 @@ export default defineConfig({
   clearScreen: false,
   build: {
     target: 'esnext',
-    minify: 'esbuild',
+    // Vite 8 基于 rolldown，内置压缩器由 esbuild 切换为 oxc；
+    // 旧的 'esbuild' 已被移除且需要额外安装 esbuild，构建会报
+    // transformWithEsbuild / Cannot find package 'esbuild'。
+    minify: 'oxc',
   },
 });

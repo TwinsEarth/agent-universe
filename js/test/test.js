@@ -463,6 +463,35 @@ test('McpHttpClient：带 token 发 Bearer 头、不带则不发', () => {
   assert.strictEqual(withAuth._headers().Authorization, 'Bearer secret-xyz');
 });
 
+// 19. 浏览器安全不变量（client crypto externalized 修复回归）：
+// market.js 是浏览器 / WKWebView 可深引的纯逻辑模块，禁止静态 require node 内置
+// crypto（否则 Vite 会把 "crypto" 外链进浏览器包并告警）。Node 验签隔离在
+// lib/edverify.js；浏览器由 package.json "browser" 字段替换为 edverify.browser.js，
+// 后者不得引用任何 Node 内置模块，且必须 fail-closed（不静默验签通过）。
+test('market.js 不引 node:crypto，浏览器验签占位 fail-closed 且无 Node 依赖', () => {
+  const libDir = path.join(__dirname, '..', 'lib');
+  const marketSrc = fs.readFileSync(path.join(libDir, 'market.js'), 'utf8');
+  assert.ok(
+    !/require\(\s*['"](?:node:)?crypto['"]\s*\)/.test(marketSrc),
+    'market.js 不得直接 require node:crypto，应走 ./edverify 适配',
+  );
+  assert.ok(
+    marketSrc.includes("require('./edverify')"),
+    "market.js 应通过 require('./edverify') 间接验签",
+  );
+  const browserSrc = fs.readFileSync(path.join(libDir, 'edverify.browser.js'), 'utf8');
+  assert.ok(
+    !/require\(\s*['"](?:node:)?[a-z_]+['"]\s*\)/.test(browserSrc),
+    'edverify.browser.js 不得 require 任何 Node 内置模块',
+  );
+  // fail-closed：浏览器占位必须抛错，而非返回 true。
+  const browserVerify = require('../lib/edverify.browser').verifyEd25519;
+  assert.throws(
+    () => browserVerify('00'.repeat(32), 'msg', '00'.repeat(64)),
+    /签名验证须在 Node\/Rust 侧进行/,
+  );
+});
+
 console.log(`\n${passed} 项测试通过`);
 if (process.exitCode === 1) {
   console.error('存在失败测试');

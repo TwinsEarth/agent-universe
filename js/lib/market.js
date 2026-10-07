@@ -2,6 +2,10 @@
 // v2.3.5 Agent Market：注册 / 发布 / 投标 / 匹配 / 结算 / 罚没 / 守恒
 
 const { Task, TaskStatus } = require('./models');
+// Ed25519 同步验签：Node 走 node:crypto，浏览器经 package.json "browser"
+// 字段替换为 fail-closed 占位。该模块是本文件唯一的平台相关依赖，
+// market.js 本体保持纯逻辑、不直接 require node:crypto，可安全被浏览器引用。
+const { verifyEd25519 } = require('./edverify');
 
 const MIN_STAKE = 100;
 
@@ -445,23 +449,14 @@ class AgentMarket {
     );
   }
 
-  /** Ed25519 验签；无 crypto 的环境（WKWebView）抛明确错误而非静默通过 */
+  /**
+   * Ed25519 验签；委托给平台适配模块。
+   * Node 下真实验签；无该能力的环境（浏览器/WKWebView）由
+   * edverify.browser.js fail-closed 抛出明确错误，而非静默通过。
+   * 密码学原语，算法安全性需外部审计。
+   */
   static _verifyEd25519(pubkeyHex, message, signatureHex) {
-    let crypto;
-    try {
-      crypto = require('crypto');
-    } catch (e) {
-      throw new Error('当前环境无 Ed25519 验签能力；签名验证须在 Node/Rust 侧进行');
-    }
-    const SPKI = '302a300506032b6570032100';
-    const der = Buffer.from(SPKI + pubkeyHex, 'hex');
-    const key = crypto.createPublicKey({ key: der, format: 'der', type: 'spki' });
-    return crypto.verify(
-      null,
-      Buffer.from(message, 'utf8'),
-      key,
-      Buffer.from(signatureHex, 'hex'),
-    );
+    return verifyEd25519(pubkeyHex, message, signatureHex);
   }
 }
 

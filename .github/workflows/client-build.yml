@@ -119,7 +119,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           # 覆盖 action 默认的遗留 'tools' 包（新版 cmdline-tools 已移除，安装会失败）
           packages: "platform-tools"

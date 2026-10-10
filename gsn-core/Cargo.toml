@@ -1,6 +1,6 @@
 [package]
 name = "gsn-core"
-version = "0.3.103"
+version = "0.3.104"
 edition = "2021"
 # MSRV（W-01，v3.5.7）：锁定依赖中最高的 rust-version 是 time 0.3.x 家族要求的 1.88；
 # 已用 rustc 1.88.0 实测 `cargo check --bins --locked` 通过。CI 有对应 MSRV 关卡。

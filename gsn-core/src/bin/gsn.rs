@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.9.13");
+            println!("agent-universe v3.9.14");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -60,6 +60,7 @@ async fn main() {
         "ledger" => run_ledger(&argv[1..]).await,
         "doctor" => run_doctor(&argv[1..]).await,
         "identity" => run_identity(),
+        "vpn" => run_vpn(&argv[1..]).await,
         other => {
             eprintln!("错误: 未知子命令 '{other}'");
             eprintln!("运行 'gsn help' 查看可用命令");
@@ -80,6 +81,7 @@ fn print_top_help() {
     println!("  ledger verify        离线校验账本哈希链与重放守恒（只读）");
     println!("  doctor               环境/账本/daemon 连通性诊断（只读）");
     println!("  identity            生成 Ed25519 本地身份");
+    println!("  vpn <子命令>         系统代理/PAC/订阅/路由/探活（见 `gsn vpn --help`）");
     println!("  update [版本]        检查/更新 daemon 与 npm 包（见 `gsn update --help`）");
     println!("  version             显示版本（加 --check 只联网检查更新，不安装）");
     println!("  help                显示本帮助\n");
@@ -335,6 +337,287 @@ fn run_identity() -> i32 {
     println!("   公钥 (hex): {}", pubkey_hex);
     println!("   提示: 私钥种子请自行安全保存（Keypair::seed），切勿入库或泄露");
     0
+}
+
+// ───────────────────────── vpn ─────────────────────────
+
+/// `gsn vpn`：系统代理 / PAC / 订阅 / 路由 / 探活（v3.9.14，参照 v2rayN）。
+async fn run_vpn(args: &[String]) -> i32 {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        print_vpn_help();
+        return if args.is_empty() { 1 } else { 0 };
+    }
+    match args[0].as_str() {
+        "set" => {
+            // gsn vpn set --host H --port P [--bypass a,b]
+            let mut host = "127.0.0.1".to_string();
+            let mut port: u16 = 10808;
+            let mut bypass: Vec<String> = vec!["<local>".to_string()];
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--host" if i + 1 < args.len() => {
+                        host = args[i + 1].clone();
+                        i += 2;
+                    }
+                    "--port" if i + 1 < args.len() => {
+                        if let Ok(p) = args[i + 1].parse() {
+                            port = p;
+                        } else {
+                            eprintln!("错误: 端口非法 '{}'", args[i + 1]);
+                            return 1;
+                        }
+                        i += 2;
+                    }
+                    "--bypass" if i + 1 < args.len() => {
+                        bypass = args[i + 1]
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("错误: 未知参数 '{other}'");
+                        return 1;
+                    }
+                }
+            }
+            let cfg =
+                gsn_core::net::SystemProxyConfig::new(gsn_core::net::ProxyScheme::Http, host, port)
+                    .with_bypass(&bypass.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let mgr = gsn_core::net::SystemProxyManager::new(gsn_core::net::RealCommandRunner);
+            match mgr.set_http_proxy(&cfg) {
+                Ok(r) => {
+                    println!(
+                        "系统 HTTP 代理已设置: {} ({}): {}",
+                        cfg.url(),
+                        r.platform,
+                        r.detail
+                    );
+                    if !r.ok {
+                        return 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("设置失败: {e}");
+                    return 1;
+                }
+            }
+            0
+        }
+        "clear" => {
+            let mgr = gsn_core::net::SystemProxyManager::new(gsn_core::net::RealCommandRunner);
+            match mgr.clear_proxy() {
+                Ok(r) => {
+                    println!("系统代理已清除 ({}): {}", r.platform, r.detail);
+                    if !r.ok {
+                        return 1;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("清除失败: {e}");
+                    return 1;
+                }
+            }
+            0
+        }
+        "pac" => {
+            // gsn vpn pac --port 10808 （本地 PAC 服务；Ctrl-C 退出）
+            let mut port: u16 = 10808;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--port" if i + 1 < args.len() => {
+                        if let Ok(p) = args[i + 1].parse() {
+                            port = p;
+                        } else {
+                            eprintln!("错误: 端口非法 '{}'", args[i + 1]);
+                            return 1;
+                        }
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("错误: 未知参数 '{other}'");
+                        return 1;
+                    }
+                }
+            }
+            let listen: std::net::SocketAddr = match format!("127.0.0.1:{port}").parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    eprintln!("错误: 监听地址非法: {e}");
+                    return 1;
+                }
+            };
+            let cfg = gsn_core::net::PacConfig {
+                listen,
+                proxy_port: port,
+                custom_pac_path: None,
+            };
+            match gsn_core::net::serve_pac(cfg).await {
+                Ok(handle) => {
+                    println!("PAC 服务已启动: http://127.0.0.1:{port}/proxy.pac");
+                    println!("按 Ctrl-C 停止");
+                    tokio::select! {
+                        _ = handle => {}
+                        _ = tokio::signal::ctrl_c() => {}
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("PAC 服务启动失败: {e}");
+                    1
+                }
+            }
+        }
+        "sub" => {
+            // gsn vpn sub <url>  ：校验订阅 URL 并展开节点列表（离线，不联网）。
+            if args.len() < 2 {
+                eprintln!("用法: gsn vpn sub <订阅URL>");
+                return 1;
+            }
+            let entry = gsn_core::net::SubscriptionEntry {
+                id: "cli-sub".to_string(),
+                url: args[1].clone(),
+                enabled: true,
+                more_urls: Vec::new(),
+            };
+            match entry.validate() {
+                Ok(()) => {
+                    let urls = entry.all_urls();
+                    println!("订阅校验通过: {}", args[1]);
+                    println!("  展开 URL 数: {}", urls.len());
+                    for u in &urls {
+                        println!("   - {u}");
+                    }
+                    // 离线演示：以 url 本身作为正文占位，展示解析入口；真实下载由调用方执行。
+                    let mut dedup = std::collections::HashSet::new();
+                    let nodes = gsn_core::net::parse_nodes(&entry.url, &entry.id, &mut dedup);
+                    println!("  解析节点数: {}", nodes.len());
+                    for n in nodes.iter().take(20) {
+                        println!(
+                            "   * {}  {}",
+                            n.peer_id.as_deref().unwrap_or("-"),
+                            n.address
+                        );
+                    }
+                    if nodes.len() > 20 {
+                        println!("   ... 其余 {} 条省略", nodes.len() - 20);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("订阅校验失败: {e}");
+                    return 1;
+                }
+            }
+            0
+        }
+        "route" => {
+            // gsn vpn route <规则文件> <host> [ip]
+            if args.len() < 3 {
+                eprintln!("用法: gsn vpn route <规则文件> <host> [ip]");
+                return 1;
+            }
+            let path = &args[1];
+            let host = &args[2];
+            let ip = args.get(3).map(|s| s.as_str());
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("读取规则文件失败: {e}");
+                    return 1;
+                }
+            };
+            let mut set = gsn_core::net::RouteSet {
+                rules: Vec::new(),
+                fallback: gsn_core::net::RouteAction::Direct,
+            };
+            for line in content.lines() {
+                if let Some(rule) = gsn_core::net::parse_rule_line(line) {
+                    set.rules.push(rule);
+                }
+            }
+            let gs = std::collections::HashSet::new();
+            let action = set.evaluate(host, ip, 0, "", "", "", &gs, &gs);
+            println!("路由决策: {} => {:?}", host, action);
+            0
+        }
+        "probe" => {
+            // gsn vpn probe --port 10808 [--url U] [--ip-api U]
+            let mut cfg = gsn_core::net::ProbeConfig::default();
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--port" if i + 1 < args.len() => {
+                        if let Ok(p) = args[i + 1].parse() {
+                            cfg.proxy_port = p;
+                        } else {
+                            eprintln!("错误: 端口非法 '{}'", args[i + 1]);
+                            return 1;
+                        }
+                        i += 2;
+                    }
+                    "--url" if i + 1 < args.len() => {
+                        cfg.speed_ping_url = args[i + 1].clone();
+                        i += 2;
+                    }
+                    "--ip-api" if i + 1 < args.len() => {
+                        cfg.ip_api_url = args[i + 1].clone();
+                        i += 2;
+                    }
+                    other => {
+                        eprintln!("错误: 未知参数 '{other}'");
+                        return 1;
+                    }
+                }
+            }
+            let handshake = gsn_core::net::socks5_handshake(cfg.proxy_port, cfg.timeout).await;
+            match handshake {
+                Ok(true) => println!("SOCKS5 握手: 通过 (127.0.0.1:{})", cfg.proxy_port),
+                Ok(false) => {
+                    eprintln!("SOCKS5 握手: 代理存在但返回非 05 00，可能需认证");
+                    return 1;
+                }
+                Err(e) => {
+                    eprintln!("SOCKS5 握手: 失败 - {e}");
+                    return 1;
+                }
+            }
+            match gsn_core::net::measure_latency_via_proxy(
+                cfg.proxy_port,
+                &cfg.speed_ping_url,
+                cfg.timeout,
+            )
+            .await
+            {
+                Ok(ms) => println!("延迟测量 ({}): {ms} ms", cfg.speed_ping_url),
+                Err(e) => eprintln!("延迟测量失败: {e}"),
+            }
+            match gsn_core::net::query_exit_info(cfg.proxy_port, &cfg.ip_api_url, cfg.timeout).await
+            {
+                Ok(info) => println!("出口信息: {info}"),
+                Err(e) => eprintln!("出口信息查询失败: {e}"),
+            }
+            0
+        }
+        other => {
+            eprintln!("错误: 未知 vpn 子命令 '{other}'");
+            print_vpn_help();
+            1
+        }
+    }
+}
+
+fn print_vpn_help() {
+    println!("用法: gsn vpn <子命令> [参数]\n");
+    println!("子命令:");
+    println!("  set [--host H] [--port P] [--bypass a,b]   设置系统 HTTP 代理");
+    println!("  clear                                      清除系统代理");
+    println!("  pac [--port P]                             启动本地 PAC 服务 (http://127.0.0.1:P/proxy.pac)");
+    println!("  sub <订阅URL>                              校验并展开订阅节点（离线）");
+    println!("  route <规则文件> <host> [ip]               按规则文件求值路由动作");
+    println!("  probe [--port P] [--url U] [--ip-api U]    探测本地 SOCKS5：握手/延迟/出口 IP");
 }
 
 // ───────────────────────── market ─────────────────────────

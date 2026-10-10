@@ -11,7 +11,7 @@ use libp2p::{
     identity,
     kad::{self, store::MemoryStore, Config as KadConfig, Quorum, Record, RecordKey},
     ping, relay,
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    swarm::{behaviour::toggle::Toggle, NetworkBehaviour, Swarm, SwarmEvent},
     Multiaddr, PeerId, SwarmBuilder,
 };
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -32,6 +32,12 @@ pub struct PeerBehaviour {
     pub dcutr: dcutr::Behaviour,
     /// v2.5.4: Ping（连接保活）
     pub ping: ping::Behaviour,
+    /// 自建 Relay 中继服务端（可选）。`Some` 时本节点作为 Circuit Relay v2
+    /// 中继（hop），为其他节点提供 reservation / circuit；`None` 时不承载中继。
+    /// 使用 `Toggle<B>`：libp2p 0.54 以 `Toggle` 提供「可启停的 behaviour」，
+    /// 未启用时该 behaviour 完全缺席、零开销。事件类型为
+    /// `relay::Event`（Toggle 透传内部事件）。
+    pub relay_server: Toggle<relay::Behaviour>,
 }
 
 #[derive(Debug)]
@@ -43,6 +49,8 @@ pub enum PeerEvent {
     AutoNat(autonat::Event),
     Dcutr(dcutr::Event),
     Ping(ping::Event),
+    /// 自建中继服务端事件；未启用 relay server 时不产生。
+    RelayServer(relay::Event),
 }
 
 impl From<kad::Event> for PeerEvent {
@@ -78,6 +86,11 @@ impl From<dcutr::Event> for PeerEvent {
 impl From<ping::Event> for PeerEvent {
     fn from(e: ping::Event) -> Self {
         PeerEvent::Ping(e)
+    }
+}
+impl From<relay::Event> for PeerEvent {
+    fn from(e: relay::Event) -> Self {
+        PeerEvent::RelayServer(e)
     }
 }
 
@@ -171,8 +184,30 @@ impl P2pPeer {
         Self::with_identity(local_key).await
     }
 
+    /// 创建节点（可选自建 Relay 中继服务端）。
+    ///
+    /// `relay_server: Some(config)` 时，本节点同时作为 Circuit Relay v2 中继
+    /// （hop）：其他节点可以对其发起 reservation 并经由它建立 circuit，实现
+    /// 跨 NAT / 跨网络的 P2P 连接。`None` 时与 `with_data_dir` 完全一致
+    /// （普通节点，不承载中继）。
+    pub async fn with_data_dir_relay(
+        data_dir: &std::path::Path,
+        relay_server: Option<relay::Config>,
+    ) -> anyhow::Result<Self> {
+        let local_key = load_or_create_identity_in(data_dir)?;
+        Self::with_identity_relay(local_key, relay_server).await
+    }
+
     /// 用指定身份创建节点
     pub async fn with_identity(local_key: identity::Keypair) -> anyhow::Result<Self> {
+        Self::with_identity_relay(local_key, None).await
+    }
+
+    /// 用指定身份创建节点（可选自建 Relay 中继服务端）。
+    pub async fn with_identity_relay(
+        local_key: identity::Keypair,
+        relay_server: Option<relay::Config>,
+    ) -> anyhow::Result<Self> {
         let peer_id = PeerId::from(local_key.public());
 
         let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
@@ -236,6 +271,12 @@ impl P2pPeer {
                     ping::Config::new().with_interval(Duration::from_secs(15)),
                 );
 
+                // 自建 Relay 中继服务端（可选）：`relay_server` 由构造参数传入。
+                // 注意：relay::Behaviour 即 Circuit Relay v2 服务端（libp2p-relay
+                // 顶层类型）；Toggle 用于「未启用时行为完全缺席」。
+                let relay_server =
+                    Toggle::from(relay_server.map(|cfg| relay::Behaviour::new(peer_id, cfg)));
+
                 Ok(PeerBehaviour {
                     kademlia,
                     gossipsub,
@@ -244,6 +285,7 @@ impl P2pPeer {
                     autonat,
                     dcutr,
                     ping,
+                    relay_server,
                 })
             })?
             .build();

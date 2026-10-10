@@ -1,0 +1,44 @@
+[Unit]
+# Agent Universe —— 自建 Relay 中继服务端 systemd 单元（Circuit Relay v2 hop）
+# 安装（公网云服务器 202.182.123.154）：
+#   sudo cp deploy/relay/systemd/agent-universe-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now agent-universe-relay
+# 日志：journalctl -u agent-universe-relay -f
+# 查看中继 PeerId（客户端 --relay 需要）：journalctl -u agent-universe-relay | grep "p2p/"
+Description=Agent Universe Relay Server (Circuit Relay v2 hop)
+Documentation=https://github.com/TwinsEarth/agent-universe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 建议创建独立非 root 用户：sudo useradd --system --create-home --home-dir /var/lib/au-relay au-relay
+User=au-relay
+Group=au-relay
+# 二进制路径（release 构建产物在 gsn-core/target/release/gsn-daemon，按实际安装位置修改）
+ExecStart=/usr/local/bin/gsn-daemon \
+  --data-dir /var/lib/au-relay/data \
+  --listen 0.0.0.0 \
+  --port 4001 \
+  --api-port 4002 \
+  --relay-server \
+  --relay-max-circuits 512 \
+  --relay-max-reservations 1024 \
+  --mode relay
+# 写门 Bearer（生产必须改成高熵随机值）
+Environment=REST_BEARER_TOKEN=CHANGE_ME_relay_server_token_only
+# 崩溃/退出后自动拉起
+Restart=always
+RestartSec=5
+# 资源限制
+LimitNOFILE=65536
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/au-relay/data
+
+[Install]
+WantedBy=multi-user.target

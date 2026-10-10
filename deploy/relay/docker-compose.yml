@@ -1,0 +1,67 @@
+# =============================================================================
+# Agent Universe —— 自建 Relay 中继服务端（单容器）
+# -----------------------------------------------------------------------------
+# 用途：公网云服务器上运行 Circuit Relay v2 中继（hop），打通 Mac↔Windows
+#       跨网络跨版本互连（闸门③）。默认跨网连接方式为 P2P。
+#
+# 用法（仓库根执行）：
+#   docker build -t agent-universe/gsn-daemon:relay .
+#   docker compose -f deploy/relay/docker-compose.yml up -d
+#   docker compose -f deploy/relay/docker-compose.yml logs -f
+#
+# 端口模型：
+#   libp2p   : 4001/tcp + 4001/udp(quic)   —— 中继传输端口（客户端 --relay 用）
+#   HTTP API : 4002/tcp                     —— 健康检查 / 运维接口
+#
+# 客户端加入方式（任意机器上的 gsn-daemon）：
+#   gsn-daemon --data-dir <dir> --relay /ip4/<SERVER_IP>/tcp/4001/p2p/<RELAY_PEER_ID>
+#
+# ⚠️ 注意事项：
+#   1. 首次启动后从日志获取中继 PeerId（形如 12D3KooW…），并回填到
+#      deploy/relay/README.md 与客户端 --relay 参数。
+#   2. 多节点同机部署（如本机测试 3 进程）必须各配不同 --api-port，
+#      否则 HTTP API 端口冲突（os error 98）。
+#   3. REST_BEARER_TOKEN 为示例占位值，生产部署前必须改为高熵随机值。
+# =============================================================================
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: agent-universe/gsn-daemon:relay
+    container_name: au-relay
+    hostname: relay
+    restart: unless-stopped
+    # 中继服务端：--relay-server 启用 hop；监听 0.0.0.0 对外可达。
+    command:
+      - --data-dir=/data
+      - --listen=0.0.0.0
+      - --port=4001
+      - --api-port=4002
+      - --relay-server
+      - --relay-max-circuits=512
+      - --relay-max-reservations=1024
+      - --mode=relay
+    environment:
+      HOME: /data
+      # 写门 Bearer（POST/PUT/PATCH/DELETE 需携带 Authorization: Bearer <token>）。
+      REST_BEARER_TOKEN: CHANGE_ME_relay_server_token_only
+    ports:
+      # libp2p 中继传输（客户端 --relay 指向此端口）
+      - "4001:4001/tcp"
+      - "4001:4001/udp"
+      # HTTP API（健康检查 http://<SERVER_IP>:4002/healthz）
+      - "4002:4002/tcp"
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      # 真实依赖健康检查：HTTP API 连通 + 返回 ok 才算健康
+      test: ["CMD", "bash", "-c", "curl -fsS http://127.0.0.1:4002/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  relay-data:

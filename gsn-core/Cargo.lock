@@ -946,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "gsn-core"
-version = "0.3.103"
+version = "0.3.104"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -958,7 +958,7 @@ dependencies = [
  "k256",
  "libc",
  "libp2p",
- "rand 0.8.8",
+ "rand 0.10.3",
  "reed-solomon-erasure",
  "rusqlite",
  "rustls",

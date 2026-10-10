@@ -4,9 +4,19 @@
 运行 Circuit Relay v2 中继（hop），让任意网络下的节点经中继互通。默认跨网连接
 方式为 **P2P**（直连优先，中继兜底）。
 
-- 公网云服务器 IP：`202.182.123.154`
+- 公网云服务器 IP：`202.182.123.154`（Vultr，Debian 11，x86_64）
 - 中继传输端口：`4001/tcp + 4001/udp`（libp2p）
 - HTTP API 端口：`4002/tcp`
+- 中继 PeerId：`12D3KooWC2wm4Ru25bJDqwCfaq2Kedxc695XRjF5rhhU4aqceheq`
+
+> **实机验证（2026-10-10，v3.9.13 / gsn-core 0.3.103）**：
+> 中继服务端以官方 musl 静态二进制部署（服务器 glibc 2.31 不支持 GNU 产物），
+> systemd 常驻（内存 ~18.5M），已自动接入 IPFS 公共网络（239+ 对等节点、
+> DHT 172 路由条目）；客户端 `--relay /ip4/202.182.123.154/tcp/4001/p2p/<PeerId>`
+> 实测 1.5s 直连中继、`ReservationReqAccepted` 建立 reservation（120s/131072B）、
+> 获得 `/ip4/202.182.123.154/tcp/4001/p2p/<PeerId>/p2p-circuit/...` 可路由地址——
+> **跨公网中继回路完整打通**。健康检查真实路径为 `/health` 与 `/api/v1/health`
+> （`/healthz` 返回 404）。
 
 ---
 
@@ -27,7 +37,11 @@ docker compose -f deploy/relay/docker-compose.yml logs -f
 健康检查：
 
 ```bash
-curl -fsS http://202.182.123.154:4002/healthz
+curl -fsS http://202.182.123.154:4002/health
+# {"hard":{"storage":"ok"},"mode":"relay","p2p_port":4001,"service":"gsn-daemon",
+#  "soft":{"connected_peers":239,"crdt_keys":0,"crdt_size_bytes":0,"dht_routing_entries":172},
+#  "status":"ok","uptime_ms":...,"version":"0.3.103"}
+# 注意：/healthz 返回 404，真实路径是 /health 或 /api/v1/health
 ```
 
 ## 二、快速开始（systemd，生产）
@@ -50,7 +64,7 @@ journalctl -u agent-universe-relay | grep 'p2p/' | tail -1
 1. **日志**（最直接）：启动后第一行「🔄 Relay Server 已启用」下方的
    「其他节点请以 `--relay /ip4/<本机公网IP>/tcp/4001/p2p/<PEER_ID>` 加入」，
    或 `journalctl -u agent-universe-relay | grep 'p2p/'`。
-2. **HTTP API**：`curl http://202.182.123.154:4002/healthz` 或 peer 信息端点。
+2. **HTTP API**：`curl http://202.182.123.154:4002/health`（真实路径，`/healthz` 404）或 peer 信息端点。
 
 PeerId 形如 `12D3KooW…`（libp2p Ed25519 身份，随 data-dir 持久化，重启不变）。
 
@@ -87,7 +101,7 @@ reservation 建立后，本节点的 `p2p-circuit` 地址会经 identify 广播�
 | 查看状态 | `systemctl status agent-universe-relay` |
 | 实时日志 | `journalctl -u agent-universe-relay -f` |
 | 重启 | `systemctl restart agent-universe-relay` |
-| 健康检查 | `curl -fsS http://127.0.0.1:4002/healthz` |
+| 健康检查 | `curl -fsS http://127.0.0.1:4002/health` |
 | 中继事件 | `journalctl -u agent-universe-relay \| grep 'relay server:'` |
 
 中继事件含义：
@@ -99,6 +113,19 @@ reservation 建立后，本节点的 `p2p-circuit` 地址会经 identify 广播�
 
 ## 六、多节点同机部署注意事项（踩坑实录）
 
+### 6.1 防火墙根因（v3.9.13 实机）
+**现象**：客户端 `--relay` 注入自建中继后，日志出现
+`出站连接失败 peer=<中继PeerId>: Transport(... Timeout)`，无法建立 reservation。
+**根因**：服务器 UFW 处于 active 且 INPUT policy DROP，**4001 端口未放行**。
+出站不受影响（中继能连出去 239 个公共节点），但外部直连 4001 被防火墙拦截。
+**修复**：
+```bash
+ufw allow 4001/tcp && ufw allow 4001/udp && ufw allow 4002/tcp
+```
+放行后客户端 1.5s 直连中继，`ReservationReqAccepted` 建立 reservation，
+获得 `p2p-circuit` 可路由地址。`deploy-relay.sh` 已内置此步骤。
+
+### 6.2 多节点同机 API 端口冲突
 多节点（含中继 + 客户端）部署在同一台机器上测试时，**HTTP API 默认端口 4002
 冲突**（`Error: Address already in use (os error 98)`）。必须为每个进程指定不同
 `--api-port`：

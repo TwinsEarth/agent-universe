@@ -61,7 +61,16 @@ echo "==> [3/5] 安装二进制"
 cp "${BIN_SRC}" "${BIN_DST}"
 chmod 755 "${BIN_DST}"
 
-echo "==> [4/5] 安装 systemd 单元"
+echo "==> [4/6] 放行防火墙（v3.9.13 实机根因：UFW INPUT policy DROP 导致外部无法直连 4001）"
+if command -v ufw >/dev/null 2>&1; then
+  ufw allow "${PORT}"/tcp >/dev/null 2>&1 && echo "  ufw 放行 ${PORT}/tcp"
+  ufw allow "${PORT}"/udp >/dev/null 2>&1 && echo "  ufw 放行 ${PORT}/udp"
+  ufw allow "${API_PORT}"/tcp >/dev/null 2>&1 && echo "  ufw 放行 ${API_PORT}/tcp"
+else
+  echo "  （未检测到 ufw；请确保云厂商安全组已放行 ${PORT}/tcp、${PORT}/udp、${API_PORT}/tcp）"
+fi
+
+echo "==> [5/6] 安装 systemd 单元"
 sed -e "s|--port 4001|--port ${PORT}|" \
     -e "s|--api-port 4002|--api-port ${API_PORT}|" \
     -e "s|CHANGE_ME_relay_server_token_only|${BEARER}|" \
@@ -69,14 +78,14 @@ sed -e "s|--port 4001|--port ${PORT}|" \
 systemctl daemon-reload
 systemctl enable agent-universe-relay
 
-echo "==> [5/5] 启动中继服务端"
+echo "==> [6/6] 启动中继服务端"
 systemctl restart agent-universe-relay
 
 echo ""
 echo "================================================================"
 echo "自建 Relay 中继服务端已部署"
 echo "  libp2p  : /ip4/$(hostname -I | awk '{print $1}')/tcp/${PORT}"
-echo "  HTTP API: http://<本机公网IP>:${API_PORT}/healthz"
+echo "  HTTP API: http://<本机公网IP>:${API_PORT}/health"
 echo ""
 echo "获取中继 PeerId（客户端 --relay 需要）："
 echo "  journalctl -u agent-universe-relay | grep 'p2p/' | tail -1"

@@ -416,6 +416,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn windows_set_proxy_issues_reg_commands() {
         let runner = FakeRunner::new();
@@ -438,6 +439,7 @@ mod tests {
         assert!(calls[2].1.contains(&"<local>;localhost".to_string()));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn clear_proxy_disables_enable_flag() {
         let runner = FakeRunner::new();
@@ -450,6 +452,7 @@ mod tests {
         assert!(calls[0].1.contains(&"0".to_string()));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn apply_pac_sets_autoconfig_url() {
         let runner = FakeRunner::new();
@@ -484,5 +487,74 @@ mod tests {
     fn platform_name_matches_target() {
         let name = SystemProxyManager::<RealCommandRunner>::platform_name();
         assert!(["windows", "macos", "linux"].contains(&name));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_set_proxy_issues_gsettings_commands() {
+        let runner = FakeRunner::new();
+        let mgr = SystemProxyManager::new(runner.clone());
+        let cfg = SystemProxyConfig::new(ProxyScheme::Http, "127.0.0.1", 10808)
+            .with_bypass(&["<local>", "localhost"]);
+        let report = mgr.set_http_proxy(&cfg).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.platform, "linux");
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 3);
+        // gsettings mode manual
+        assert!(calls[0].1.contains(&"manual".to_string()));
+        // gsettings http host
+        assert!(calls[1].1.contains(&"host".to_string()));
+        assert!(calls[1].1.contains(&"127.0.0.1".to_string()));
+        // gsettings http port
+        assert!(calls[2].1.contains(&"port".to_string()));
+        assert!(calls[2].1.contains(&"10808".to_string()));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_clear_proxy_sets_mode_none() {
+        let runner = FakeRunner::new();
+        let mgr = SystemProxyManager::new(runner.clone());
+        let report = mgr.clear_proxy().unwrap();
+        assert!(report.ok);
+        assert_eq!(report.platform, "linux");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains(&"none".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_set_proxy_issues_networksetup_commands() {
+        let runner = FakeRunner::new();
+        let mgr = SystemProxyManager::new(runner.clone());
+        let cfg = SystemProxyConfig::new(ProxyScheme::Http, "127.0.0.1", 10808);
+        let report = mgr.set_http_proxy(&cfg).unwrap();
+        assert!(report.ok);
+        assert_eq!(report.platform, "macos");
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        // networksetup -setwebproxy Wi-Fi 127.0.0.1 10808
+        assert!(calls[0].0 == "networksetup");
+        assert!(calls[0].1.contains(&"-setwebproxy".to_string()));
+        assert!(calls[0].1.contains(&"127.0.0.1".to_string()));
+        assert!(calls[0].1.contains(&"10808".to_string()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_clear_proxy_disables_webproxy_state() {
+        let runner = FakeRunner::new();
+        let mgr = SystemProxyManager::new(runner.clone());
+        let report = mgr.clear_proxy().unwrap();
+        assert!(report.ok);
+        assert_eq!(report.platform, "macos");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0].1.contains(&"-setwebproxystate".to_string()));
+        assert!(calls[0].1.contains(&"off".to_string()));
     }
 }

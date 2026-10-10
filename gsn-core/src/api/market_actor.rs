@@ -1006,7 +1006,7 @@ fn dispatch(market: &mut AgentMarket, cmd: MarketCommand, store: Option<&Persist
             }
         },
         MarketCommand::Deposit { cmd, now, reply } => {
-            // v3.9.12 GOV 重启重放修复：持久化数据面先完整验签（成员/权限/时间窗/
+            // v3.9.13 GOV 重启重放修复（v3.9.12 引入）：持久化数据面先完整验签（成员/权限/时间窗/
             // 签名/进程内 nonce），通过后再由 SQLite 原子确认该 nonce 为跨重启首次
             // 消费，最后才入账。此前内存 HashSet 只在单次进程内去重，daemon 崩溃
             // 重启后在命令有效期窗口内重放同一签名命令会被再次接受、重复授信。

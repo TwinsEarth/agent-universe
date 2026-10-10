@@ -11,7 +11,7 @@ use crate::erasure::distributed::{
 };
 use crate::erasure::wire::{GossipShardTransport, ShardWire, SHARD_TOPIC};
 use crate::erasure::ErasureCoder;
-use crate::net::peer::InboundGossipMessage;
+use crate::net::peer::{extract_relay_peer_id, InboundGossipMessage};
 use crate::net::P2pPeer;
 use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
@@ -253,6 +253,15 @@ pub struct DaemonArgs {
     pub data_dir: PathBuf,
     pub mode: String,
     pub bootstrap: Vec<String>,
+    /// 自建 Relay 中继服务端：`true` 时本节点同时作为 Circuit Relay v2
+    /// 中继（hop），为其他节点提供跨 NAT 的 reservation / circuit。
+    pub relay_server: bool,
+    /// 启动即注入的中继地址（自建/自有中继，分类 dedicated）。可多个。
+    pub relay: Vec<String>,
+    /// 中继服务端：最多同时承载的 circuit 数。
+    pub relay_max_circuits: usize,
+    /// 中继服务端：最多 reservation 数。
+    pub relay_max_reservations: usize,
 }
 
 impl Default for DaemonArgs {
@@ -264,6 +273,10 @@ impl Default for DaemonArgs {
             data_dir: default_data_dir(),
             mode: "full".to_string(),
             bootstrap: Vec::new(),
+            relay_server: false,
+            relay: Vec::new(),
+            relay_max_circuits: 512,
+            relay_max_reservations: 1024,
         }
     }
 }
@@ -318,6 +331,10 @@ pub fn print_daemon_help() {
     println!("  --data-dir <path>   数据目录 (默认: ~/.gsn/data)");
     println!("  --mode <mode>       节点模式: archive|full|light|edge|browser (默认: full)");
     println!("  --bootstrap <addr>  引导节点 multiaddr (可多个)");
+    println!("  --relay-server      启用自建 Circuit Relay v2 中继服务端 (hop)");
+    println!("  --relay <addr>      启动即注入的自有/自建中继 multiaddr (可多个, 分类 dedicated)");
+    println!("  --relay-max-circuits <n>   中继最多 circuit 数 (默认: 512)");
+    println!("  --relay-max-reservations <n> 中继最多 reservation 数 (默认: 1024)");
     println!("  --help              显示帮助");
 }
 
@@ -353,6 +370,29 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                     i += 1;
                 }
                 i += 1;
+            }
+            "--relay-server" => {
+                d.relay_server = true;
+                i += 1;
+            }
+            "--relay" => {
+                while i + 1 < args.len() && !args[i + 1].starts_with("--") {
+                    d.relay.push(args[i + 1].clone());
+                    i += 1;
+                }
+                i += 1;
+            }
+            "--relay-max-circuits" => {
+                d.relay_max_circuits = require_value(args, i, "--relay-max-circuits")
+                    .parse()
+                    .unwrap_or(512);
+                i += 2;
+            }
+            "--relay-max-reservations" => {
+                d.relay_max_reservations = require_value(args, i, "--relay-max-reservations")
+                    .parse()
+                    .unwrap_or(1024);
+                i += 2;
             }
             "--version" | "-V" => {
                 // v3.5.5（W-02）：gsn-daemon / `gsn daemon` 支持 --version/-V，
@@ -723,6 +763,20 @@ fn process_swarm_event(
         Behaviour(bev) => {
             use crate::net::peer::PeerEvent::*;
             match bev {
+                RelayServer(relay_server_ev) => {
+                    // v3.9.13: 自建 Relay 中继服务端事件。仅 `--relay-server`
+                    // 节点会产生；普通节点不产生该事件。仅记录，无需业务处理。
+                    use libp2p::relay::Event as SrvEvent;
+                    match relay_server_ev {
+                        SrvEvent::ReservationReqAccepted { .. } => {
+                            eprintln!("🔌 relay server: reservation 接受");
+                        }
+                        SrvEvent::CircuitReqAccepted { .. } => {
+                            eprintln!("🔌 relay server: circuit 接受");
+                        }
+                        _ => {}
+                    }
+                }
                 RelayClient(rc) => {
                     use libp2p::relay::client::Event as RcEvent;
                     if let RcEvent::ReservationReqAccepted {
@@ -2847,7 +2901,25 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     init_relay_pool(&store);
 
     // P0-5: 身份随 --data-dir 持久化（不同 data-dir → 不同 PeerId）。
-    let mut peer = P2pPeer::with_data_dir(&args.data_dir).await?;
+    // v3.9.13: 自建 Relay 中继服务端。`--relay-server` 时构造带
+    // relay::Behaviour（Circuit Relay v2 hop）的节点对外服务。
+    let relay_cfg = if args.relay_server {
+        let cfg = libp2p::relay::Config {
+            max_circuits: args.relay_max_circuits,
+            max_circuits_per_peer: args.relay_max_circuits.max(1),
+            max_reservations: args.relay_max_reservations,
+            max_reservations_per_peer: args.relay_max_reservations.max(1),
+            ..Default::default()
+        };
+        Some(cfg)
+    } else {
+        None
+    };
+    let mut peer = if relay_cfg.is_some() {
+        P2pPeer::with_data_dir_relay(&args.data_dir, relay_cfg).await?
+    } else {
+        P2pPeer::with_data_dir(&args.data_dir).await?
+    };
     match peer.listen_on_port(args.port) {
         Ok(_) => println!("✅ libp2p P2P 端口: {}", args.port),
         Err(e) => eprintln!("⚠️ P2P 端口 {} 绑定失败: {}", args.port, e),
@@ -2856,6 +2928,50 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     match peer.listen_quic_port(args.port) {
         Ok(a) => println!("✅ libp2p QUIC 端口: {}", a),
         Err(e) => eprintln!("⚠️ QUIC 端口 {} 监听失败: {}", args.port, e),
+    }
+    // v3.9.13: 中继服务端提示（对外通告地址由部署方固定映射；本进程只做 hop）
+    if args.relay_server {
+        println!(
+            "🔄 Relay Server 已启用: max_circuits={} max_reservations={}",
+            args.relay_max_circuits, args.relay_max_reservations
+        );
+        println!(
+            "   其他节点请以 --relay /ip4/<本机公网IP>/tcp/{}/p2p/{} 加入",
+            args.port, peer.peer_id
+        );
+    }
+    // v3.9.13: 启动即注入自建/自有中继（分类 dedicated，最高优先级）。
+    for addr_str in &args.relay {
+        // relay_id 优先取 multiaddr 中的 /p2p/<PeerId>；解析失败时回退整串。
+        let relay_id = addr_str
+            .parse::<Multiaddr>()
+            .ok()
+            .as_ref()
+            .and_then(extract_relay_peer_id)
+            .unwrap_or_else(|| addr_str.clone());
+        let stored = crate::storage::StoredRelay {
+            relay_id: relay_id.clone(),
+            multiaddr: addr_str.clone(),
+            class: "dedicated".to_string(),
+            status: "unknown".to_string(),
+            healthy: true,
+            fail_count: 0,
+            limit_sec: 0,
+            data_bytes: 0,
+            last_check: String::new(),
+            created_at: String::new(),
+        };
+        match store.upsert_relay(&stored) {
+            Ok(_) => {
+                println!("→ 注入自建 relay: {} ({})", relay_id, addr_str);
+                if let Ok(addr) = addr_str.parse::<Multiaddr>() {
+                    if let Err(e) = peer.add_bootstrap(addr) {
+                        eprintln!("⚠️ relay {} 发起 dial 失败: {}", addr_str, e);
+                    }
+                }
+            }
+            Err(e) => eprintln!("⚠️ relay {} 落库失败: {}", addr_str, e),
+        }
     }
     for addr_str in &args.bootstrap {
         if let Ok(addr) = addr_str.parse::<Multiaddr>() {

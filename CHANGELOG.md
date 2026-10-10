@@ -1,3 +1,23 @@
+## [v3.9.13] - 2026-10-10
+
+### 自建 Relay 中继服务端 + 自有 P2P 服务器能力（#161，feature）
+
+打通历史长期卡点「闸门③ Mac↔Windows 跨网络跨版本互连」：此前跨公网互连缺自建中继节点，本次为 gsn-daemon 新增完整的 Circuit Relay v2 服务端能力，并提供配套部署包（含公网云服务器 202.182.123.154 部署步骤）。
+
+- 核心能力（gsn-core/src/net/peer.rs）：
+  - `PeerBehaviour` 新增 `relay_server: Toggle<relay::Behaviour>`（libp2p-relay 0.18.0 Circuit Relay v2 服务端，hop 角色）；新增 `with_data_dir_relay` / `with_identity_relay` 构造（`Option<relay::Config>` 控制启用）；`PeerEvent` 新增 `RelayServer(relay::Event)` 分支与 `From<relay::Event>` 转发。
+  - 修复 libp2p-swarm 0.45.1 移除 `Option<T>: NetworkBehaviour` impl（E0277）的编译问题：全部改用 `swarm::behaviour::toggle::Toggle<T>`，未启用时行为完全缺席。
+- CLI 与接线（gsn-core/src/node.rs）：
+  - `DaemonArgs` 新增 `--relay-server`（布尔，启用中继服务端）、`--relay <addr>`（多值，注入自建 relay，同 `--bootstrap` 吞值模式）、`--relay-max-circuits`（默认 512）、`--relay-max-reservations`（默认 1024）。
+  - `--relay` 注入后经 `extract_relay_peer_id` 取 relay_id，`store.upsert_relay`（Dedicated 分类，优先级最高）→ `peer.add_bootstrap(addr)`；随后 relay_pool `ensure_channels` 自动消费并 `listen_via_relay` 建立 reservation。
+  - 中继服务端启动后打印「🔄 Relay Server 已启用」与「其他节点请以 --relay /ip4/<本机公网IP>/tcp/{port}/p2p/{peer_id} 加入」。
+- 真实回环组网验证（3 进程：中继 r=41001 + 客户端 A=41002 + 客户端 B=41003）：
+  - A/B 对自建中继建立 reservation（日志「✅ relay reservation 已建立 12D3KooW…Wk3QG」）；中继服务端事件「🔌 relay server: reservation 接受 ×6」「🔌 relay server: circuit 接受 ×5」；A↔B 经自建中继 p2p-circuit 地址在 identify 中互见（A 见 B 18 处、B 见 A 13 处）。
+  - 踩坑记录：多节点同机部署 HTTP API 默认端口 4002 冲突（os error 98），必须各配不同 `--api-port`（已写入部署文档）。
+- 全量关卡：`cargo fmt --check` 通过、`cargo clippy --workspace --all-targets -- -D warnings` 0 warning、`cargo test --lib` 746 passed、release 构建成功（`--help` 4 个新参数齐全）。
+- 版本 npm/产物 3.9.13 ↔ gsn-core/gsn-daemon 0.3.103。
+- 诚实边界：回环验证在本机完成（A/B 可直连，故端到端 circuit 仅出现 reservation + identify 互见证据）；跨公网 Mac↔Windows 真机互连需在 202.182.123.154 实机部署后验证，属待部署闸门。涉及 libp2p relay 中继传输的安全审计仍需外部专业审计（REQUIRE EXTERNAL AUDIT）。
+
 ## [v3.9.12] - 2026-10-06
 
 ### Linux 真机安全修复：签名治理授信命令 nonce 跨重启持久化去重，堵住崩溃重启后窗口内重放重复授信（#137，patch）

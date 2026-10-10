@@ -443,15 +443,15 @@ async fn run_vpn(args: &[String]) -> i32 {
                     }
                 }
             }
+            let listen: std::net::SocketAddr = match format!("127.0.0.1:{port}").parse() {
+                Ok(addr) => addr,
+                Err(e) => {
+                    eprintln!("错误: 监听地址非法: {e}");
+                    return 1;
+                }
+            };
             let cfg = gsn_core::net::PacConfig {
-                listen: format!("127.0.0.1:{port}")
-                    .parse()
-                    .map_err(|e| {
-                        eprintln!("错误: 监听地址非法: {e}");
-                        std::process::exit(1);
-                    })
-                    .ok()
-                    .unwrap(),
+                listen,
                 proxy_port: port,
                 custom_pac_path: None,
             };

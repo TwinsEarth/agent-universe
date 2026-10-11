@@ -267,22 +267,28 @@ mod tests {
 
     #[test]
     fn zero_query_timeout_rejected() {
-        let mut c = DhtConfig::default();
-        c.query_timeout = Duration::ZERO;
+        let c = DhtConfig {
+            query_timeout: Duration::ZERO,
+            ..DhtConfig::default()
+        };
         assert_eq!(c.validate(), Err(DhtConfigError::QueryTimeoutZero));
     }
 
     #[test]
     fn zero_kbucket_inserts_rejected() {
-        let mut c = DhtConfig::default();
-        c.kbucket_inserts = 0;
+        let c = DhtConfig {
+            kbucket_inserts: 0,
+            ..DhtConfig::default()
+        };
         assert_eq!(c.validate(), Err(DhtConfigError::KbucketInsertsZero));
     }
 
     #[test]
     fn packet_size_out_of_range_rejected() {
-        let mut c = DhtConfig::default();
-        c.max_packet_size = 17 * 1024 * 1024;
+        let c = DhtConfig {
+            max_packet_size: 17 * 1024 * 1024,
+            ..DhtConfig::default()
+        };
         assert!(matches!(
             c.validate(),
             Err(DhtConfigError::MaxPacketSizeOutOfRange(_))

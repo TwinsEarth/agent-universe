@@ -28,7 +28,7 @@ from .aca import (
     verify_receipt_result,
 )
 
-__version__ = "3.9.18"
+__version__ = "3.9.19"
 __all__ = [
     # 数据模型
     "AgentCard", "Task", "TaskStatus", "SkillSpec", "Pricing",

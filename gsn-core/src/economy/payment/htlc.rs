@@ -77,6 +77,13 @@ pub enum HtlcError {
     HtlcLocktimeNonCanonical,
     /// CLTV 锁定期为 0。
     HtlcInvalidLocktime,
+    /// 锁定期单位声明与数值语义矛盾（如声明 BlockHeight 但数值 ≥ 阈值、或声明
+    /// UnixSeconds 但数值 < 阈值），fail-closed 拒绝以防单位错配。
+    HtlcLocktimeUnitMismatch {
+        declared: &'static str,
+        numeric: &'static str,
+        locktime: u32,
+    },
     /// 在调用方给定的当前高度/时间下该 HTLC 已到期（接收方取款窗口已关闭）。
     HtlcLocktimeExpired,
     /// 超时安全裕度不足（剩余块数/秒数小于调用方要求的最小值）。
@@ -98,6 +105,7 @@ impl std::fmt::Display for HtlcError {
             HtlcError::HtlcMalformedScript => "HTLC_MALFORMED_SCRIPT",
             HtlcError::HtlcLocktimeNonCanonical => "HTLC_LOCKTIME_NON_CANONICAL",
             HtlcError::HtlcInvalidLocktime => "HTLC_INVALID_LOCKTIME",
+            HtlcError::HtlcLocktimeUnitMismatch { .. } => "HTLC_LOCKTIME_UNIT_MISMATCH",
             HtlcError::HtlcLocktimeExpired => "HTLC_LOCKTIME_EXPIRED",
             HtlcError::HtlcTimeoutMarginTooSmall => "HTLC_TIMEOUT_MARGIN_TOO_SMALL",
             HtlcError::HtlcNodeNotConfigured => "HTLC_NODE_NOT_CONFIGURED",
@@ -359,6 +367,9 @@ pub fn verify_amount_conservation(
 ///
 /// `current` 单位必须与 CLTV 锁定期单位一致（高度对高度、秒对秒）；内核不读时钟。
 /// `min_remaining` 为调用方要求的最小安全裕度（同单位），0 表示不检查裕度。
+/// `units` 为调用方声明的锁定期单位：校验会与 Bitcoin nLockTime 数值语义
+/// （< [`LOCKTIME_TIME_THRESHOLD`] 视为区块高度，否则视为 Unix 秒）做一致性判定，
+/// 单位声明与数值语义矛盾时 fail-closed 具名拒绝，防止“块高当秒/秒当块高”错配。
 pub fn verify_timeout(
     locktime: u32,
     units: LocktimeUnits,
@@ -368,6 +379,19 @@ pub fn verify_timeout(
     if locktime == 0 {
         return Err(HtlcError::HtlcInvalidLocktime);
     }
+    // 单位声明与数值语义一致性：数值在阈值以下只能是区块高度，反之只能是 Unix 秒。
+    let numeric_units = if locktime < LOCKTIME_TIME_THRESHOLD {
+        LocktimeUnits::BlockHeight
+    } else {
+        LocktimeUnits::UnixSeconds
+    };
+    if units != numeric_units {
+        return Err(HtlcError::HtlcLocktimeUnitMismatch {
+            declared: units.as_str(),
+            numeric: numeric_units.as_str(),
+            locktime,
+        });
+    }
     // 已经到达/超过锁定期 → 接收方凭原像取款的窗口已关闭。
     if current >= locktime {
         return Err(HtlcError::HtlcLocktimeExpired);
@@ -376,7 +400,6 @@ pub fn verify_timeout(
     if remaining < min_remaining {
         return Err(HtlcError::HtlcTimeoutMarginTooSmall);
     }
-    let _ = units;
     Ok(())
 }
 
@@ -673,6 +696,50 @@ mod tests {
         assert_eq!(
             finalize_htlc().err(),
             Some(HtlcError::HtlcNodeNotConfigured)
+        );
+    }
+
+    #[test]
+    fn timeout_unit_declaration_must_match_numeric_semantics() {
+        // 声明 BlockHeight 但数值 ≥ 阈值（实际是秒语义）→ 单位错配 fail-closed。
+        assert_eq!(
+            verify_timeout(LOCKTIME_TIME_THRESHOLD, LocktimeUnits::BlockHeight, 500, 0).err(),
+            Some(HtlcError::HtlcLocktimeUnitMismatch {
+                declared: "block_height",
+                numeric: "unix_seconds",
+                locktime: LOCKTIME_TIME_THRESHOLD,
+            })
+        );
+        // 声明 UnixSeconds 但数值 < 阈值（实际是块高语义）→ 单位错配 fail-closed。
+        assert_eq!(
+            verify_timeout(800_000, LocktimeUnits::UnixSeconds, 100, 0).err(),
+            Some(HtlcError::HtlcLocktimeUnitMismatch {
+                declared: "unix_seconds",
+                numeric: "block_height",
+                locktime: 800_000,
+            })
+        );
+    }
+
+    #[test]
+    fn timeout_consistent_units_pass_while_mismatch_expired_rejected() {
+        // 块高语义：声明与数值一致，未到期且裕度足够 → 通过。
+        assert!(verify_timeout(850_000, LocktimeUnits::BlockHeight, 800_000, 10_000).is_ok());
+        // 秒语义：声明与数值一致，但已到期 → 具名拒绝。
+        assert_eq!(
+            verify_timeout(1_700_000_000, LocktimeUnits::UnixSeconds, 1_800_000_000, 0).err(),
+            Some(HtlcError::HtlcLocktimeExpired)
+        );
+        // 秒语义：裕度不足 → 具名拒绝。
+        assert_eq!(
+            verify_timeout(
+                1_700_000_000,
+                LocktimeUnits::UnixSeconds,
+                1_700_000_000 - 5,
+                10
+            )
+            .err(),
+            Some(HtlcError::HtlcTimeoutMarginTooSmall)
         );
     }
 }

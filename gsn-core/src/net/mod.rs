@@ -6,6 +6,7 @@
 //! - [`proxy`] / [`pac`] / [`subscription`] / [`routing`] / [`probe`]（v3.9.14，
 //!   参照 v2rayN）：系统代理、本地 PAC 服务、节点订阅、路由规则引擎与连通性探测。
 
+pub mod gossip_config;
 pub mod memory_dht;
 pub mod memory_gossip;
 pub mod memory_node;
@@ -17,6 +18,7 @@ pub mod root_seed;
 pub mod routing;
 pub mod subscription;
 
+pub use gossip_config::{GossipConfig, GossipConfigError, GossipStormGuard};
 pub use memory_dht::InMemoryKademlia;
 pub use memory_gossip::InMemoryGossip;
 pub use memory_node::InMemoryNode;

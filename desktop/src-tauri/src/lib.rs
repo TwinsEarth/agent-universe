@@ -77,7 +77,7 @@ fn show_main(app: &AppHandle) {
 #[tauri::command]
 fn get_app_info(state: tauri::State<AppState>) -> AppInfo {
     AppInfo {
-        version: "3.9.15".to_string(),
+        version: "3.9.16".to_string(),
         platform: platform_name(),
         workspace: state.workspace.clone(),
         daemon_data_dir: workspace::daemon_data_dir().display().to_string(),

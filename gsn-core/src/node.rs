@@ -115,6 +115,12 @@ pub struct PeerInfo {
     pub bootstrapped: Vec<String>,
     /// v2.5.4: AutoNAT 检测的 NAT 状态
     pub nat_status: String,
+    /// v3.9.21: 当前 relay circuit listener 通道数（relay_pool failover 实况）。
+    pub relay_channels: usize,
+    /// v3.9.21: DCUtR 直连升级成功的对端数。
+    pub dcutr_direct: usize,
+    /// v3.9.21: GossipSub 去重器容量。
+    pub gossip_dedup_capacity: usize,
 }
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
@@ -1167,6 +1173,9 @@ fn handle_peer_command(
                 listen_addrs: peer.listen_addrs(),
                 bootstrapped: peer.bootstrapped(),
                 nat_status: peer.nat_status(),
+                relay_channels: peer.relay_channel_count(),
+                dcutr_direct: peer.dcutr_direct_count(),
+                gossip_dedup_capacity: peer.gossip_dedup_capacity(),
             };
             let _ = reply.send(info);
         }
@@ -1650,6 +1659,9 @@ pub(crate) fn render_prometheus_metrics(
     market_tasks: u64,
     market_disputes: u64,
     market_settled: u64,
+    relay_channels: usize,
+    dcutr_direct: usize,
+    gossip_dedup_capacity: usize,
 ) -> String {
     format!(
         "# HELP gsn_uptime_seconds 节点运行时长（秒）\n# TYPE gsn_uptime_seconds gauge\ngsn_uptime_seconds {uptime:.3}\n\
@@ -1663,7 +1675,10 @@ pub(crate) fn render_prometheus_metrics(
          # HELP gsn_market_agents_total 市场已注册智能体数\n# TYPE gsn_market_agents_total gauge\ngsn_market_agents_total {agents}\n\
          # HELP gsn_market_tasks_total 市场任务总数\n# TYPE gsn_market_tasks_total gauge\ngsn_market_tasks_total {tasks}\n\
          # HELP gsn_market_disputes_total 市场争议累计数\n# TYPE gsn_market_disputes_total counter\ngsn_market_disputes_total {disputes}\n\
-         # HELP gsn_market_settled_total 市场已结算任务累计数\n# TYPE gsn_market_settled_total counter\ngsn_market_settled_total {settled}\n",
+         # HELP gsn_market_settled_total 市场已结算任务累计数\n# TYPE gsn_market_settled_total counter\ngsn_market_settled_total {settled}\n\
+         # HELP gsn_relay_channels 当前持有 relay circuit listener 通道数\n# TYPE gsn_relay_channels gauge\ngsn_relay_channels {relay}\n\
+         # HELP gsn_dcutr_direct_peers DCUtR 直连升级成功的对端数\n# TYPE gsn_dcutr_direct_peers gauge\ngsn_dcutr_direct_peers {dcutr}\n\
+         # HELP gsn_gossip_dedup_capacity GossipSub 去重器容量\n# TYPE gsn_gossip_dedup_capacity gauge\ngsn_gossip_dedup_capacity {dedup}\n",
         uptime = uptime_seconds,
         connected = connected_peers,
         routing = dht_routing_entries,
@@ -1676,6 +1691,9 @@ pub(crate) fn render_prometheus_metrics(
         tasks = market_tasks,
         disputes = market_disputes,
         settled = market_settled,
+        relay = relay_channels,
+        dcutr = dcutr_direct,
+        dedup = gossip_dedup_capacity,
     )
 }
 
@@ -2497,10 +2515,11 @@ async fn run_api_server(
                     ),
                     _ => (0, 0, 0, 0),
                 };
+                let p = peer_info.as_ref();
                 let body = render_prometheus_metrics(
                     uptime,
-                    peer_info.as_ref().map(|i| i.connected).unwrap_or(0),
-                    peer_info.as_ref().map(|i| i.routing_entries).unwrap_or(0),
+                    p.map(|i| i.connected).unwrap_or(0),
+                    p.map(|i| i.routing_entries).unwrap_or(0),
                     &crdt.stats(),
                     crdt.len(),
                     crdt.size_bytes(),
@@ -2508,6 +2527,9 @@ async fn run_api_server(
                     m_tasks,
                     m_disputes,
                     m_settled,
+                    p.map(|i| i.relay_channels).unwrap_or(0),
+                    p.map(|i| i.dcutr_direct).unwrap_or(0),
+                    p.map(|i| i.gossip_dedup_capacity).unwrap_or(0),
                 );
                 let resp =
                     http_response(200, "OK", body, "text/plain; version=0.0.4", &cors_headers);
@@ -3898,7 +3920,7 @@ mod crdt_wiring_tests {
             dropped_capped: 1,
             snapshot_seq: 4,
         };
-        let body = render_prometheus_metrics(12.5, 5, 7, &s, 9, 1024, 11, 22, 33, 44);
+        let body = render_prometheus_metrics(12.5, 5, 7, &s, 9, 1024, 11, 22, 33, 44, 2, 3, 4096);
         for name in [
             "gsn_uptime_seconds",
             "gsn_connected_peers",
@@ -3931,5 +3953,8 @@ mod crdt_wiring_tests {
         assert!(body.contains("gsn_market_tasks_total 22"));
         assert!(body.contains("gsn_market_disputes_total 33"));
         assert!(body.contains("gsn_market_settled_total 44"));
+        assert!(body.contains("gsn_relay_channels 2"));
+        assert!(body.contains("gsn_dcutr_direct_peers 3"));
+        assert!(body.contains("gsn_gossip_dedup_capacity 4096"));
     }
 }

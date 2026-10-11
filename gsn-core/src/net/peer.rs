@@ -158,6 +158,11 @@ impl GossipDedup {
         }
         true
     }
+
+    /// 去重器容量（v3.9.16 防风暴参数可观测）。
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 /// 真实 libp2p 对等节点
@@ -762,6 +767,21 @@ impl P2pPeer {
             .connected_peers()
             .map(|peer_id| peer_id.to_string())
             .collect()
+    }
+
+    /// v3.9.21: 当前持有的 relay circuit listener 通道数（relay_pool 多冗余 failover 实况）。
+    pub fn relay_channel_count(&self) -> usize {
+        self.relay_listeners.len()
+    }
+
+    /// v3.9.21: DCUtR 直连升级成功的对端数（NAT 穿透效果可观测）。
+    pub fn dcutr_direct_count(&self) -> usize {
+        self.direct_peers.len()
+    }
+
+    /// v3.9.21: GossipSub 去重器容量（防风暴参数可观测）。
+    pub fn gossip_dedup_capacity(&self) -> usize {
+        self.gossip_dedup.capacity()
     }
 
     // ─────────────── v2.5.4 NAT 穿透增强 ───────────────

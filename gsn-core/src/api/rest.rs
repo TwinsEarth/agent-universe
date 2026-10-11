@@ -209,6 +209,13 @@ pub async fn route(
             // connected_peers=0 不算失败（boot 节点合法为 0）。
             use crate::api::market_actor::MarketResponse;
             let storage_ok = matches!(market.stats().await, MarketResponse::Ok(_));
+            let (m_agents, m_tasks) = match market.stats().await {
+                MarketResponse::Ok(v) => (
+                    v.get("agent_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                    v.get("task_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                ),
+                _ => (0, 0),
+            };
             let crdt_keys = crdt.map(|c| c.len()).unwrap_or(0);
             let crdt_size = crdt.map(|c| c.size_bytes()).unwrap_or(0);
             let soft = json!({
@@ -216,6 +223,8 @@ pub async fn route(
                 "dht_routing_entries": info.dht_routing_entries,
                 "crdt_keys": crdt_keys,
                 "crdt_size_bytes": crdt_size,
+                "market_agents": m_agents,
+                "market_tasks": m_tasks,
             });
             if !storage_ok {
                 return Routed {
@@ -868,6 +877,9 @@ mod crdt_health_tests {
         assert_eq!(r.body["soft"]["crdt_keys"], 1);
         assert_eq!(r.body["soft"]["connected_peers"], 0);
         assert_eq!(r.body["soft"]["dht_routing_entries"], 3);
+        // v3.9.20：/health 软指标扩展 market 计数（真实 stats 查询）。
+        assert_eq!(r.body["soft"]["market_agents"], 0);
+        assert_eq!(r.body["soft"]["market_tasks"], 0);
     }
 
     #[tokio::test]

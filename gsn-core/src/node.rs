@@ -1638,6 +1638,7 @@ async fn handle_erasure_api(
 }
 
 /// 渲染 Prometheus 文本 exposition（# HELP/#TYPE + 值）。纯函数，便于单测。
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_prometheus_metrics(
     uptime_seconds: f64,
     connected_peers: usize,
@@ -1645,6 +1646,10 @@ pub(crate) fn render_prometheus_metrics(
     s: &CrdtStats,
     crdt_keys: usize,
     crdt_size_bytes: usize,
+    market_agents: u64,
+    market_tasks: u64,
+    market_disputes: u64,
+    market_settled: u64,
 ) -> String {
     format!(
         "# HELP gsn_uptime_seconds 节点运行时长（秒）\n# TYPE gsn_uptime_seconds gauge\ngsn_uptime_seconds {uptime:.3}\n\
@@ -1654,7 +1659,11 @@ pub(crate) fn render_prometheus_metrics(
          # HELP gsn_crdt_size_bytes CRDT 估算状态字节数\n# TYPE gsn_crdt_size_bytes gauge\ngsn_crdt_size_bytes {size}\n\
          # HELP gsn_crdt_inbound_ops_total CRDT 入站同步报文累计数\n# TYPE gsn_crdt_inbound_ops_total counter\ngsn_crdt_inbound_ops_total {inbound}\n\
          # HELP gsn_crdt_applied_ops_total CRDT 实际应用的写操作累计数\n# TYPE gsn_crdt_applied_ops_total counter\ngsn_crdt_applied_ops_total {applied}\n\
-         # HELP gsn_crdt_dropped_capped_total CRDT 因达键数上限被丢弃的入站新键累计数\n# TYPE gsn_crdt_dropped_capped_total counter\ngsn_crdt_dropped_capped_total {dropped}\n",
+         # HELP gsn_crdt_dropped_capped_total CRDT 因达键数上限被丢弃的入站新键累计数\n# TYPE gsn_crdt_dropped_capped_total counter\ngsn_crdt_dropped_capped_total {dropped}\n\
+         # HELP gsn_market_agents_total 市场已注册智能体数\n# TYPE gsn_market_agents_total gauge\ngsn_market_agents_total {agents}\n\
+         # HELP gsn_market_tasks_total 市场任务总数\n# TYPE gsn_market_tasks_total gauge\ngsn_market_tasks_total {tasks}\n\
+         # HELP gsn_market_disputes_total 市场争议累计数\n# TYPE gsn_market_disputes_total counter\ngsn_market_disputes_total {disputes}\n\
+         # HELP gsn_market_settled_total 市场已结算任务累计数\n# TYPE gsn_market_settled_total counter\ngsn_market_settled_total {settled}\n",
         uptime = uptime_seconds,
         connected = connected_peers,
         routing = dht_routing_entries,
@@ -1663,6 +1672,10 @@ pub(crate) fn render_prometheus_metrics(
         inbound = s.inbound_ops,
         applied = s.applied_ops,
         dropped = s.dropped_capped,
+        agents = market_agents,
+        tasks = market_tasks,
+        disputes = market_disputes,
+        settled = market_settled,
     )
 }
 
@@ -2475,6 +2488,15 @@ async fn run_api_server(
             if method == "GET" && (path_part == "/metrics" || path_part == "/api/v1/metrics") {
                 let peer_info = fetch_peer_info(&peer_cmd_tx).await;
                 let uptime = start.elapsed().as_secs_f64();
+                let (m_agents, m_tasks, m_disputes, m_settled) = match market.stats().await {
+                    crate::api::market_actor::MarketResponse::Ok(v) => (
+                        v.get("agent_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                        v.get("task_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                        v.get("dispute_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                        v.get("settled_count").and_then(|x| x.as_u64()).unwrap_or(0),
+                    ),
+                    _ => (0, 0, 0, 0),
+                };
                 let body = render_prometheus_metrics(
                     uptime,
                     peer_info.as_ref().map(|i| i.connected).unwrap_or(0),
@@ -2482,6 +2504,10 @@ async fn run_api_server(
                     &crdt.stats(),
                     crdt.len(),
                     crdt.size_bytes(),
+                    m_agents,
+                    m_tasks,
+                    m_disputes,
+                    m_settled,
                 );
                 let resp =
                     http_response(200, "OK", body, "text/plain; version=0.0.4", &cors_headers);
@@ -3872,7 +3898,7 @@ mod crdt_wiring_tests {
             dropped_capped: 1,
             snapshot_seq: 4,
         };
-        let body = render_prometheus_metrics(12.5, 5, 7, &s, 9, 1024);
+        let body = render_prometheus_metrics(12.5, 5, 7, &s, 9, 1024, 11, 22, 33, 44);
         for name in [
             "gsn_uptime_seconds",
             "gsn_connected_peers",
@@ -3882,6 +3908,10 @@ mod crdt_wiring_tests {
             "gsn_crdt_inbound_ops_total",
             "gsn_crdt_applied_ops_total",
             "gsn_crdt_dropped_capped_total",
+            "gsn_market_agents_total",
+            "gsn_market_tasks_total",
+            "gsn_market_disputes_total",
+            "gsn_market_settled_total",
         ] {
             assert!(
                 body.contains(&format!("# TYPE {name}")),
@@ -3897,5 +3927,9 @@ mod crdt_wiring_tests {
         assert!(body.contains("gsn_crdt_inbound_ops_total 3"));
         assert!(body.contains("gsn_crdt_applied_ops_total 2"));
         assert!(body.contains("gsn_crdt_dropped_capped_total 1"));
+        assert!(body.contains("gsn_market_agents_total 11"));
+        assert!(body.contains("gsn_market_tasks_total 22"));
+        assert!(body.contains("gsn_market_disputes_total 33"));
+        assert!(body.contains("gsn_market_settled_total 44"));
     }
 }

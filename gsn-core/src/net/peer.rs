@@ -23,7 +23,11 @@ use libp2p::{
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
 
+pub use crate::net::dht_config::{DhtConfig, DhtConfigError, EclipseGuard, EclipseGuardConfig};
 pub use crate::net::gossip_config::{GossipConfig, GossipConfigError, GossipStormGuard};
+pub use crate::net::routing_persist::{
+    ensure_parent_dir, sanitize_entries, RoutingEntry, RoutingTableStore,
+};
 
 /// 网络行为组合
 #[derive(NetworkBehaviour)]
@@ -172,6 +176,10 @@ pub struct P2pPeer {
     gossip_dedup: GossipDedup,
     /// v3.9.16: 按主题滑动窗口风暴防护（去重之后、投递之前执行）。
     gossip_storm: GossipStormGuard,
+    /// v3.9.17: DHT K 桶参数（K 桶大小、查询超时、Eclipse 防护等）。
+    dht: DhtConfig,
+    /// v3.9.17: Eclipse 防护——限制单一 IP / 子网可登记进 kbucket 的来源数。
+    eclipse_guard: EclipseGuard,
 }
 
 impl P2pPeer {
@@ -210,15 +218,16 @@ impl P2pPeer {
 
     /// v3.9.16: 创建节点（可选自建 Relay 中继服务端，GossipSub 行为参数化）。
     ///
-    /// 与 `with_data_dir_relay` 完全一致，仅额外接受 `GossipConfig`。
-    /// 上层（daemon / 测试）可借此调整 mesh 目标、去重窗口与风暴防护参数。
-    pub async fn with_data_dir_relay_gossip(
+    /// 与 `with_data_dir_relay` 完全一致，额外接受 `GossipConfig` 与 `DhtConfig`。
+    /// 上层（daemon / 测试）可借此调整 mesh 目标、去重窗口、风暴防护与 DHT K 桶参数。
+    pub async fn with_data_dir_relay_gossip_dht(
         data_dir: &std::path::Path,
         relay_server: Option<relay::Config>,
         gossip: GossipConfig,
+        dht: DhtConfig,
     ) -> anyhow::Result<Self> {
         let local_key = load_or_create_identity_in(data_dir)?;
-        Self::with_identity_relay_gossip(local_key, relay_server, gossip).await
+        Self::with_identity_relay_gossip_dht(local_key, relay_server, gossip, dht).await
     }
 
     /// 用指定身份创建节点
@@ -231,17 +240,26 @@ impl P2pPeer {
         local_key: identity::Keypair,
         relay_server: Option<relay::Config>,
     ) -> anyhow::Result<Self> {
-        Self::with_identity_relay_gossip(local_key, relay_server, GossipConfig::default()).await
+        Self::with_identity_relay_gossip_dht(
+            local_key,
+            relay_server,
+            GossipConfig::default(),
+            DhtConfig::default(),
+        )
+        .await
     }
 
-    /// 用指定身份创建节点（可选自建 Relay 中继服务端，可参数化 GossipSub 行为）。
-    pub async fn with_identity_relay_gossip(
+    /// 用指定身份创建节点（可选自建 Relay 中继服务端，可参数化 GossipSub 与 DHT 行为）。
+    pub async fn with_identity_relay_gossip_dht(
         local_key: identity::Keypair,
         relay_server: Option<relay::Config>,
         gossip: GossipConfig,
+        dht: DhtConfig,
     ) -> anyhow::Result<Self> {
         // v3.9.16: 构造 Behaviour 前先校验参数，非法配置直接拒绝（fail-fast）。
         gossip.validate()?;
+        // v3.9.17: DHT 参数同样 fail-fast。
+        dht.validate()?;
         let peer_id = PeerId::from(local_key.public());
 
         let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
@@ -268,7 +286,15 @@ impl P2pPeer {
                 // Kademlia DHT（在 Config 上设置查询超时）
                 let store = MemoryStore::new(peer_id);
                 let mut kad_config = KadConfig::new(libp2p::StreamProtocol::new("/ipfs/kad/1.0.0"));
-                kad_config.set_query_timeout(Duration::from_secs(30));
+                // v3.9.17: K 桶加固——查询超时、K 桶插入开关与最大数据包由 DhtConfig 参数化。
+                kad_config.set_query_timeout(dht.query_timeout);
+                // 0=Manual（仅显式 add_address 入桶）/ >0=OnConnected（连接时自动入桶）。
+                kad_config.set_kbucket_inserts(if dht.kbucket_inserts > 0 {
+                    kad::BucketInserts::OnConnected
+                } else {
+                    kad::BucketInserts::Manual
+                });
+                kad_config.set_max_packet_size(dht.max_packet_size);
                 let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
                 // GossipSub —— v3.9.16: 行为参数由 GossipConfig 提供。
@@ -353,7 +379,7 @@ impl P2pPeer {
         // v2.5.5: 同时监听 QUIC/UDP（随机端口），节点对外具备 UDP/QUIC 地址，可用于打洞
         swarm.listen_on("/ip4/0.0.0.0/udp/0/quic-v1".parse()?)?;
 
-        Ok(Self {
+        let mut me = Self {
             peer_id,
             swarm,
             bootstrapped: Vec::new(),
@@ -361,7 +387,37 @@ impl P2pPeer {
             direct_peers: HashSet::new(),
             gossip_dedup: GossipDedup::new(gossip.dedup_capacity),
             gossip_storm: GossipStormGuard::from_config(&gossip),
-        })
+            dht: dht.clone(),
+            eclipse_guard: EclipseGuard::new(dht.eclipse.clone()),
+        };
+        // v3.9.17: 路由表回填——若配置了持久化路径，启动时把旧快照（经 K=8 卫生化）
+        // 逐条 add_address 进 kbucket，使节点重启后无需从零收敛 DHT。
+        if let Some(persist_path) = dht.routing_persist_path.clone() {
+            match RoutingTableStore::new(persist_path.clone()).load() {
+                Ok(raw) => {
+                    let entries = sanitize_entries(raw, 8);
+                    if !entries.is_empty() {
+                        for e in entries {
+                            for a in &e.addrs {
+                                if let Ok(pid) = e.peer_id.parse::<PeerId>() {
+                                    if let Ok(addr) = a.parse::<Multiaddr>() {
+                                        let _ = me
+                                            .swarm
+                                            .behaviour_mut()
+                                            .kademlia
+                                            .add_address(&pid, addr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(path = ?persist_path, err = %err, "dht: 路由表快照加载失败（忽略，从零自举）");
+                }
+            }
+        }
+        Ok(me)
     }
 
     /// v2.5.5: 在指定 UDP 端口监听 QUIC（与 TCP P2P 同端口，便于固定映射/打洞）
@@ -473,12 +529,46 @@ impl P2pPeer {
     /// `get_closest_peers` 无路由可走。这里在 ConnectionEstablished / Identify.Received
     /// 时调用。返回值（RoutingUpdate）可忽略，仅记 debug。
     pub fn add_kad_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
+        // v3.9.17: Eclipse 防护——超限来源（单 IP / 子网）保持连接但不登记进 kbucket。
+        if !self.eclipse_guard.accept(&addr) {
+            tracing::debug!(%peer_id, %addr, "dht: Eclipse 防护拒绝登记该来源（同 IP/子网已达上限）");
+            return;
+        }
         let update = self
             .swarm
             .behaviour_mut()
             .kademlia
             .add_address(&peer_id, addr.clone());
         tracing::debug!(%peer_id, %addr, ?update, "kademlia add_address");
+    }
+
+    /// v3.9.17: 导出路由表快照（peer id → 已知地址），用于持久化。
+    pub fn routing_table_snapshot(&mut self) -> Vec<RoutingEntry> {
+        let mut entries = Vec::new();
+        for bucket in self.swarm.behaviour_mut().kademlia.kbuckets() {
+            for pid in bucket.iter() {
+                let addrs: Vec<String> = pid.node.value.iter().map(|a| a.to_string()).collect();
+                if addrs.is_empty() {
+                    continue;
+                }
+                entries.push(RoutingEntry {
+                    peer_id: pid.node.key.preimage().to_string(),
+                    addrs,
+                });
+            }
+        }
+        entries
+    }
+
+    /// v3.9.17: 把当前路由表快照原子落盘。未配置持久化路径时静默返回 Ok。
+    pub fn persist_routing_table(&mut self) -> Result<(), String> {
+        let Some(path) = self.dht.routing_persist_path.clone() else {
+            return Ok(());
+        };
+        ensure_parent_dir(&path)?;
+        let store = RoutingTableStore::new(path);
+        let entries = self.routing_table_snapshot();
+        store.save(&entries)
     }
 
     /// P0-2: 查询 GossipDedup 是否首次见到该 message id（首次记录并返回 true=放行）。

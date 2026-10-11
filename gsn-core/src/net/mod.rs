@@ -6,6 +6,7 @@
 //! - [`proxy`] / [`pac`] / [`subscription`] / [`routing`] / [`probe`]（v3.9.14，
 //!   参照 v2rayN）：系统代理、本地 PAC 服务、节点订阅、路由规则引擎与连通性探测。
 
+pub mod dht_config;
 pub mod gossip_config;
 pub mod memory_dht;
 pub mod memory_gossip;
@@ -16,8 +17,10 @@ pub mod probe;
 pub mod proxy;
 pub mod root_seed;
 pub mod routing;
+pub mod routing_persist;
 pub mod subscription;
 
+pub use dht_config::{DhtConfig, DhtConfigError, EclipseGuard, EclipseGuardConfig};
 pub use gossip_config::{GossipConfig, GossipConfigError, GossipStormGuard};
 pub use memory_dht::InMemoryKademlia;
 pub use memory_gossip::InMemoryGossip;
@@ -32,6 +35,7 @@ pub use proxy::{
 };
 pub use root_seed::{RootSeedConfig, SeedMode};
 pub use routing::{ip_in_cidr, parse_rule_line, port_in_range, RouteAction, RouteRule, RouteSet};
+pub use routing_persist::{ensure_parent_dir, sanitize_entries, RoutingEntry, RoutingTableStore};
 pub use subscription::{
     decode_lines, parse_node_line, parse_nodes, SubscribedNode, SubscriptionEntry,
 };

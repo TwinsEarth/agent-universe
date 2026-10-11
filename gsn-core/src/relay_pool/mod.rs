@@ -27,6 +27,9 @@ pub const DAYS_PER_YEAR: f64 = 365.25;
 
 /// 默认同时在线的 relay 通道数（方案 4：多通道）
 pub const DEFAULT_PARALLEL_RELAYS: usize = 3;
+/// v3.9.18: relay 掉线/失败后的 failover 冷却窗口（秒）。
+/// 半死 relay 在冷却期内不会被反复重拨，避免连接抖动。
+pub const DEFAULT_FAILOVER_COOLDOWN_SECS: u64 = 60;
 
 // ───────────────────────── relay 分类 ─────────────────────────
 
@@ -142,26 +145,54 @@ pub fn capacity_snapshot(
 /// 从候选中按「健康 + 分类优先级」选择一个替换 relay，排除正在使用的节点。
 ///
 /// 优先级：专用 > 自有 > 第三方 > 通用；同类中优先 fail_count 低者。
+/// 为 v3.9.18 的薄包装：不启用冷却（空冷却表 + now=0），保持旧调用兼容。
 pub fn select_replacement(relays: &[StoredRelay], in_use: &HashSet<String>) -> Option<StoredRelay> {
-    let mut best: Option<&StoredRelay> = None;
-    for r in relays {
-        if !r.healthy || in_use.contains(&r.relay_id) {
-            continue;
-        }
-        let cls: RelayClass = RelayClass::from_wire(&r.class);
-        let better = match &best {
-            None => true,
-            Some(b) => {
-                let bcls: RelayClass = RelayClass::from_wire(&b.class);
-                cls.priority() < bcls.priority()
-                    || (cls.priority() == bcls.priority() && r.fail_count < b.fail_count)
+    select_replacement_cooled(relays, in_use, &std::collections::HashMap::new(), 0)
+}
+
+/// v3.9.18: 带 failover 冷却窗口的替换选择。
+///
+/// 规则（在原有「健康 + 不在 in_use + 分类优先级」基础上）：
+///   1. 冷却中的候选（`cooldown_until[id] > now_secs`）不参与本轮选择；
+///   2. 若剔除冷却后仍有候选，则只在非冷却候选中择优；
+///   3. 若全部候选都在冷却中，回退为在全部候选中择优（宁选劣化通道也不无中继）。
+pub fn select_replacement_cooled(
+    relays: &[StoredRelay],
+    in_use: &HashSet<String>,
+    cooldown_until: &std::collections::HashMap<String, u64>,
+    now_secs: u64,
+) -> Option<StoredRelay> {
+    fn pick<'a>(it: impl Iterator<Item = &'a StoredRelay>) -> Option<&'a StoredRelay> {
+        let mut best: Option<&StoredRelay> = None;
+        for r in it {
+            let cls: RelayClass = RelayClass::from_wire(&r.class);
+            let better = match &best {
+                None => true,
+                Some(b) => {
+                    let bcls: RelayClass = RelayClass::from_wire(&b.class);
+                    cls.priority() < bcls.priority()
+                        || (cls.priority() == bcls.priority() && r.fail_count < b.fail_count)
+                }
+            };
+            if better {
+                best = Some(r);
             }
-        };
-        if better {
-            best = Some(r);
         }
+        best
     }
-    best.cloned()
+
+    let eligible = relays
+        .iter()
+        .filter(|r| r.healthy && !in_use.contains(&r.relay_id));
+    let not_cooled: Vec<&StoredRelay> = eligible
+        .clone()
+        .filter(|r| cooldown_until.get(&r.relay_id).copied().unwrap_or(0) <= now_secs)
+        .collect();
+    if !not_cooled.is_empty() {
+        return pick(not_cooled.into_iter()).cloned();
+    }
+    // 全部候选都在冷却中 → 回退全部候选
+    pick(eligible).cloned()
 }
 
 /// 从健康 relay 中选出至多 `n` 个用于多通道同时在线（方案 4），
@@ -319,5 +350,96 @@ mod tests {
     #[test]
     fn test_missing_dedicated_seed_empty_pool() {
         assert!(missing_dedicated_seed(&[]));
+    }
+
+    // ─────── v3.9.18 failover 冷却窗口 ───────
+
+    #[test]
+    fn test_cooled_select_skips_cooldown_when_alternatives_exist() {
+        let relays = vec![
+            mk_relay("ded1", "dedicated", true, 0),
+            mk_relay("com1", "community", true, 0),
+        ];
+        let in_use = HashSet::new();
+        let mut cool = std::collections::HashMap::new();
+        cool.insert("ded1".to_string(), 1000); // ded1 冷却中（now=500）
+        let picked = select_replacement_cooled(&relays, &in_use, &cool, 500).unwrap();
+        assert_eq!(
+            picked.relay_id, "com1",
+            "冷却中的专用 relay 应被跳过，改选社区 relay"
+        );
+    }
+
+    #[test]
+    fn test_cooled_select_falls_back_when_all_cooled() {
+        let relays = vec![
+            mk_relay("ded1", "dedicated", true, 0),
+            mk_relay("com1", "community", true, 0),
+        ];
+        let in_use = HashSet::new();
+        let mut cool = std::collections::HashMap::new();
+        cool.insert("ded1".to_string(), 1000);
+        cool.insert("com1".to_string(), 1000);
+        // 全部冷却 → 回退选择（宁选劣化通道也不无中继），仍按优先级取 ded1
+        let picked = select_replacement_cooled(&relays, &in_use, &cool, 500).unwrap();
+        assert_eq!(picked.relay_id, "ded1");
+    }
+
+    #[test]
+    fn test_cooled_select_expired_cooldown_is_selectable() {
+        let relays = vec![
+            mk_relay("ded1", "dedicated", true, 0),
+            mk_relay("com1", "community", true, 0),
+        ];
+        let in_use = HashSet::new();
+        let mut cool = std::collections::HashMap::new();
+        cool.insert("ded1".to_string(), 499); // 冷却已过期（now=500）
+        let picked = select_replacement_cooled(&relays, &in_use, &cool, 500).unwrap();
+        assert_eq!(picked.relay_id, "ded1", "冷却过期后专用 relay 恢复优先");
+    }
+
+    #[test]
+    fn test_cooled_select_respects_priority_and_fail_count() {
+        // 同优先级下 fail_count 低的优先；dedicated 始终优先于 community
+        let relays = vec![
+            mk_relay("com_hi", "community", true, 9),
+            mk_relay("com_lo", "community", true, 1),
+            mk_relay("ded", "dedicated", true, 5),
+        ];
+        let in_use = HashSet::new();
+        let picked =
+            select_replacement_cooled(&relays, &in_use, &std::collections::HashMap::new(), 0)
+                .unwrap();
+        assert_eq!(picked.relay_id, "ded", "分类优先级优先于 fail_count");
+    }
+
+    #[test]
+    fn test_cooled_select_in_use_excluded() {
+        let relays = vec![
+            mk_relay("ded1", "dedicated", true, 0),
+            mk_relay("com1", "community", true, 0),
+        ];
+        let mut in_use = HashSet::new();
+        in_use.insert("com1".to_string());
+        let picked =
+            select_replacement_cooled(&relays, &in_use, &std::collections::HashMap::new(), 0)
+                .unwrap();
+        assert_eq!(picked.relay_id, "ded1");
+    }
+
+    #[test]
+    fn test_cooled_select_unhealthy_excluded() {
+        let relays = vec![
+            mk_relay("dead1", "dedicated", false, 0),
+            mk_relay("com1", "community", true, 0),
+        ];
+        let picked = select_replacement_cooled(
+            &relays,
+            &HashSet::new(),
+            &std::collections::HashMap::new(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(picked.relay_id, "com1", "不健康候选被排除");
     }
 }

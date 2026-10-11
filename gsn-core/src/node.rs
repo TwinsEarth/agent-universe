@@ -262,6 +262,14 @@ pub struct DaemonArgs {
     pub relay_max_circuits: usize,
     /// 中继服务端：最多 reservation 数。
     pub relay_max_reservations: usize,
+    /// v3.9.18: 并行在线的 relay 通道目标数（多冗余 failover，默认 3）。
+    pub parallel_relays: usize,
+    /// v3.9.18: relay 掉线/失败后的 failover 冷却窗口（秒，默认 60）。
+    pub relay_cooldown_secs: u64,
+    /// v3.9.18: 快速故障探测周期（秒，默认 300：probe 非健康候选并补齐通道）。
+    pub relay_probe_secs: u64,
+    /// v3.9.18: 全量 relay 巡检周期（秒，默认 3600）。
+    pub relay_maintenance_secs: u64,
 }
 
 impl Default for DaemonArgs {
@@ -277,6 +285,10 @@ impl Default for DaemonArgs {
             relay: Vec::new(),
             relay_max_circuits: 512,
             relay_max_reservations: 1024,
+            parallel_relays: crate::relay_pool::DEFAULT_PARALLEL_RELAYS,
+            relay_cooldown_secs: crate::relay_pool::DEFAULT_FAILOVER_COOLDOWN_SECS,
+            relay_probe_secs: 300,
+            relay_maintenance_secs: 3600,
         }
     }
 }
@@ -335,6 +347,10 @@ pub fn print_daemon_help() {
     println!("  --relay <addr>      启动即注入的自有/自建中继 multiaddr (可多个, 分类 dedicated)");
     println!("  --relay-max-circuits <n>   中继最多 circuit 数 (默认: 512)");
     println!("  --relay-max-reservations <n> 中继最多 reservation 数 (默认: 1024)");
+    println!("  --parallel-relays <n>         并行在线 relay 通道数 (默认: 3, 多冗余 failover)");
+    println!("  --relay-cooldown <secs>       relay 掉线后 failover 冷却秒数 (默认: 60)");
+    println!("  --relay-probe <secs>          快速故障探测周期秒数 (默认: 300)");
+    println!("  --relay-maintenance <secs>    全量 relay 巡检周期秒数 (默认: 3600)");
     println!("  --help              显示帮助");
 }
 
@@ -392,6 +408,30 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                 d.relay_max_reservations = require_value(args, i, "--relay-max-reservations")
                     .parse()
                     .unwrap_or(1024);
+                i += 2;
+            }
+            "--parallel-relays" => {
+                d.parallel_relays = require_value(args, i, "--parallel-relays")
+                    .parse()
+                    .unwrap_or(crate::relay_pool::DEFAULT_PARALLEL_RELAYS);
+                i += 2;
+            }
+            "--relay-cooldown" => {
+                d.relay_cooldown_secs = require_value(args, i, "--relay-cooldown")
+                    .parse()
+                    .unwrap_or(crate::relay_pool::DEFAULT_FAILOVER_COOLDOWN_SECS);
+                i += 2;
+            }
+            "--relay-probe" => {
+                d.relay_probe_secs = require_value(args, i, "--relay-probe")
+                    .parse()
+                    .unwrap_or(300);
+                i += 2;
+            }
+            "--relay-maintenance" => {
+                d.relay_maintenance_secs = require_value(args, i, "--relay-maintenance")
+                    .parse()
+                    .unwrap_or(3600);
                 i += 2;
             }
             "--version" | "-V" => {
@@ -485,11 +525,28 @@ pub async fn run_healthcheck_now() -> i32 {
 
 // ───────────────────────── swarm actor ─────────────────────────
 
+/// v3.9.18: Relay 多冗余 failover 策略（并行通道数 / 冷却窗口 / 巡检周期）。
+///
+/// 由 `DaemonArgs` 解析得到；缺省值即历史行为（并行 3 通道、无冷却、
+/// 每小时全量巡检），保证升级后默认行为与 v3.9.17 一致。
+#[derive(Debug, Clone, Copy)]
+pub struct RelayPolicy {
+    /// 并行在线的 relay 通道目标数。
+    pub parallel_relays: usize,
+    /// relay 掉线/失败后的 failover 冷却窗口（秒）；0 表示不冷却（旧行为）。
+    pub cooldown_secs: u64,
+    /// 快速故障探测周期（秒）：probe 非健康候选并补齐通道。
+    pub probe_secs: u64,
+    /// 全量 relay 巡检周期（秒）。
+    pub maintenance_secs: u64,
+}
+
 async fn run_swarm_actor(
     mut peer: P2pPeer,
     mut cmd_rx: mpsc::Receiver<PeerCommand>,
     store: Arc<PersistentStore>,
     inbound_tx: mpsc::Sender<InboundGossipMessage>,
+    policy: RelayPolicy,
 ) {
     // 周期性驱动网络栈：Kademlia 路由刷新、AutoNAT 重测、dnsaddr 解析与连接
     // 状态机都依赖被反复 poll；select! 在命令到达时会取消 next_event future，
@@ -517,6 +574,10 @@ async fn run_swarm_actor(
     let mut active_relay_addrs: HashMap<String, String> = HashMap::new();
     let mut pending_probes: HashMap<PeerId, oneshot::Sender<Result<bool, String>>> = HashMap::new();
     let mut connecting: HashSet<PeerId> = HashSet::new();
+    // v3.9.18: failover 冷却——relay_id → 冷却截止的 unix 秒。
+    // 掉线/失败后进入冷却，避免「半死」relay 被反复重拨造成抖动；
+    // 冷却表为内存态（进程重启自然清零，重启后重新评估各 relay）。
+    let mut failover_cooldowns: HashMap<String, u64> = HashMap::new();
     // 跨节点 DHT 查找：QueryId → 等待结果的回调（在 kad GetClosestPeers 结果
     // 事件到达时 resolve）。
     let mut pending_finds: HashMap<
@@ -536,9 +597,22 @@ async fn run_swarm_actor(
                     &mut peer, &event, &store,
                     &mut active_relay_addrs, &mut pending_probes, &mut connecting,
                     &inbound_tx, &mut pending_finds,
+                    &mut failover_cooldowns, policy.cooldown_secs,
                 );
                 if need_ensure {
-                    let held = ensure_channels(&mut peer, &store, &mut active_relay_addrs, &mut connecting);
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let held = ensure_channels(
+                        &mut peer,
+                        &store,
+                        &mut active_relay_addrs,
+                        &mut connecting,
+                        &failover_cooldowns,
+                        now,
+                        policy.parallel_relays,
+                    );
                     eprintln!("🔁 自动切换后当前通道: {:?}", held);
                 }
             }
@@ -710,6 +784,8 @@ fn process_swarm_event(
     connecting: &mut HashSet<PeerId>,
     inbound_tx: &mpsc::Sender<InboundGossipMessage>,
     pending_finds: &mut HashMap<libp2p::kad::QueryId, oneshot::Sender<Result<Vec<String>, String>>>,
+    cooldown_until: &mut HashMap<String, u64>,
+    cooldown_secs: u64,
 ) -> bool {
     use libp2p::swarm::SwarmEvent::*;
     let mut need_ensure = false;
@@ -742,6 +818,13 @@ fn process_swarm_event(
                     log_relay_persist_err("mark_relay_failed", &id, &e);
                 }
                 eprintln!("🔌 中继通道掉线 {}，准备自动切换", id);
+                if cooldown_secs > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    cooldown_until.insert(id.clone(), now + cooldown_secs);
+                }
                 need_ensure = true;
             }
         }
@@ -756,6 +839,13 @@ fn process_swarm_event(
                     log_relay_persist_err("mark_relay_failed", &id, &e);
                 }
                 eprintln!("❌ relay {} 连接失败，准备自动切换", id);
+                if cooldown_secs > 0 {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    cooldown_until.insert(id.clone(), now + cooldown_secs);
+                }
                 need_ensure = true;
             }
         }
@@ -897,8 +987,10 @@ fn ensure_channels(
     store: &PersistentStore,
     active: &mut HashMap<String, String>,
     connecting: &mut HashSet<PeerId>,
+    cooldown_until: &HashMap<String, u64>,
+    now_secs: u64,
+    target: usize,
 ) -> Vec<String> {
-    let target = DEFAULT_PARALLEL_RELAYS;
     let mut held: HashSet<String> = peer.active_relay_ids().into_iter().collect();
     let relays = store.load_relays().unwrap_or_default();
     let mut in_use = held.clone();
@@ -909,7 +1001,7 @@ fn ensure_channels(
     let mut guard = 0;
     while held.len() < target && guard < 20 {
         guard += 1;
-        match relay_pool::select_replacement(&relays, &in_use) {
+        match relay_pool::select_replacement_cooled(&relays, &in_use, cooldown_until, now_secs) {
             Some(r) => match peer.listen_via_relay(&r.multiaddr) {
                 Ok(_) => {
                     eprintln!("🛰️ 发起 relay 通道: {}", r.relay_id);
@@ -1262,7 +1354,19 @@ fn handle_peer_command(
             let _ = reply.send(Ok(cap.effective_cap));
         }
         PeerCommand::EnsureChannels { reply } => {
-            let held = ensure_channels(peer, store, active, connecting);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let held = ensure_channels(
+                peer,
+                store,
+                active,
+                connecting,
+                &HashMap::new(),
+                now,
+                DEFAULT_PARALLEL_RELAYS,
+            );
             let _ = reply.send(held);
         }
         PeerCommand::DiscoverRelays => {
@@ -3138,11 +3242,18 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // 本节点 PeerId 字符串（peer 随后 move 进 swarm actor，这里先捕获）。
     let self_peer_id = peer.peer_id.to_string();
 
+    let relay_policy = RelayPolicy {
+        parallel_relays: args.parallel_relays,
+        cooldown_secs: args.relay_cooldown_secs,
+        probe_secs: args.relay_probe_secs,
+        maintenance_secs: args.relay_maintenance_secs,
+    };
     tokio::spawn(run_swarm_actor(
         peer,
         peer_cmd_rx,
         store.clone(),
         inbound_tx,
+        relay_policy,
     ));
 
     // 应用层消费者：除既有 info 日志外，把 CRDT_TOPIC 报文路由到 LWW 存储。
@@ -3362,7 +3473,11 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         });
     }
 
-    // v2.5.5: 启动后初始化维护（等 8s 让 bootstrap 连接），随后每小时巡检一轮
+    // v3.9.18: Relay 多冗余 failover 巡检。
+    //   - 启动 8s 后立即跑一轮（bootstrap 连接已建立）；
+    //   - 快速故障探测周期（默认 300s）：probe 非健康候选 + 补齐通道，
+    //     缩短「relay 恢复后重新入池」的等待；
+    //   - 全量巡检周期（默认 3600s）：发现 + 探测 + 补齐 + 清理 dead。
     {
         let (s, t) = (store.clone(), peer_cmd_tx.clone());
         tokio::spawn(async move {
@@ -3371,9 +3486,25 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         });
     }
     {
+        let probe_secs = args.relay_probe_secs.max(30);
         let (s, t) = (store.clone(), peer_cmd_tx.clone());
         tokio::spawn(async move {
-            let mut hourly = tokio::time::interval(std::time::Duration::from_secs(3600));
+            let mut probe = tokio::time::interval(std::time::Duration::from_secs(probe_secs));
+            probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                probe.tick().await;
+                run_relay_maintenance(s.clone(), t.clone()).await;
+            }
+        });
+    }
+    {
+        let maint_secs = args
+            .relay_maintenance_secs
+            .max(args.relay_probe_secs.max(30) * 2);
+        let (s, t) = (store.clone(), peer_cmd_tx.clone());
+        tokio::spawn(async move {
+            let mut hourly = tokio::time::interval(std::time::Duration::from_secs(maint_secs));
+            hourly.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             hourly.tick().await; // 首次立即触发跳过（已由启动维护完成）
             loop {
                 hourly.tick().await;

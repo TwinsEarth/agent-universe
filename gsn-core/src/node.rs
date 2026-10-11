@@ -13,7 +13,7 @@ use crate::erasure::wire::{GossipShardTransport, ShardWire, SHARD_TOPIC};
 use crate::erasure::ErasureCoder;
 use crate::net::peer::{extract_relay_peer_id, InboundGossipMessage};
 use crate::net::P2pPeer;
-use crate::relay_pool::{self, RelayClass, DEFAULT_PARALLEL_RELAYS};
+use crate::relay_pool::{self, missing_dedicated_seed, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
 use crate::storage::{PersistentStore, StoredRelay};
 use crate::NodeMode;
@@ -2649,6 +2649,40 @@ const COMMUNITY_RELAY_CANDIDATES: &[&str] = &[
     "/ip4/23.145.40.189/tcp/4001",
 ];
 
+/// v3.9.15: 自建 Dedicated relay 种子（最高优先级通道）。
+///
+/// Vultr 云服务器 202.182.123.154 上部署的自建 Circuit Relay v2 中继服务端
+/// （4001 端口，已通过闸门③ Mac↔Windows 跨公网互连实测）。分类为
+/// `dedicated`（RelayClass::Dedicated，优先级 0），写入 relay 池后，
+/// `ensure_channels` / `select_replacement` 会优先选用，作为跨网络互连的
+/// 信任锚基础设施。`GSN_DISABLE_PUBLIC_RELAY=1` 时同样跳过（本地纯净组网）。
+const DEDICATED_RELAY_SEEDS: &[(&str, &str)] = &[(
+    "12D3KooWC2wm4Ru25bJDqwCfaq2Kedxc695XRjF5rhhU4aqceheq",
+    "/ip4/202.182.123.154/tcp/4001/p2p/12D3KooWC2wm4Ru25bJDqwCfaq2Kedxc695XRjF5rhhU4aqceheq",
+)];
+
+/// v3.9.15: 把自建 Dedicated 种子写入 relay 池（幂等 upsert）。
+fn upsert_dedicated_seeds(store: &PersistentStore) {
+    for (seed_id, seed_addr) in DEDICATED_RELAY_SEEDS {
+        let relay = StoredRelay {
+            relay_id: (*seed_id).to_string(),
+            multiaddr: (*seed_addr).to_string(),
+            class: RelayClass::Dedicated.as_str().to_string(),
+            status: "active".to_string(),
+            healthy: true,
+            fail_count: 0,
+            limit_sec: 120,
+            data_bytes: 131072,
+            last_check: now_iso(),
+            created_at: now_iso(),
+        };
+        match store.upsert_relay(&relay) {
+            Ok(_) => println!("✅ 自建 Dedicated relay 种子已写入（{}）", seed_addr),
+            Err(e) => eprintln!("⚠️ 自建 Dedicated relay 种子写入失败: {}", e),
+        }
+    }
+}
+
 /// v2.5.5: 初始化 relay 池——元数据（start_time/manual_bonus）+ 种子 relay
 fn init_relay_pool(store: &PersistentStore) {
     if store
@@ -2679,6 +2713,9 @@ fn init_relay_pool(store: &PersistentStore) {
             println!("⏭️ 本地模式：不写入种子 relay（relay 池为空，仅本地组网）");
             return;
         }
+        // v3.9.15: 先写自建 Dedicated 种子（优先级最高，跨网络互连信任锚），
+        // 再写社区种子——保证 ensure_channels 首选自建中继。
+        upsert_dedicated_seeds(store);
         // 已真机验证的社区 relay（kubo，hop+stop+dcutr，reservation 120s/128KB）
         let seed_id = "12D3KooWJFBbD3czz9bpC4escx5izFKwaBj87XJ5r1rUpzPUu4WE";
         let seed = StoredRelay {
@@ -2694,10 +2731,22 @@ fn init_relay_pool(store: &PersistentStore) {
             created_at: now_iso(),
         };
         match store.upsert_relay(&seed) {
-            Ok(_) => println!("✅ Relay 池已初始化（种子 relay 148.113.166.44，初始上限 1 万）"),
+            Ok(_) => println!(
+                "✅ Relay 池已初始化（自建 Dedicated + 社区种子 148.113.166.44，初始上限 1 万）"
+            ),
             Err(e) => eprintln!("⚠️ 种子 relay 写入失败: {}", e),
         }
     } else {
+        // v3.9.15: 池已存在但缺失自建 Dedicated 种子（如旧版本建的池）→ 补写，
+        // 保证升级后跨网络互连仍优先走自建中继。
+        match store.load_relays() {
+            Ok(relays) if missing_dedicated_seed(&relays) => {
+                println!("🔧 检测到 relay 池缺少自建 Dedicated 种子，补写…");
+                upsert_dedicated_seeds(store);
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("⚠️ 读取 relay 池检查 Dedicated 种子失败: {}", e),
+        }
         let cap = current_capacity(store);
         println!(
             "✅ Relay 池已存在（{} 节点 / 有效上限 {}）",

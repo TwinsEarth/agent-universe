@@ -1,12 +1,18 @@
 //! 真实 libp2p 对等节点
 //!
 //! 使用 libp2p 0.54 实现：TCP + Noise 加密 + Yamux 多路复用 + Kademlia DHT + GossipSub
+//! v3.9.16: GossipSub 行为参数经 [`crate::net::gossip_config::GossipConfig`]
+//! 参数化（mesh / 历史 / 心跳 / 转发 / 去重窗口），入站投递叠加按主题
+//! 滑动窗口风暴防护（`GossipStormGuard`）。
 
 use futures::StreamExt;
 use libp2p::core::transport::ListenerId;
 use libp2p::{
     autonat, dcutr,
-    gossipsub::{self, ConfigBuilder as GossipsubConfigBuilder, IdentTopic, MessageAuthenticity},
+    gossipsub::{
+        self, ConfigBuilder as GossipsubConfigBuilder, IdentTopic, MessageAuthenticity,
+        ValidationMode as GossipsubValidationMode,
+    },
     identify::{self, Config as IdentifyConfig},
     identity,
     kad::{self, store::MemoryStore, Config as KadConfig, Quorum, Record, RecordKey},
@@ -16,6 +22,8 @@ use libp2p::{
 };
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
+
+pub use crate::net::gossip_config::{GossipConfig, GossipConfigError, GossipStormGuard};
 
 /// 网络行为组合
 #[derive(NetworkBehaviour)]
@@ -162,6 +170,8 @@ pub struct P2pPeer {
     direct_peers: HashSet<PeerId>,
     /// P0-2: GossipSub 入站消息去重（按 message id）。
     gossip_dedup: GossipDedup,
+    /// v3.9.16: 按主题滑动窗口风暴防护（去重之后、投递之前执行）。
+    gossip_storm: GossipStormGuard,
 }
 
 impl P2pPeer {
@@ -198,6 +208,19 @@ impl P2pPeer {
         Self::with_identity_relay(local_key, relay_server).await
     }
 
+    /// v3.9.16: 创建节点（可选自建 Relay 中继服务端，GossipSub 行为参数化）。
+    ///
+    /// 与 `with_data_dir_relay` 完全一致，仅额外接受 `GossipConfig`。
+    /// 上层（daemon / 测试）可借此调整 mesh 目标、去重窗口与风暴防护参数。
+    pub async fn with_data_dir_relay_gossip(
+        data_dir: &std::path::Path,
+        relay_server: Option<relay::Config>,
+        gossip: GossipConfig,
+    ) -> anyhow::Result<Self> {
+        let local_key = load_or_create_identity_in(data_dir)?;
+        Self::with_identity_relay_gossip(local_key, relay_server, gossip).await
+    }
+
     /// 用指定身份创建节点
     pub async fn with_identity(local_key: identity::Keypair) -> anyhow::Result<Self> {
         Self::with_identity_relay(local_key, None).await
@@ -208,6 +231,17 @@ impl P2pPeer {
         local_key: identity::Keypair,
         relay_server: Option<relay::Config>,
     ) -> anyhow::Result<Self> {
+        Self::with_identity_relay_gossip(local_key, relay_server, GossipConfig::default()).await
+    }
+
+    /// 用指定身份创建节点（可选自建 Relay 中继服务端，可参数化 GossipSub 行为）。
+    pub async fn with_identity_relay_gossip(
+        local_key: identity::Keypair,
+        relay_server: Option<relay::Config>,
+        gossip: GossipConfig,
+    ) -> anyhow::Result<Self> {
+        // v3.9.16: 构造 Behaviour 前先校验参数，非法配置直接拒绝（fail-fast）。
+        gossip.validate()?;
         let peer_id = PeerId::from(local_key.public());
 
         let mut swarm = SwarmBuilder::with_existing_identity(local_key.clone())
@@ -237,9 +271,34 @@ impl P2pPeer {
                 kad_config.set_query_timeout(Duration::from_secs(30));
                 let kademlia = kad::Behaviour::with_config(peer_id, store, kad_config);
 
-                // GossipSub
+                // GossipSub —— v3.9.16: 行为参数由 GossipConfig 提供。
+                // mesh 三参数先经 validate() 保证 low <= n <= high；验证模式
+                // 从库面枚举映射到 libp2p ValidationMode。
+                let validation_mode = match gossip.validation_mode {
+                    crate::net::gossip_config::GossipValidationMode::Strict => {
+                        GossipsubValidationMode::Strict
+                    }
+                    crate::net::gossip_config::GossipValidationMode::Anonymous => {
+                        GossipsubValidationMode::Anonymous
+                    }
+                    crate::net::gossip_config::GossipValidationMode::Permissive => {
+                        GossipsubValidationMode::Permissive
+                    }
+                };
                 let gossipsub_config = GossipsubConfigBuilder::default()
-                    .heartbeat_interval(Duration::from_secs(10))
+                    .heartbeat_interval(gossip.heartbeat_interval)
+                    .mesh_n(gossip.mesh_n)
+                    .mesh_n_low(gossip.mesh_n_low)
+                    .mesh_n_high(gossip.mesh_n_high)
+                    .gossip_lazy(gossip.gossip_lazy)
+                    .gossip_factor(gossip.gossip_factor)
+                    .history_length(gossip.history_length)
+                    .history_gossip(gossip.history_gossip)
+                    .fanout_ttl(gossip.fanout_ttl)
+                    .max_transmit_size(gossip.max_transmit_size)
+                    .validation_mode(validation_mode)
+                    .prune_peers(gossip.prune_peers)
+                    .opportunistic_graft_ticks(gossip.opportunistic_graft_ticks)
                     .build()
                     .map_err(|e| anyhow::anyhow!("invalid gossipsub config: {e}"))?;
                 let gossipsub = gossipsub::Behaviour::new(
@@ -300,7 +359,8 @@ impl P2pPeer {
             bootstrapped: Vec::new(),
             relay_listeners: HashMap::new(),
             direct_peers: HashSet::new(),
-            gossip_dedup: GossipDedup::new(4096),
+            gossip_dedup: GossipDedup::new(gossip.dedup_capacity),
+            gossip_storm: GossipStormGuard::from_config(&gossip),
         })
     }
 
@@ -424,6 +484,12 @@ impl P2pPeer {
     /// P0-2: 查询 GossipDedup 是否首次见到该 message id（首次记录并返回 true=放行）。
     pub fn gossip_dedup_first_seen(&mut self, message_id: &gossipsub::MessageId) -> bool {
         self.gossip_dedup.first_seen(&message_id.0)
+    }
+
+    /// v3.9.16: 按主题滑动窗口风暴防护。去重放行后调用；返回 false 表示
+    /// 该主题当前窗口已超限，应丢弃（防御单主题突发风暴）。
+    pub fn gossip_storm_allow(&mut self, topic: &str) -> bool {
+        self.gossip_storm.allow(topic)
     }
 
     /// v2.5.5: 触发一次 DHT 随机节点发现（随机 Peer 查 closest peers），

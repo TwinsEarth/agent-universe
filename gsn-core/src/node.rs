@@ -832,7 +832,8 @@ fn process_swarm_event(
                         eprintln!("⛏️ DCUtR 直连失败（继续走 relay）: {}", e.remote_peer_id);
                     }
                 }
-                // P0-2: 入站 GossipSub 消息——先按 message id 去重，首次放行投递到应用层。
+                // P0-2: 入站 GossipSub 消息——先按 message id 去重，首次放行后再经
+                // v3.9.16 主题级风暴防护（滑动窗口限速），最终投递到应用层。
                 // （libp2p 0.54 gossipsub Event::Message 字段为 propagation_source/message_id/message）
                 Gossipsub(libp2p::gossipsub::Event::Message {
                     propagation_source,
@@ -840,13 +841,21 @@ fn process_swarm_event(
                     message,
                 }) => {
                     if peer.gossip_dedup_first_seen(message_id) {
-                        let msg = InboundGossipMessage {
-                            topic: message.topic.as_str().to_string(),
-                            source: propagation_source.to_string(),
-                            data: message.data.clone(),
-                        };
-                        if inbound_tx.try_send(msg).is_err() {
-                            tracing::warn!("inbound gossip channel 已满/已关闭，丢弃消息");
+                        let topic = message.topic.as_str().to_string();
+                        if peer.gossip_storm_allow(&topic) {
+                            let msg = InboundGossipMessage {
+                                topic,
+                                source: propagation_source.to_string(),
+                                data: message.data.clone(),
+                            };
+                            if inbound_tx.try_send(msg).is_err() {
+                                tracing::warn!("inbound gossip channel 已满/已关闭，丢弃消息");
+                            }
+                        } else {
+                            tracing::warn!(
+                                topic = %topic,
+                                "主题风暴防护触发：当前窗口已超限，丢弃消息"
+                            );
                         }
                     } else {
                         tracing::debug!(%message_id, "重复 gossip 消息，已丢弃");

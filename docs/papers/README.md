@@ -22,12 +22,12 @@
 | 编号 | 标题 | 来源卷 | 语言 | 证据等级 |
 |---|---|---|---|---|
 | A0 | 三篇范本逆向拆解与五轮思维演练报告 | v7.5.0 | 中文 | cpu-proto |
-| P0 | 空间结构本身就是智能 | v7.5.0 | 中文 | cpu-proto |
-| P0b | 结构加规模，万物皆可 Scaling Laws | v7.5.0 | 中文 | cpu-proto |
-| P0c | 元认知：AI 自我认知与边界校准的工程化（全中文版） | v7.5.0 三语版 | 中文 | cpu-proto |
+| P0 | 空间结构本身就是智能 | v7.6.1 | 中文 | cpu-proto |
+| P0b | 结构加规模，万物皆可 Scaling Laws | v7.6.2 | 中文 | cpu-proto |
+| P0c | 元认知：AI 自我认知与边界校准的工程化（全中文版） | v7.6.3 | 中文 | cpu-proto |
 | P0c | 元认知（中英双语对照版） | v7.5.0 三语版 | 中英 | cpu-proto |
 | P0c | Metacognition（Full-English） | v7.5.0 三语版 | 英文 | cpu-proto |
-| P0d | 为什么群体智能，才是实现 AGI 的关键 | 2026-09-24 新增 | 中文 | cpu-proto |
+| P0d | 为什么群体智能，才是实现 AGI 的关键 | 2026-10-11 完善（v7.6.4） | 中文 | cpu-proto |
 | P1 | 分层混合拓扑的协调复杂度百万级外推 | v7.5.0 | 中文 | cpu-proto |
 | P2 | 多智能体停止决策的 BFT-lite 安全性验证 | v7.5.0 | 中文 | cpu-proto |
 | P3 | 故障熔断治理对 Agent 矩阵收口率的因果效应 RCT | v7.5.0 | 中文 | cpu-proto |

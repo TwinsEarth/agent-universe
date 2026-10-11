@@ -12,7 +12,7 @@ use crate::erasure::distributed::{
 use crate::erasure::wire::{GossipShardTransport, ShardWire, SHARD_TOPIC};
 use crate::erasure::ErasureCoder;
 use crate::net::peer::{extract_relay_peer_id, InboundGossipMessage};
-use crate::net::P2pPeer;
+use crate::net::{DhtConfig, GossipConfig, P2pPeer};
 use crate::relay_pool::{self, missing_dedicated_seed, RelayClass, DEFAULT_PARALLEL_RELAYS};
 use crate::sandbox::SandboxManager;
 use crate::storage::{PersistentStore, StoredRelay};
@@ -1100,7 +1100,13 @@ fn handle_peer_command(
             }
         }
         PeerCommand::BootstrapDht => match peer.dht_bootstrap() {
-            Ok(()) => eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）"),
+            Ok(()) => {
+                eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）");
+                // v3.9.17: 自举后立即把路由表快照落盘（供重启后回填，缩短冷启动收敛）。
+                if let Err(e) = peer.persist_routing_table() {
+                    eprintln!("⚠️ 路由表持久化失败: {e}");
+                }
+            }
             Err(e) => eprintln!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
         },
         PeerCommand::AddBootstrap { addr, reply } => {
@@ -2973,10 +2979,25 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     } else {
         None
     };
+    // v3.9.17: DHT 路由持久化——路由表快照落在 data_dir/dht-routing.json，
+    // 重启后回填 kbucket 再自举，缩短冷启动收敛；Eclipse 防护随默认配置开启。
+    let dht_cfg = DhtConfig::default().with_routing_persist(args.data_dir.join("dht-routing.json"));
     let mut peer = if relay_cfg.is_some() {
-        P2pPeer::with_data_dir_relay(&args.data_dir, relay_cfg).await?
+        P2pPeer::with_data_dir_relay_gossip_dht(
+            &args.data_dir,
+            relay_cfg,
+            GossipConfig::default(),
+            dht_cfg.clone(),
+        )
+        .await?
     } else {
-        P2pPeer::with_data_dir(&args.data_dir).await?
+        P2pPeer::with_data_dir_relay_gossip_dht(
+            &args.data_dir,
+            None,
+            GossipConfig::default(),
+            dht_cfg,
+        )
+        .await?
     };
     match peer.listen_on_port(args.port) {
         Ok(_) => println!("✅ libp2p P2P 端口: {}", args.port),
@@ -3059,6 +3080,10 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // 注册 kad，DHT 无法在节点间扩散。轻/边缘/浏览器节点保持 Client（只查询）。
     if matches!(node_mode, NodeMode::Archive | NodeMode::Full) {
         peer.set_kad_server_mode();
+    }
+    // v3.9.17: 启动即持久化一次路由表（把启动时回填的旧邻居先落盘）。
+    if let Err(e) = peer.persist_routing_table() {
+        eprintln!("⚠️ 启动时路由表持久化失败: {e}");
     }
     // P0-2: 入站 GossipSub 消息通道（swarm actor 投递 → 此处消费，后续可路由到 market）
     let (inbound_tx, mut inbound_rx) = mpsc::channel::<InboundGossipMessage>(1024);

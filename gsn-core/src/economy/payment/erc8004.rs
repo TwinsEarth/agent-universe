@@ -477,6 +477,9 @@ impl ValidationTally {
                     .ok_or(Erc8004Error::ArithmeticOverflow)?;
             }
         }
+        // 注意：tally 只按 verdict 双向累计权重，`method`（StakeRerun/TeeAttestation/Zkml）
+        // 是确定性不变量——不同验证方法对聚合结果无影响，仅由 record_vote_checked 的
+        // 身份/证据校验把关。此语义由 `method_does_not_affect_tally` 单测固定。
         let _ = vote.method;
         Ok(())
     }
@@ -778,6 +781,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.decide().unwrap(), ValidationDecision::ConfirmedValid);
+    }
+
+    #[test]
+    fn method_does_not_affect_tally() {
+        // 契约不变量：tally 只按 verdict 累计，method 对聚合结果无影响（三种验证方法
+        // 投出相同 verdict/weight 必须产生完全相同的 tally 与裁决）。
+        let tally_for = |method: ValidationMethod| {
+            let mut t = ValidationTally::new();
+            t.record_vote(ValidationVote {
+                validator: 1,
+                method,
+                verdict: ValidationVerdict::Valid,
+                weight: 2,
+            })
+            .unwrap();
+            t.record_vote(ValidationVote {
+                validator: 2,
+                method,
+                verdict: ValidationVerdict::Invalid,
+                weight: 1,
+            })
+            .unwrap();
+            t
+        };
+        let stake = tally_for(ValidationMethod::StakeRerun);
+        let tee = tally_for(ValidationMethod::TeeAttestation);
+        let zkml = tally_for(ValidationMethod::Zkml);
+        assert_eq!(stake, tee);
+        assert_eq!(stake, zkml);
+        assert_eq!(stake.valid_weight, 2);
+        assert_eq!(stake.invalid_weight, 1);
+        assert_eq!(stake.total_weight, 3);
+        assert_eq!(stake.decide().unwrap(), ValidationDecision::ConfirmedValid);
     }
 
     #[test]

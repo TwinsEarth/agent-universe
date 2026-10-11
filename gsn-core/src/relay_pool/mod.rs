@@ -177,6 +177,17 @@ pub fn select_parallel(relays: &[StoredRelay], n: usize) -> Vec<StoredRelay> {
     healthy
 }
 
+/// v3.9.15: 判断 relay 池是否缺失「自建 Dedicated」种子（需要补写）。
+///
+/// 自建中继（Dedicated，优先级最高）是本网络的信任锚基础设施；即使池中已有
+/// 其它社区/第三方 relay，只要没有任何 Dedicated 节点，也应补写，保证
+/// ensure_channels 始终有最高优先级通道可选。
+pub fn missing_dedicated_seed(relays: &[StoredRelay]) -> bool {
+    !relays
+        .iter()
+        .any(|r| RelayClass::from_wire(&r.class) == RelayClass::Dedicated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,5 +294,30 @@ mod tests {
             .map(|i| mk_relay(&format!("r{}", i), "general", true, 0))
             .collect();
         assert_eq!(select_parallel(&relays, 3).len(), 3);
+    }
+
+    #[test]
+    fn test_missing_dedicated_seed_detects_absence() {
+        // 只有第三方/通用 → 判定为缺失
+        let relays = vec![
+            mk_relay("third", "third_party", true, 0),
+            mk_relay("gen", "general", true, 0),
+        ];
+        assert!(missing_dedicated_seed(&relays));
+    }
+
+    #[test]
+    fn test_missing_dedicated_seed_false_when_present() {
+        // 含自建 Dedicated → 不缺失
+        let relays = vec![
+            mk_relay("ded", "dedicated", true, 0),
+            mk_relay("third", "third_party", true, 0),
+        ];
+        assert!(!missing_dedicated_seed(&relays));
+    }
+
+    #[test]
+    fn test_missing_dedicated_seed_empty_pool() {
+        assert!(missing_dedicated_seed(&[]));
     }
 }

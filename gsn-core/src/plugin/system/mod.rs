@@ -1209,6 +1209,9 @@ mod tests {
                             listen_addrs: vec!["/ip4/0.0.0.0/tcp/4001".into()],
                             bootstrapped: vec![],
                             nat_status: "Public".into(),
+                            relay_channels: 2,
+                            dcutr_direct: 1,
+                            gossip_dedup_capacity: 4096,
                         });
                     }
                     PeerCommand::ListPeers { reply } => {

@@ -1,4 +1,4 @@
-// Agent Universe v3.9.15 — 桌面工作台 Tauri 壳
+// Agent Universe v3.9.16 — 桌面工作台 Tauri 壳
 // 架构：Tauri 主进程（Rust）管理 gsn-daemon（本地后端，HTTP :4002），
 // 前端为工作台 SPA。提供单实例、系统托盘、关闭隐藏、默认工作区、
 // 模型提供商配置、本地终端、文件浏览与预览数据等能力。

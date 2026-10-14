@@ -619,7 +619,7 @@ async fn run_swarm_actor(
                         now,
                         policy.parallel_relays,
                     );
-                    eprintln!("🔁 自动切换后当前通道: {:?}", held);
+                    tracing::info!("🔁 自动切换后当前通道: {:?}", held);
                 }
             }
             maybe_cmd = cmd_rx.recv() => {
@@ -641,15 +641,15 @@ async fn run_swarm_actor(
                 let mut still: Vec<(String, Vec<u8>, u8)> = Vec::new();
                 for (topic, data, attempts) in pending_publish.drain(..) {
                     match peer.try_publish(&topic, data.clone()) {
-                        Ok(()) => eprintln!("✅ 重试 publish 成功 [{topic}]（第{attempts}次）"),
+                        Ok(()) => tracing::debug!("✅ 重试 publish 成功 [{topic}]（第{attempts}次）"),
                         Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
                             if attempts < 6 {
                                 still.push((topic, data, attempts + 1));
                             } else {
-                                eprintln!("⚠️ publish 重试 {attempts} 次仍 InsufficientPeers，放弃 [{topic}]");
+                                tracing::warn!("⚠️ publish 重试 {attempts} 次仍 InsufficientPeers，放弃 [{topic}]");
                             }
                         }
-                        Err(e) => eprintln!("⚠️ publish 重试失败 [{topic}]: {e}"),
+                        Err(e) => tracing::warn!("⚠️ publish 重试失败 [{topic}]: {e}"),
                     }
                 }
                 pending_publish = still;
@@ -657,8 +657,8 @@ async fn run_swarm_actor(
             _ = renew.tick() => {
                 for (id, addr) in &active_relay_addrs {
                     match peer.listen_via_relay(addr) {
-                        Ok(_) => eprintln!("🔄 续期 relay reservation 已发起: {}", id),
-                        Err(e) => eprintln!("⚠️ 续期失败 [{}]: {}", id, e),
+                        Ok(_) => tracing::debug!("🔄 续期 relay reservation 已发起: {}", id),
+                        Err(e) => tracing::warn!("⚠️ 续期失败 [{}]: {}", id, e),
                     }
                 }
             }
@@ -681,7 +681,7 @@ pub fn now_iso() -> String {
 /// 这里统一记录操作、对象 id 与根因，使「持久化失败」可观测（与 market_actor 的
 /// `warn_persist` 同一原则：降级路径必须留痕）。
 fn log_relay_persist_err(op: &str, id: &str, err: &anyhow::Error) {
-    eprintln!("⚠️ [relay-persist] {op}({id}) 落盘失败（本次运行仍按内存状态继续）: {err}");
+    tracing::error!("⚠️ [relay-persist] {op}({id}) 落盘失败（本次运行仍按内存状态继续）: {err}");
 }
 
 /// 从 start_time(RFC3339) 计算已运行天数
@@ -771,7 +771,7 @@ fn auto_adopt_hop_relay(peer_id: &PeerId, info: &libp2p::identify::Info, store: 
             created_at: now_iso(),
         };
         if store.upsert_relay(&relay).is_ok() {
-            eprintln!("➕ 自动纳入新 hop relay: {}", id);
+            tracing::info!("➕ 自动纳入新 hop relay: {}", id);
         }
     }
 }
@@ -823,7 +823,7 @@ fn process_swarm_event(
                 if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
                     log_relay_persist_err("mark_relay_failed", &id, &e);
                 }
-                eprintln!("🔌 中继通道掉线 {}，准备自动切换", id);
+                tracing::warn!("🔌 中继通道掉线 {}，准备自动切换", id);
                 if cooldown_secs > 0 {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -844,7 +844,7 @@ fn process_swarm_event(
                 if let Err(e) = store.mark_relay_failed(&id, &now_iso()) {
                     log_relay_persist_err("mark_relay_failed", &id, &e);
                 }
-                eprintln!("❌ relay {} 连接失败，准备自动切换", id);
+                tracing::warn!("❌ relay {} 连接失败，准备自动切换", id);
                 if cooldown_secs > 0 {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -896,9 +896,12 @@ fn process_swarm_event(
                         {
                             log_relay_persist_err("set_relay_status", &id, &e);
                         }
-                        eprintln!(
+                        tracing::info!(
                             "✅ relay reservation 已建立 {} (renewal={}, {}s/{}B)",
-                            id, renewal, dur, data
+                            id,
+                            renewal,
+                            dur,
+                            data
                         );
                     }
                 }
@@ -924,9 +927,9 @@ fn process_swarm_event(
                 // v2.7.5: DCUtR 直连升级结果——成功则纳入 direct_peers
                 Dcutr(e) => {
                     if peer.note_dcutr_event(e) {
-                        eprintln!("⛏️ DCUtR 直连升级成功: {}", e.remote_peer_id);
+                        tracing::info!("⛏️ DCUtR 直连升级成功: {}", e.remote_peer_id);
                     } else if e.result.is_err() {
-                        eprintln!("⛏️ DCUtR 直连失败（继续走 relay）: {}", e.remote_peer_id);
+                        tracing::warn!("⛏️ DCUtR 直连失败（继续走 relay）: {}", e.remote_peer_id);
                     }
                 }
                 // P0-2: 入站 GossipSub 消息——先按 message id 去重，首次放行后再经
@@ -1011,7 +1014,7 @@ fn ensure_channels(
         match relay_pool::select_replacement_cooled(&relays, &in_use, cooldown_until, now_secs) {
             Some(r) => match peer.listen_via_relay(&r.multiaddr) {
                 Ok(_) => {
-                    eprintln!("🛰️ 发起 relay 通道: {}", r.relay_id);
+                    tracing::debug!("🛰️ 发起 relay 通道: {}", r.relay_id);
                     held.insert(r.relay_id.clone());
                     in_use.insert(r.relay_id.clone());
                     active.insert(r.relay_id.clone(), r.multiaddr.clone());
@@ -1020,7 +1023,7 @@ fn ensure_channels(
                     }
                 }
                 Err(e) => {
-                    eprintln!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
+                    tracing::warn!("⚠️ relay {} listen 失败: {}", r.relay_id, e);
                     if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
                         log_relay_persist_err("mark_relay_failed", &r.relay_id, &e);
                     }
@@ -1060,7 +1063,7 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
                 {
                     log_relay_persist_err("set_relay_status", &r.relay_id, &e);
                 }
-                eprintln!("✅ probe 确认 hop relay: {}", r.relay_id);
+                tracing::debug!("✅ probe 确认 hop relay: {}", r.relay_id);
             }
             Ok(Ok(Ok(false))) => {
                 if let Err(e) = store.mark_relay_failed(&r.relay_id, &now_iso()) {
@@ -1083,14 +1086,14 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
         .is_ok()
     {
         if let Ok(chans) = tokio::time::timeout(std::time::Duration::from_secs(20), rx).await {
-            eprintln!("🛰️ 当前多通道: {:?}", chans.unwrap_or_default());
+            tracing::debug!("🛰️ 当前多通道: {:?}", chans.unwrap_or_default());
         }
     }
 
     // 4. 清理失效（dead）节点
     let removed = store.delete_dead_relays().unwrap_or(0);
     if removed > 0 {
-        eprintln!("🧹 清理 dead relay {} 个", removed);
+        tracing::debug!("🧹 清理 dead relay {} 个", removed);
     }
 }
 
@@ -1112,10 +1115,10 @@ fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent
             established_in,
             ..
         } => {
-            tracing::info!("已连接 {peer_id} ({established_in:?})");
+            tracing::debug!("已连接 {peer_id} ({established_in:?})");
         }
         ConnectionClosed { peer_id, .. } => {
-            tracing::info!("连接关闭 {peer_id}");
+            tracing::debug!("连接关闭 {peer_id}");
         }
         OutgoingConnectionError { peer_id, error, .. } => {
             // 精简：dial 失败只留原因类别，不打印完整 error Debug（可能含地址栈）。
@@ -1206,12 +1209,12 @@ fn handle_peer_command(
         }
         PeerCommand::DhtPut { key, value } => {
             if let Err(e) = peer.dht_put(key.as_bytes(), value) {
-                eprintln!("⚠️ DHT put 失败 [{}]: {}", key, e);
+                tracing::error!("⚠️ DHT put 失败 [{}]: {}", key, e);
             }
         }
         PeerCommand::Subscribe { topic } => {
             if let Err(e) = peer.subscribe(&topic) {
-                eprintln!("⚠️ subscribe 失败 [{}]: {}", topic, e);
+                tracing::error!("⚠️ subscribe 失败 [{}]: {}", topic, e);
             }
         }
         PeerCommand::Publish { topic, data } => {
@@ -1219,27 +1222,27 @@ fn handle_peer_command(
                 Ok(()) => {}
                 // mesh 尚未组建 → 排队重试，而不是丢弃（冷启动关键路径）。
                 Err(libp2p::gossipsub::PublishError::InsufficientPeers) => {
-                    eprintln!("⚠️ publish 暂不可发 [{topic}]：mesh 未就绪，已排队重试");
+                    tracing::warn!("⚠️ publish 暂不可发 [{topic}]：mesh 未就绪，已排队重试");
                     pending_publish.push((topic, data, 1));
                 }
-                Err(e) => eprintln!("⚠️ publish 失败 [{topic}]: {e}"),
+                Err(e) => tracing::error!("⚠️ publish 失败 [{topic}]: {e}"),
             }
         }
         PeerCommand::BootstrapDht => match peer.dht_bootstrap() {
             Ok(()) => {
-                eprintln!("🔁 Kademlia 自举已发起（迭代填充路由表）");
+                tracing::info!("🔁 Kademlia 自举已发起（迭代填充路由表）");
                 // v3.9.17: 自举后立即把路由表快照落盘（供重启后回填，缩短冷启动收敛）。
                 if let Err(e) = peer.persist_routing_table() {
-                    eprintln!("⚠️ 路由表持久化失败: {e}");
+                    tracing::warn!("⚠️ 路由表持久化失败: {e}");
                 }
             }
-            Err(e) => eprintln!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
+            Err(e) => tracing::warn!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
         },
         PeerCommand::AddBootstrap { addr, reply } => {
             let result = peer.add_bootstrap_from_str(&addr);
             match &result {
-                Ok(_) => eprintln!("✅ bootstrap 连接已发起: {}", addr),
-                Err(e) => eprintln!("⚠️ bootstrap 失败 [{}]: {}", addr, e),
+                Ok(_) => tracing::debug!("✅ bootstrap 连接已发起: {}", addr),
+                Err(e) => tracing::warn!("⚠️ bootstrap 失败 [{}]: {}", addr, e),
             }
             let _ = reply.send(result);
         }
@@ -1258,7 +1261,7 @@ fn handle_peer_command(
         PeerCommand::ListenRelay { addr, reply } => {
             let result = peer.listen_via_relay(&addr);
             if result.is_ok() {
-                eprintln!("✅ relay reservation 监听已发起: {}", addr);
+                tracing::debug!("✅ relay reservation 监听已发起: {}", addr);
                 if let Ok(base) = addr.parse::<Multiaddr>() {
                     if let Some(id) = crate::net::peer::extract_relay_peer_id(&base) {
                         active.insert(id, addr.clone());
@@ -1270,7 +1273,7 @@ fn handle_peer_command(
                     }
                 }
             } else if let Err(e) = &result {
-                eprintln!("⚠️ relay listen 失败 [{}]: {}", addr, e);
+                tracing::warn!("⚠️ relay listen 失败 [{}]: {}", addr, e);
             }
             let _ = reply.send(result);
         }
@@ -1405,7 +1408,7 @@ fn handle_peer_command(
         }
         PeerCommand::DiscoverRelays => {
             peer.discover_random_peers();
-            eprintln!("🔍 触发 DHT relay 候选发现");
+            tracing::debug!("🔍 触发 DHT relay 候选发现");
         }
         PeerCommand::FindPeers { key, reply } => {
             let qid = peer.find_closest_peers(&key);
@@ -2501,7 +2504,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (MCP {})", method, path_part, mcp.status);
+                tracing::debug!("← {} {} (MCP {})", method, path_part, mcp.status);
                 return;
             }
 
@@ -2523,7 +2526,7 @@ async fn run_api_server(
                 let resp = http_response(st, stt, pl, "application/json", &cors_headers);
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (REST 认证拒绝 {})", method, path_part, st);
+                tracing::debug!("← {} {} (REST 认证拒绝 {})", method, path_part, st);
                 return;
             }
 
@@ -2560,7 +2563,7 @@ async fn run_api_server(
                     http_response(200, "OK", body, "text/plain; version=0.0.4", &cors_headers);
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (metrics 200)", method, path_part);
+                tracing::debug!("← {} {} (metrics 200)", method, path_part);
                 return;
             }
 
@@ -2601,7 +2604,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (network {})", method, path_part, net_resp.0);
+                tracing::debug!("← {} {} (network {})", method, path_part, net_resp.0);
                 return;
             }
 
@@ -2634,7 +2637,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (chain {})", method, path_part, chain_status);
+                tracing::debug!("← {} {} (chain {})", method, path_part, chain_status);
                 return;
             }
 
@@ -2659,7 +2662,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (erasure {})", method, path_part, er_status);
+                tracing::debug!("← {} {} (erasure {})", method, path_part, er_status);
                 return;
             }
 
@@ -2710,7 +2713,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (sandbox {})", method, path_part, status);
+                tracing::debug!("← {} {} (sandbox {})", method, path_part, status);
                 return;
             }
 
@@ -2748,7 +2751,7 @@ async fn run_api_server(
                 );
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
-                eprintln!("← {} {} (plugin {})", method, path_part, status);
+                tracing::debug!("← {} {} (plugin {})", method, path_part, status);
                 return;
             }
 

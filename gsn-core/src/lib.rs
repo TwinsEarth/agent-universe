@@ -1,7 +1,7 @@
 // payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
 // 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
 #![recursion_limit = "256"]
-//! Agent Universe gsn-core v3.9.24
+//! Agent Universe gsn-core v5.0.0
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -45,7 +45,10 @@ pub mod topology;
 pub mod update;
 pub mod verifier;
 
-pub use agent::{AgentCard, Task, TaskStatus};
+pub use agent::{
+    AgentCard, AuditFinding, AuditVerdict, AuditorAgent, DispatchDecision, DispatchRequest,
+    DispatcherAgent, FleetRole, NodeProfile, Task, TaskStatus,
+};
 pub use chain::{PoCVVerifier, ProofOfComputation};
 pub use crdt::VersionVector;
 pub use crdt::{CrdtMessage, CrdtOp, CrdtSnapshot, CrdtStats, CrdtStore, LwwEntry, CRDT_TOPIC};
@@ -63,6 +66,12 @@ pub use storage::LocalStorage;
 pub use swarm::{AgentNode, CollectiveDecision, EmergenceDetector, LightweightConsensus, Swarm};
 pub use topology::{NeighborManager, TopologyGraph};
 pub use verifier::VerifierClient;
+
+// v5.0.0: 持久化记忆（FLEET-MEMORY-DESIGN §3.1）
+pub use memory::{
+    MemoryEntry, MemoryError, MemoryQuery, PersistentMemoryStore, DEFAULT_KEEP_ROTATED,
+    DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
+};
 
 // MCP + ACA (v2.3.2)
 pub use mcp::McpServer;

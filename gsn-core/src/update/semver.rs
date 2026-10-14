@@ -169,7 +169,14 @@ mod tests {
     #[test]
     fn current_is_decoded_from_rust_not_compared_raw() {
         let cur = SemVer::current().expect("crate version decodes");
-        // gsn-core 0.3.NN -> npm 3.x，而不是 npm 0.x。
-        assert_eq!(cur.major, 3);
+        // gsn-core 0.X.NN -> npm X.y.z，而不是 npm 0.x。
+        // 从 crate 版本第二段取期望 major，避免把断言硬编码到某个大版本。
+        let expected_major: u64 = env!("CARGO_PKG_VERSION")
+            .split('.')
+            .nth(1)
+            .and_then(|s| s.parse().ok())
+            .expect("crate version second segment decodes");
+        assert_eq!(cur.major, expected_major);
+        assert_ne!(cur.major, 0);
     }
 }

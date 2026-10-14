@@ -877,7 +877,7 @@ mod crdt_health_tests {
         assert_eq!(r.body["soft"]["crdt_keys"], 1);
         assert_eq!(r.body["soft"]["connected_peers"], 0);
         assert_eq!(r.body["soft"]["dht_routing_entries"], 3);
-        // v3.9.22：/health 软指标扩展 market 计数（真实 stats 查询）。
+        // v3.9.23：/health 软指标扩展 market 计数（真实 stats 查询）。
         assert_eq!(r.body["soft"]["market_agents"], 0);
         assert_eq!(r.body["soft"]["market_tasks"], 0);
     }

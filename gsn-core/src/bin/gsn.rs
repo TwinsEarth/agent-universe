@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v3.9.24");
+            println!("agent-universe v5.0.0");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -60,6 +60,7 @@ async fn main() {
         "ledger" => run_ledger(&argv[1..]).await,
         "doctor" => run_doctor(&argv[1..]).await,
         "identity" => run_identity(),
+        "memory" => run_memory(&argv[1..]).await,
         "vpn" => run_vpn(&argv[1..]).await,
         other => {
             eprintln!("错误: 未知子命令 '{other}'");
@@ -81,6 +82,7 @@ fn print_top_help() {
     println!("  ledger verify        离线校验账本哈希链与重放守恒（只读）");
     println!("  doctor               环境/账本/daemon 连通性诊断（只读）");
     println!("  identity            生成 Ed25519 本地身份");
+    println!("  memory <操作>       读写本地记忆档案（append/list/recall/path）");
     println!("  vpn <子命令>         系统代理/PAC/订阅/路由/探活（见 `gsn vpn --help`）");
     println!("  update [版本]        检查/更新 daemon 与 npm 包（见 `gsn update --help`）");
     println!("  version             显示版本（加 --check 只联网检查更新，不安装）");
@@ -1048,6 +1050,341 @@ async fn run_ledger(args: &[String]) -> i32 {
         }
         Err(LedgerIssue::AuditFailed(e)) => {
             eprintln!("结果: FAIL — 流水重放/审计失败: {e}");
+            1
+        }
+    }
+}
+
+// ───────────────────────── memory ─────────────────────────
+
+fn print_memory_help() {
+    println!("用法: gsn memory <操作> [选项]");
+    println!("操作:");
+    println!("  append   追加一条记忆（--task-id 必填）");
+    println!("  list     列出记忆（当前 + 滚动档案，可过滤）");
+    println!("  recall   按条件检索（同 list 的过滤选项）");
+    println!("  path     显示 memory.jsonl 路径");
+    println!("\n选项:");
+    println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
+    println!("  --task-id <id>        任务标识（append 必填）");
+    println!("  --gate <名称>         闸门/来源（如 ci）");
+    println!("  --conclusion <文本>   结论");
+    println!("  --tag <标签>          标签（可重复）");
+    println!("  --exit-code <n>       退出码");
+    println!("  --ms <n>              耗时毫秒");
+    println!("  --stdout <文本>       stdout 末尾片段");
+    println!("  --stderr <文本>       stderr 末尾片段");
+    println!("  --contains <子串>     结论包含子串（list/recall）");
+    println!("  --since <RFC3339>     仅返回该时间之后（list/recall）");
+    println!("  --limit <n>           最多返回条数");
+    println!("  --json                以 JSON 输出（list/recall）");
+}
+
+/// 取 `--name` 后的值。
+fn mem_value_after(rest: &[String], i: usize, name: &str) -> Result<String, String> {
+    rest.get(i + 1)
+        .cloned()
+        .ok_or_else(|| format!("{name} 需要一个参数"))
+}
+
+/// 解析 memory.jsonl 路径（默认 data-dir/memory.jsonl）。
+fn resolve_memory_path(rest: &[String]) -> Result<std::path::PathBuf, String> {
+    let mut data_dir = node::default_data_dir();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == "--data-dir" {
+            data_dir = std::path::PathBuf::from(mem_value_after(rest, i, "--data-dir")?);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(node::expand_tilde(data_dir).join("memory.jsonl"))
+}
+
+/// 解析 list/recall 的检索条件，返回 (query, json 输出)。
+fn parse_memory_query(rest: &[String]) -> Result<(gsn_core::MemoryQuery, bool), String> {
+    use gsn_core::MemoryQuery;
+    let mut q = MemoryQuery::new();
+    let mut json_out = false;
+    let mut i = 0;
+    while i < rest.len() {
+        let name = rest[i].as_str();
+        match name {
+            "--data-dir" => i += 2,
+            "--json" => {
+                json_out = true;
+                i += 1;
+            }
+            "--all" => i += 1, // query 已含滚动档案；保留兼容
+            "--task-id" => {
+                q = q.task_id(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--tag" => {
+                q = q.tag(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--gate" => {
+                q = q.gate(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--contains" => {
+                q = q.conclusion_contains(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--since" => {
+                q = q.since(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--limit" => {
+                let v = mem_value_after(rest, i, name)?;
+                let n = v
+                    .parse()
+                    .map_err(|_| format!("--limit 需要数字，得到 {v}"))?;
+                q = q.limit(n);
+                i += 2;
+            }
+            other => return Err(format!("未知选项 '{other}'")),
+        }
+    }
+    Ok((q, json_out))
+}
+
+fn print_memory_entries(entries: &[gsn_core::MemoryEntry], json_out: bool) {
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string(entries).unwrap_or_else(|_| "[]".to_string())
+        );
+        return;
+    }
+    if entries.is_empty() {
+        println!("（无匹配记忆）");
+        return;
+    }
+    for e in entries {
+        println!(
+            "● [{}] {} ({})",
+            e.at,
+            e.task_id,
+            e.gate.as_deref().unwrap_or("-")
+        );
+        if let Some(c) = &e.conclusion {
+            println!("    结论: {c}");
+        }
+        if !e.tags.is_empty() {
+            println!("    标签: {}", e.tags.join(", "));
+        }
+        if let Some(c) = e.exit_code {
+            println!("    退出码: {c}");
+        }
+        if let Some(m) = e.ms {
+            println!("    耗时: {m} ms");
+        }
+    }
+}
+
+async fn run_memory(args: &[String]) -> i32 {
+    if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
+        print_memory_help();
+        return if args.is_empty() { 1 } else { 0 };
+    }
+    let op = args[0].as_str();
+    let rest: &[String] = &args[1..];
+
+    let path = match resolve_memory_path(rest) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("参数错误: {e}");
+            return 2;
+        }
+    };
+    let store = gsn_core::PersistentMemoryStore::open(&path);
+
+    match op {
+        "path" => {
+            println!("{}", path.display());
+            0
+        }
+        "append" => {
+            let mut task_id: Option<String> = None;
+            let mut gate: Option<String> = None;
+            let mut conclusion: Option<String> = None;
+            let mut tags: Vec<String> = Vec::new();
+            let mut exit_code: Option<i32> = None;
+            let mut ms: Option<u64> = None;
+            let mut stdout: Option<String> = None;
+            let mut stderr: Option<String> = None;
+            let mut parse_err: Option<String> = None;
+            let mut i = 0;
+            while i < rest.len() {
+                let name = rest[i].as_str();
+                match name {
+                    "--data-dir" => i += 2,
+                    "--task-id" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            task_id = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--gate" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            gate = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--conclusion" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            conclusion = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--tag" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            tags.push(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--exit-code" => match mem_value_after(rest, i, name) {
+                        Ok(v) => match v.parse() {
+                            Ok(n) => {
+                                exit_code = Some(n);
+                                i += 2;
+                            }
+                            Err(_) => {
+                                parse_err = Some(format!("--exit-code 需要整数，得到 {v}"));
+                                i += 1;
+                            }
+                        },
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--ms" => match mem_value_after(rest, i, name) {
+                        Ok(v) => match v.parse() {
+                            Ok(n) => {
+                                ms = Some(n);
+                                i += 2;
+                            }
+                            Err(_) => {
+                                parse_err = Some(format!("--ms 需要数字，得到 {v}"));
+                                i += 1;
+                            }
+                        },
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--stdout" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            stdout = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--stderr" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            stderr = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    other => {
+                        parse_err = Some(format!("未知选项 '{other}'"));
+                        i += 1;
+                    }
+                }
+                if parse_err.is_some() {
+                    break;
+                }
+            }
+            if let Some(e) = parse_err {
+                eprintln!("参数错误: {e}");
+                return 2;
+            }
+            let tid = match task_id {
+                Some(t) => t,
+                None => {
+                    eprintln!("参数错误: append 需要 --task-id <id>");
+                    return 2;
+                }
+            };
+            let mut e = gsn_core::MemoryEntry::new(tid);
+            if let Some(g) = gate {
+                e = e.gate(g);
+            }
+            if let Some(c) = exit_code {
+                e = e.exit_code(c);
+            }
+            if let Some(m) = ms {
+                e = e.ms(m);
+            }
+            if let Some(s) = stdout {
+                e = e.stdout_tail(s);
+            }
+            if let Some(s) = stderr {
+                e = e.stderr_tail(s);
+            }
+            if let Some(c) = conclusion {
+                e = e.conclusion(c);
+            }
+            if !tags.is_empty() {
+                e = e.tags(tags);
+            }
+            match store.append(e) {
+                Ok(()) => {
+                    println!("已追加到 {}", path.display());
+                    0
+                }
+                Err(err) => {
+                    eprintln!("追加失败: {err}");
+                    1
+                }
+            }
+        }
+        "list" | "recall" => match parse_memory_query(rest) {
+            Ok((q, json_out)) => match store.query(&q) {
+                Ok(entries) => {
+                    print_memory_entries(&entries, json_out);
+                    0
+                }
+                Err(err) => {
+                    eprintln!("读取失败: {err}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("参数错误: {e}");
+                2
+            }
+        },
+        other => {
+            eprintln!("错误: 未知 memory 操作 '{other}'（支持: append/list/recall/path）");
             1
         }
     }

@@ -2819,9 +2819,12 @@ async fn run_api_server(
             );
             let _ = stream.write_all(response.as_bytes()).await;
             let _ = stream.flush().await;
-            eprintln!(
+            tracing::debug!(
                 "← {} {} ({} {})",
-                method, path_part, routed.status, routed.status_text
+                method,
+                path_part,
+                routed.status,
+                routed.status_text
             );
         });
     }
@@ -3126,6 +3129,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         "light" => NodeMode::Light,
         "edge" => NodeMode::Edge,
         "browser" => NodeMode::Browser,
+        // v3.9.24: 纯中继节点——只做 Circuit Relay + DHT 转发，不生产应用数据
+        //（不 publish CRDT 快照 / 分片 Hello 心跳），避免无 mesh peers 时持续失败刷日志。
+        "relay" => NodeMode::Relay,
         _ => NodeMode::Full,
     };
 
@@ -3258,7 +3264,8 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // P0-1: 全节点 / 归档节点显式以 Kademlia Server 模式运行——否则节点默认
     // Client 模式（无“已确认外部地址”），拒绝入站 kad 查询、不向 Identify
     // 注册 kad，DHT 无法在节点间扩散。轻/边缘/浏览器节点保持 Client（只查询）。
-    if matches!(node_mode, NodeMode::Archive | NodeMode::Full) {
+    // v3.9.24: 纯中继节点公网可达，同样以 Server 模式运行。
+    if node_mode.requires_dht_server() {
         peer.set_kad_server_mode();
     }
     // v3.9.17: 启动即持久化一次路由表（把启动时回填的旧邻居先落盘）。
@@ -3384,6 +3391,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         }
     });
 
+    // v3.9.24: 纯中继节点不生产应用数据（周期快照 / 分片心跳）。
+    let relay_only = node_mode == NodeMode::Relay;
+
     // 周期快照广播（反熵）：间隔由 env GSN_CRDT_SNAPSHOT_INTERVAL_SECS 决定，默认 15s。
     {
         let crdt_store = crdt_store.clone();
@@ -3396,6 +3406,10 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
             loop {
                 ticker.tick().await;
+                // v3.9.24: relay-only 不产生 CRDT 快照（无 mesh 时 publish 必然失败且无意义）。
+                if relay_only {
+                    continue;
+                }
                 let snap = crdt_guard(&crdt_store).snapshot(now_millis());
                 match serde_json::to_vec(&CrdtMessage::Snapshot(snap)) {
                     Ok(data) => {
@@ -3444,6 +3458,12 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                         }
                         Err(e) => tracing::warn!(error = %e, "分片报文解析失败，已跳过"),
                     }
+                }
+
+                // v3.9.24: relay-only 仅消费入站（避免 channel 积压），不产生
+                // Hello 心跳 / 出站分片——纯中继节点无 mesh peers，publish 必失败且无意义。
+                if relay_only {
+                    continue;
                 }
 
                 // 2) 每 ~2s（4 ticks）刷新已知 peer 列表。

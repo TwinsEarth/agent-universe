@@ -177,11 +177,18 @@ impl DispatcherAgent {
                 best = Some((c.clone(), load, lat));
             }
         }
-        let (target, ..) = best.expect("eligible non-empty => best set");
-        DispatchDecision {
-            task_id: req.task_id,
-            target: Some(target),
-            reason: format!("在 {} 个合格节点中按负载/延迟选择", eligible.len()),
+        match best {
+            Some((target, ..)) => DispatchDecision {
+                task_id: req.task_id,
+                target: Some(target),
+                reason: format!("在 {} 个合格节点中按负载/延迟选择", eligible.len()),
+            },
+            // eligible 非空时 best 必然为 Some；此分支仅为类型化兜底，避免 panic。
+            None => DispatchDecision {
+                task_id: req.task_id,
+                target: None,
+                reason: "调度内部错误：合格集非空但未选出节点".to_string(),
+            },
         }
     }
 }

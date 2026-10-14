@@ -125,6 +125,10 @@ pub struct PeerInfo {
 
 pub type PeerCmdTx = mpsc::Sender<PeerCommand>;
 
+/// v5.0.1：持久化记忆存储句柄。daemon 在 data-dir 打开 append-only `memory.jsonl`，
+/// 任务执行后自动记录一条记忆；记忆是附属能力，写入失败只记录日志、不阻断主流程。
+pub type MemoryStoreHandle = Arc<std::sync::Mutex<crate::memory::PersistentMemoryStore>>;
+
 /// 纠删码分片驱动的控制命令（REST → 分片驱动）。
 #[allow(dead_code)]
 pub enum ShardControl {
@@ -150,6 +154,79 @@ pub(crate) fn now_millis() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// v5.0.1：若请求是 `POST /api/v1/sandboxes/{id}/exec`，返回 `(sandbox_id, language)`。
+/// 与 `sandbox::api` 的路径解析（`sandboxes/{id}/exec`）保持一致；`language` 取自请求
+/// 体，缺省为 `python`（与 sandbox API 的默认行为一致）。
+fn parse_sandbox_exec(path: &str, body: &str) -> Option<(String, String)> {
+    let segs: Vec<&str> = path
+        .trim_start_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .collect();
+    let idx = segs.iter().position(|s| *s == "sandboxes")?;
+    let after = &segs[idx + 1..];
+    if after.len() != 2 || after[1] != "exec" {
+        return None;
+    }
+    let sandbox_id = after[0].to_string();
+    let language = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.get("language")
+                .and_then(|x| x.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "python".to_string());
+    Some((sandbox_id, language))
+}
+
+/// v5.0.1：把一次 sandbox exec 的返回 JSON 构造成 [`MemoryEntry`](crate::memory::MemoryEntry)
+/// 并追加到 `memory.jsonl`。
+///
+/// 记忆是附属能力：加锁或追加失败只记录日志，绝不影响已返回给客户端的执行结果。
+/// payload 的 `exit_code` 为 i64，记忆字段为 i32——正常平台退出码远在 i32 范围内，
+/// 用 `i32::try_from` 转换，超出范围则如实省略该字段，不截断伪造。
+fn record_sandbox_exec_memory(
+    memory_store: &MemoryStoreHandle,
+    sandbox_id: &str,
+    language: &str,
+    payload: &serde_json::Value,
+) {
+    let exit_code = payload.get("exit_code").and_then(|v| v.as_i64());
+    let wall_ms = payload.get("wall_ms").and_then(|v| v.as_u64()).unwrap_or(0);
+    let stdout = payload.get("stdout").and_then(|v| v.as_str()).unwrap_or("");
+    let stderr = payload.get("stderr").and_then(|v| v.as_str()).unwrap_or("");
+
+    let conclusion = match exit_code {
+        Some(0) => format!("exit=0 ok ({language})"),
+        Some(n) => format!("exit={n} ({language})"),
+        None => format!("exit=unknown ({language})"),
+    };
+
+    let mut entry = crate::memory::MemoryEntry::new(format!("sbx-{sandbox_id}"))
+        .gate("sandbox.exec")
+        .argv(vec![language.to_string()])
+        .ms(wall_ms)
+        .stdout_tail(stdout.to_string())
+        .stderr_tail(stderr.to_string())
+        .conclusion(conclusion)
+        .add_tag("sandbox")
+        .add_tag(language);
+    if let Some(code) = exit_code {
+        if let Ok(code32) = i32::try_from(code) {
+            entry = entry.exit_code(code32);
+        }
+    }
+
+    let guard = match memory_store.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Err(e) = guard.append(entry) {
+        eprintln!("⚠️ 记忆追加失败（不影响执行结果）: {e}");
+    }
 }
 
 /// 取 CRDT 存储锁；遇毒化锁按仓库既有约定恢复并继续（绝不 panic）。
@@ -2299,7 +2376,7 @@ fn handle_plugin_api(
     }
 }
 
-// 顶层 HTTP 服务器的依赖注入参数（10 个），聚合为 struct 反而割裂可读性，允许多参数。
+// 顶层 HTTP 服务器的依赖注入参数（11 个），聚合为 struct 反而割裂可读性，允许多参数。
 #[allow(clippy::too_many_arguments)]
 async fn run_api_server(
     listen: String,
@@ -2310,6 +2387,7 @@ async fn run_api_server(
     peer_cmd_tx: PeerCmdTx,
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
+    memory_store: MemoryStoreHandle,
     plugin_host: Arc<std::sync::Mutex<crate::plugin::PluginHost>>,
     crdt: CrdtHandle,
     shard_ctrl: ShardCtrlTx,
@@ -2344,6 +2422,7 @@ async fn run_api_server(
         let peer_cmd_tx = peer_cmd_tx.clone();
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
+        let memory_store = memory_store.clone();
         let plugin_host = plugin_host.clone();
         let orchestrator = orchestrator.clone();
         let crdt = crdt.clone();
@@ -2714,6 +2793,19 @@ async fn run_api_server(
                 let _ = stream.write_all(resp.as_bytes()).await;
                 let _ = stream.flush().await;
                 tracing::debug!("← {} {} (sandbox {})", method, path_part, status);
+
+                // v5.0.1：exec 成功后自动记录一条记忆（spawn_blocking 后台执行，
+                // 既不阻塞已返回的响应，也不阻塞 async runtime）。仅 exec 路径记录，
+                // create/pause/resume/destroy 不记。记忆追加失败只在记录函数内告警。
+                if status == 200 {
+                    if let Some((sandbox_id, language)) = parse_sandbox_exec(path_part, &body) {
+                        let mem = memory_store.clone();
+                        let payload_c = payload.clone();
+                        tokio::task::spawn_blocking(move || {
+                            record_sandbox_exec_memory(&mem, &sandbox_id, &language, &payload_c);
+                        });
+                    }
+                }
                 return;
             }
 
@@ -3646,6 +3738,15 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     )));
     println!("✅ Agent Sandbox manager 已启动（/api/v1/sandboxes）");
 
+    // v5.0.1：持久化记忆。在 data-dir 打开 append-only memory.jsonl（文件在首次追加时才
+    // 创建）。open 恒成功；容量/滚动/tail 截断均有硬默认（见 persistent.rs），磁盘占用
+    // 有硬上限。实际追加失败只在记录点告警，不影响 daemon 与任务执行。
+    let memory_path = args.data_dir.join("memory.jsonl");
+    let memory_store: MemoryStoreHandle = Arc::new(std::sync::Mutex::new(
+        crate::memory::PersistentMemoryStore::open(&memory_path),
+    ));
+    println!("✅ 持久化记忆已就绪（{}）", memory_path.display());
+
     // v3.0.0：一切插件化内核（PluginHost）。装配随内核的 T0 系统插件，
     // 并通过 /api/v1/plugins 暴露 list / call / install / reload / uninstall。
     // 进程沙箱工作目录放在 data-dir 下。
@@ -3699,6 +3800,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         peer_cmd_tx,
         market,
         sandbox_mgr,
+        memory_store,
         plugin_host,
         crdt_handle,
         shard_ctrl_tx,
@@ -4006,5 +4108,107 @@ mod crdt_wiring_tests {
         assert!(body.contains("gsn_relay_channels 2"));
         assert!(body.contains("gsn_dcutr_direct_peers 3"));
         assert!(body.contains("gsn_gossip_dedup_capacity 4096"));
+    }
+}
+
+#[cfg(test)]
+mod memory_wiring_tests {
+    //! v5.0.1 记忆接线单测：
+    //! - parse_sandbox_exec：从路径 + body 识别 exec 与 language；
+    //! - record_sandbox_exec_memory：把 exec 返回 JSON 落成一条记忆并核对字段。
+    use super::*;
+    use crate::memory::PersistentMemoryStore;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn tmp_path(tag: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("au-node-mem-{tag}-{nanos}.jsonl"))
+    }
+
+    #[test]
+    fn parse_exec_with_explicit_language() {
+        let body = r#"{"language":"bash","code":"echo hi"}"#;
+        let got = parse_sandbox_exec("/api/v1/sandboxes/sb1/exec", body);
+        assert_eq!(got, Some(("sb1".to_string(), "bash".to_string())));
+    }
+
+    #[test]
+    fn parse_exec_defaults_language_to_python() {
+        let body = r#"{"code":"print(1)"}"#;
+        let got = parse_sandbox_exec("/api/v1/sandboxes/sb7/exec", body);
+        assert_eq!(got, Some(("sb7".to_string(), "python".to_string())));
+    }
+
+    #[test]
+    fn parse_exec_rejects_non_exec_routes() {
+        // create（路径无末尾动作）
+        assert_eq!(parse_sandbox_exec("/api/v1/sandboxes", "{}"), None);
+        // pause / resume / destroy 等
+        assert_eq!(
+            parse_sandbox_exec("/api/v1/sandboxes/sb1/pause", "{}"),
+            None
+        );
+        assert_eq!(
+            parse_sandbox_exec("/api/v1/sandboxes/sb1/resume", "{}"),
+            None
+        );
+        // 缺 id
+        assert_eq!(parse_sandbox_exec("/api/v1/sandboxes/exec", "{}"), None);
+        // 非 sandbox 路径
+        assert_eq!(parse_sandbox_exec("/api/v1/plugins", "{}"), None);
+    }
+
+    #[test]
+    fn records_successful_exec_as_memory() {
+        let path = tmp_path("ok");
+        let store = Arc::new(std::sync::Mutex::new(PersistentMemoryStore::open(&path)));
+        let payload = serde_json::json!({
+            "id": "sb1",
+            "exit_code": 0,
+            "stdout": "hello\n",
+            "stderr": "",
+            "wall_ms": 12
+        });
+        record_sandbox_exec_memory(&store, "sb1", "python", &payload);
+
+        let entries = store.lock().unwrap().load_all().unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.task_id, "sbx-sb1");
+        assert_eq!(e.gate.as_deref(), Some("sandbox.exec"));
+        assert_eq!(e.argv, vec!["python".to_string()]);
+        assert_eq!(e.exit_code, Some(0));
+        assert_eq!(e.ms, Some(12));
+        assert_eq!(e.stdout_tail.as_deref(), Some("hello\n"));
+        assert_eq!(e.conclusion.as_deref(), Some("exit=0 ok (python)"));
+        assert!(e.tags.contains(&"sandbox".to_string()));
+        assert!(e.tags.contains(&"python".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn records_failed_exec_conclusion() {
+        let path = tmp_path("fail");
+        let store = Arc::new(std::sync::Mutex::new(PersistentMemoryStore::open(&path)));
+        let payload = serde_json::json!({
+            "id": "sb2",
+            "exit_code": 2,
+            "stdout": "",
+            "stderr": "boom\n",
+            "wall_ms": 5
+        });
+        record_sandbox_exec_memory(&store, "sb2", "bash", &payload);
+
+        let entries = store.lock().unwrap().load_all().unwrap();
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.exit_code, Some(2));
+        assert_eq!(e.stderr_tail.as_deref(), Some("boom\n"));
+        assert_eq!(e.conclusion.as_deref(), Some("exit=2 (bash)"));
+        assert!(e.tags.contains(&"bash".to_string()));
+        let _ = std::fs::remove_file(&path);
     }
 }

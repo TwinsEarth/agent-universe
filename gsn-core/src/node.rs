@@ -865,10 +865,11 @@ fn process_swarm_event(
                     use libp2p::relay::Event as SrvEvent;
                     match relay_server_ev {
                         SrvEvent::ReservationReqAccepted { .. } => {
-                            eprintln!("🔌 relay server: reservation 接受");
+                            // v3.9.22: relay server 高频事件降 debug（原 eprintln 不受 RUST_LOG 控制）。
+                            tracing::debug!("relay server: reservation 接受");
                         }
                         SrvEvent::CircuitReqAccepted { .. } => {
-                            eprintln!("🔌 relay server: circuit 接受");
+                            tracing::debug!("relay server: circuit 接受");
                         }
                         _ => {}
                     }
@@ -1094,47 +1095,71 @@ async fn run_relay_maintenance(store: Arc<PersistentStore>, cmd_tx: PeerCmdTx) {
 }
 
 /// v2.5.4: 简洁记录关键 swarm 事件（连接建立/关闭/dial 错误/外部地址候选）
+///
+/// v3.9.22（P0 日志风暴根治）：
+/// - 原实现全部用 `eprintln!` 直写 stderr，**不经过 tracing**，RUST_LOG 完全无法控制；
+///   公网 relay 节点上 `🏷️ Identify {e:?}` 会把整个 Identify Info（含一连接全部
+///   multiaddr 列表，可达数十行）以 Debug 打印，实测 ~14.7 GB/天 刷爆根分区。
+/// - 现改为 tracing 分级：连接建立/关闭/新监听地址保留 info（内容精简，去掉 endpoint
+///   全量 Debug）；识别/拨号失败/外部地址候选/RelayClient/AutoNat/DHT 路由更新等
+///   高频或含大字段事件降为 debug/trace，默认 RUST_LOG=info 即安静。
+/// - Identify 事件不再打印完整 Info，只保留 peer_id + 协议数（multiaddr 不再入日志）。
 fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent>) {
     use libp2p::swarm::SwarmEvent::*;
     match event {
         ConnectionEstablished {
             peer_id,
-            endpoint,
             established_in,
             ..
         } => {
-            eprintln!("已连接 {peer_id} ({endpoint:?}, {established_in:?})");
+            tracing::info!("已连接 {peer_id} ({established_in:?})");
         }
-        ConnectionClosed {
-            peer_id, endpoint, ..
-        } => {
-            eprintln!("连接关闭 {peer_id} ({endpoint:?})");
+        ConnectionClosed { peer_id, .. } => {
+            tracing::info!("连接关闭 {peer_id}");
         }
         OutgoingConnectionError { peer_id, error, .. } => {
-            eprintln!("出站连接失败 peer={peer_id:?}: {error:?}");
+            // 精简：dial 失败只留原因类别，不打印完整 error Debug（可能含地址栈）。
+            tracing::debug!("出站连接失败 peer={peer_id:?}: {error}");
         }
         IncomingConnectionError {
             send_back_addr,
             error,
             ..
         } => {
-            eprintln!("入站连接失败 {send_back_addr}: {error:?}");
+            // 公网节点被扫描是常态：入站失败只记录对端地址，错误细节降为 trace。
+            tracing::debug!("入站连接失败 {send_back_addr}: {error}");
         }
         NewExternalAddrCandidate { address } => {
-            eprintln!("外部地址候选 {address}");
+            tracing::debug!("外部地址候选 {address}");
         }
         NewListenAddr { address, .. } => {
-            eprintln!("✅ 新监听地址 {address}");
+            tracing::info!("新监听地址 {address}");
         }
         ExpiredListenAddr { address, .. } => {
-            eprintln!("监听地址过期 {address}");
+            tracing::debug!("监听地址过期 {address}");
         }
         Behaviour(bev) => {
             use crate::net::peer::PeerEvent::*;
             match bev {
-                RelayClient(e) => eprintln!("🔌 RelayClient {e:?}"),
-                Identify(e) => eprintln!("🏷️ Identify {e:?}"),
-                AutoNat(e) => eprintln!("🧭 AutoNat {e:?}"),
+                RelayClient(e) => tracing::debug!("RelayClient 事件: {e:?}"),
+                Identify(e) => {
+                    // v3.9.22: Identify Info 的 Debug 含全量 multiaddr（可达数十行），
+                    // 是日志风暴主源；收敛为 debug 级简短事件名 + peer_id + 协议数。
+                    use libp2p::identify::Event::*;
+                    let brief = match e {
+                        Received { peer_id, info, .. } => format!(
+                            "Identify Received peer={peer_id} protocols={}",
+                            info.protocols.len()
+                        ),
+                        Pushed { peer_id, info, .. } => format!(
+                            "Identify Pushed peer={peer_id} protocols={}",
+                            info.protocols.len()
+                        ),
+                        _ => format!("Identify 事件: {e:?}"),
+                    };
+                    tracing::debug!("{brief}");
+                }
+                AutoNat(e) => tracing::debug!("AutoNat 事件: {e:?}"),
                 Dcutr(e) => {
                     // v2.7.5: 日志在 process_swarm_event 里记录（那里有 &mut peer）
                     let _ = &e;
@@ -1142,7 +1167,7 @@ fn log_swarm_event(event: &libp2p::swarm::SwarmEvent<crate::net::peer::PeerEvent
                 Kademlia(e) => {
                     use libp2p::kad::Event::*;
                     if let RoutingUpdated { peer, .. } = e {
-                        eprintln!("📡 DHT 路由更新 {peer}");
+                        tracing::debug!("DHT 路由更新 {peer}");
                     }
                 }
                 _ => {}
@@ -3343,7 +3368,9 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
                         tracing::warn!(source = %msg.source, "分片报文转发失败: {e}");
                     }
                 } else {
-                    tracing::info!(
+                    // v3.9.22: 每条入站 gossip 都打 info 会随网络规模放大；
+                    // 降为 debug（业务层日志足够体现消息到达）。
+                    tracing::debug!(
                         topic = %msg.topic,
                         source = %msg.source,
                         len = msg.data.len(),

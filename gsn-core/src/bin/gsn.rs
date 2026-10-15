@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.1");
+            println!("agent-universe v5.0.2");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -82,7 +82,7 @@ fn print_top_help() {
     println!("  ledger verify        离线校验账本哈希链与重放守恒（只读）");
     println!("  doctor               环境/账本/daemon 连通性诊断（只读）");
     println!("  identity            生成 Ed25519 本地身份");
-    println!("  memory <操作>       读写本地记忆档案（append/list/recall/path）");
+    println!("  memory <操作>       读写本地记忆档案（append/list/recall/query/path）");
     println!("  vpn <子命令>         系统代理/PAC/订阅/路由/探活（见 `gsn vpn --help`）");
     println!("  update [版本]        检查/更新 daemon 与 npm 包（见 `gsn update --help`）");
     println!("  version             显示版本（加 --check 只联网检查更新，不安装）");
@@ -1063,21 +1063,25 @@ fn print_memory_help() {
     println!("  append   追加一条记忆（--task-id 必填）");
     println!("  list     列出记忆（当前 + 滚动档案，可过滤）");
     println!("  recall   按条件检索（同 list 的过滤选项）");
+    println!("  query    组合条件检索（同 list，末尾给出结论摘要）");
     println!("  path     显示 memory.jsonl 路径");
     println!("\n选项:");
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
     println!("  --task-id <id>        任务标识（append 必填）");
     println!("  --gate <名称>         闸门/来源（如 ci）");
     println!("  --conclusion <文本>   结论");
-    println!("  --tag <标签>          标签（可重复）");
-    println!("  --exit-code <n>       退出码");
+    println!("  --tag <标签>          标签（可重复，多个为 AND）");
+    println!("  --exit-code <n>       退出码（append 写入；list/recall/query 精确过滤）");
     println!("  --ms <n>              耗时毫秒");
     println!("  --stdout <文本>       stdout 末尾片段");
     println!("  --stderr <文本>       stderr 末尾片段");
-    println!("  --contains <子串>     结论包含子串（list/recall）");
-    println!("  --since <RFC3339>     仅返回该时间之后（list/recall）");
+    println!("  --contains <子串>     结论包含子串（list/recall/query）");
+    println!("  --ok                  仅成功 exit=0（list/recall/query）");
+    println!("  --failed              仅失败退出码非零（list/recall/query）");
+    println!("  --since <RFC3339>     仅返回该时间之后（含边界）");
+    println!("  --until <RFC3339>     仅返回该时间之前（不含边界）");
     println!("  --limit <n>           最多返回条数");
-    println!("  --json                以 JSON 输出（list/recall）");
+    println!("  --json                以 JSON 输出（不含摘要）");
 }
 
 /// 取 `--name` 后的值。
@@ -1133,8 +1137,28 @@ fn parse_memory_query(rest: &[String]) -> Result<(gsn_core::MemoryQuery, bool), 
                 q = q.conclusion_contains(mem_value_after(rest, i, name)?);
                 i += 2;
             }
+            "--exit-code" => {
+                let v = mem_value_after(rest, i, name)?;
+                let n = v
+                    .parse()
+                    .map_err(|_| format!("--exit-code 需要整数，得到 {v}"))?;
+                q = q.exit_code(n);
+                i += 2;
+            }
+            "--ok" => {
+                q = q.ok(true);
+                i += 1;
+            }
+            "--failed" => {
+                q = q.ok(false);
+                i += 1;
+            }
             "--since" => {
                 q = q.since(mem_value_after(rest, i, name)?);
+                i += 2;
+            }
+            "--until" => {
+                q = q.until(mem_value_after(rest, i, name)?);
                 i += 2;
             }
             "--limit" => {
@@ -1183,6 +1207,20 @@ fn print_memory_entries(entries: &[gsn_core::MemoryEntry], json_out: bool) {
             println!("    耗时: {m} ms");
         }
     }
+}
+
+/// 输出结论摘要：总数 / 成功 / 失败 / 无退出码 / 总耗时。
+fn print_memory_summary(entries: &[gsn_core::MemoryEntry]) {
+    let total = entries.len();
+    let ok = entries.iter().filter(|e| e.exit_code == Some(0)).count();
+    let failed = entries
+        .iter()
+        .filter(|e| matches!(e.exit_code, Some(c) if c != 0))
+        .count();
+    let no_code = entries.iter().filter(|e| e.exit_code.is_none()).count();
+    let total_ms: u64 = entries.iter().filter_map(|e| e.ms).sum();
+    println!("── 摘要 ──");
+    println!("匹配 {total} 条：成功 {ok}、失败 {failed}、无退出码 {no_code}；总耗时 {total_ms} ms");
 }
 
 async fn run_memory(args: &[String]) -> i32 {
@@ -1367,10 +1405,13 @@ async fn run_memory(args: &[String]) -> i32 {
                 }
             }
         }
-        "list" | "recall" => match parse_memory_query(rest) {
+        "list" | "recall" | "query" => match parse_memory_query(rest) {
             Ok((q, json_out)) => match store.query(&q) {
                 Ok(entries) => {
                     print_memory_entries(&entries, json_out);
+                    if !json_out {
+                        print_memory_summary(&entries);
+                    }
                     0
                 }
                 Err(err) => {
@@ -1384,7 +1425,7 @@ async fn run_memory(args: &[String]) -> i32 {
             }
         },
         other => {
-            eprintln!("错误: 未知 memory 操作 '{other}'（支持: append/list/recall/path）");
+            eprintln!("错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/path）");
             1
         }
     }

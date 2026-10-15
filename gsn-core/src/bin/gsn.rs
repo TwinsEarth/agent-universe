@@ -2197,7 +2197,13 @@ async fn run_memory(args: &[String]) -> i32 {
                             match g.ancestors(&claim) {
                                 Ok(anc) => {
                                     if mem_flag_value(rest, "--json").is_some() {
-                                        println!("{}", serde_json::to_string(&anc).unwrap());
+                                        match serde_json::to_string(&anc) {
+                                            Ok(s) => println!("{s}"),
+                                            Err(e) => {
+                                                eprintln!("错误: 序列化祖先链失败: {e}");
+                                                return 1;
+                                            }
+                                        }
                                     } else {
                                         println!("祖先链（最近在前，共 {} 代）：", anc.len());
                                         for (i, h) in anc.iter().enumerate() {

@@ -166,12 +166,27 @@ pub struct DispatchDecision {
     pub reason: String,
 }
 
+/// v5.0.7：记忆驱动调度的排序键。
+///
+/// 升序比较、键最小者胜出：`Memory` 恒优于 `Static`（有记忆画像的节点优先
+/// 于只有静态信息的节点）；`Memory` 内先比成功率档（`10 - tier`，档越高键越
+/// 小），再比 avg_ms / p95_ms；`Static` 保持既有 `(load, latency)` 语义。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum RankKey {
+    Memory(u8, u64, u64),
+    Static(u64, u64),
+}
+
+/// 记忆驱动调度所需的最小历史样本数；样本不足回退静态 `(load, latency)`。
+const MIN_MEMORY_SAMPLES: u64 = 3;
+
 /// 调配 Agent。
 pub struct DispatcherAgent {
     id: String,
     router: TaskRouter,
     balancer: LoadBalancer,
     profiles: HashMap<String, NodeProfile>,
+    memory_aware: bool,
 }
 
 impl DispatcherAgent {
@@ -181,7 +196,14 @@ impl DispatcherAgent {
             router: TaskRouter::new(64),
             balancer: LoadBalancer::new(BalanceStrategy::LeastConnections),
             profiles: HashMap::new(),
+            memory_aware: false,
         }
+    }
+
+    /// v5.0.7：开启记忆驱动调度（默认关闭，保持既有负载/延迟语义）。
+    pub fn memory_aware(mut self, on: bool) -> Self {
+        self.memory_aware = on;
+        self
     }
 
     pub fn id(&self) -> &str {
@@ -238,7 +260,8 @@ impl DispatcherAgent {
         out
     }
 
-    /// 调度：先按角色/能力过滤（按角色不按便利），再在合格节点中按负载、延迟选优。
+    /// 调度：先按角色/能力过滤（按角色不按便利），再在合格节点中按负载、延迟选优；
+    /// 开启记忆驱动（v5.0.7）后，历史样本充足的节点按成功率/耗时优先。
     pub fn dispatch(&mut self, req: DispatchRequest) -> DispatchDecision {
         let eligible = self.eligible(&req);
         if eligible.is_empty() {
@@ -248,28 +271,38 @@ impl DispatcherAgent {
                 reason: "没有符合角色/能力要求的候选节点".to_string(),
             };
         }
-        let mut best: Option<(String, u64, u64)> = None;
+        let memory = self.memory_aware && eligible.iter().any(|c| self.memory_score(c).is_some());
+        let mut best: Option<(String, RankKey)> = None;
         for c in &eligible {
-            let load = self.router.node_load(c);
-            let lat = self
-                .profiles
-                .get(c)
-                .map(|p| p.latency_ms)
-                .unwrap_or(u64::MAX);
+            let key = if memory {
+                match self.memory_score(c) {
+                    Some(k) => RankKey::Memory(k.0, k.1, k.2),
+                    None => self.static_key(c),
+                }
+            } else {
+                self.static_key(c)
+            };
             let take = match &best {
                 None => true,
-                Some((_, bl, btm)) => (load, lat) < (*bl, *btm),
+                Some((_, bk)) => key < *bk,
             };
             if take {
-                best = Some((c.clone(), load, lat));
+                best = Some((c.clone(), key));
             }
         }
         match best {
-            Some((target, ..)) => DispatchDecision {
-                task_id: req.task_id,
-                target: Some(target),
-                reason: format!("在 {} 个合格节点中按负载/延迟选择", eligible.len()),
-            },
+            Some((target, key)) => {
+                let mode = if matches!(key, RankKey::Memory(..)) {
+                    "记忆驱动（历史成功率/耗时）"
+                } else {
+                    "负载/延迟"
+                };
+                DispatchDecision {
+                    task_id: req.task_id,
+                    target: Some(target),
+                    reason: format!("在 {} 个合格节点中按{mode}选择", eligible.len()),
+                }
+            }
             // eligible 非空时 best 必然为 Some；此分支仅为类型化兜底，避免 panic。
             None => DispatchDecision {
                 task_id: req.task_id,
@@ -277,6 +310,33 @@ impl DispatcherAgent {
                 reason: "调度内部错误：合格集非空但未选出节点".to_string(),
             },
         }
+    }
+
+    /// 静态排序键：`(load, latency_ms)`。
+    fn static_key(&self, c: &str) -> RankKey {
+        let load = self.router.node_load(c);
+        let lat = self
+            .profiles
+            .get(c)
+            .map(|p| p.latency_ms)
+            .unwrap_or(u64::MAX);
+        RankKey::Static(load, lat)
+    }
+
+    /// v5.0.7：记忆排序键 `(10 - 成功率档, avg_ms, p95_ms)`。
+    ///
+    /// 样本数 ≥ `MIN_MEMORY_SAMPLES` 且成功率为 `Some` 时才参与记忆排序；
+    /// 否则返回 `None`（回退静态键）。成功率高者键小（优），同档比耗时。
+    fn memory_score(&self, c: &str) -> Option<(u8, u64, u64)> {
+        let p = self.profiles.get(c)?;
+        if p.history_n < MIN_MEMORY_SAMPLES {
+            return None;
+        }
+        let rate = p.success_rate?;
+        let tier = ((rate * 10.0).floor() as u8).min(10);
+        let avg = p.avg_ms.unwrap_or(u64::MAX);
+        let p95 = p.p95_ms.unwrap_or(u64::MAX);
+        Some((10 - tier, avg, p95))
     }
 }
 
@@ -470,5 +530,137 @@ mod tests {
         d.refresh_from_memory(&entries);
         assert_eq!(d.node_count(), 1);
         assert!(d.profile("stranger").is_none());
+    }
+
+    // ── v5.0.7 记忆驱动调度 ──────────────────────────────────────
+
+    fn workhorse(node: &str, latency: u64) -> NodeProfile {
+        NodeProfile::new(node, FleetRole::Workhorse)
+            .capability("build")
+            .latency_ms(latency)
+    }
+
+    #[test]
+    fn memory_scheduling_prefers_high_success_rate() {
+        // mac 历史 9 成功 1 失败（90%），win 4 成功 6 失败（40%）；延迟相同。
+        let mut d = DispatcherAgent::new("dispatcher").memory_aware(true);
+        d.register_node(workhorse("mac", 20));
+        d.register_node(workhorse("win", 20));
+        let entries = vec![
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(0), Some(10), Some("build")),
+            mem("mac", Some(1), Some(10), Some("test")),
+            mem("win", Some(0), Some(10), Some("build")),
+            mem("win", Some(0), Some(10), Some("build")),
+            mem("win", Some(0), Some(10), Some("build")),
+            mem("win", Some(0), Some(10), Some("build")),
+            mem("win", Some(1), Some(10), Some("test")),
+            mem("win", Some(1), Some(10), Some("test")),
+            mem("win", Some(1), Some(10), Some("test")),
+            mem("win", Some(1), Some(10), Some("test")),
+            mem("win", Some(1), Some(10), Some("test")),
+            mem("win", Some(1), Some(10), Some("test")),
+        ];
+        d.refresh_from_memory(&entries);
+        let decision = d.dispatch(
+            DispatchRequest::new("t")
+                .required_capability("build")
+                .candidates(vec!["mac".into(), "win".into()]),
+        );
+        assert_eq!(decision.target, Some("mac".to_string()));
+        assert!(decision.reason.contains("记忆驱动"));
+    }
+
+    #[test]
+    fn memory_scheduling_binds_ties_by_avg_ms() {
+        // 同为 100% 成功率档：avg 10ms 的节点优先于 avg 60ms。
+        let mut d = DispatcherAgent::new("dispatcher").memory_aware(true);
+        d.register_node(workhorse("mac", 20));
+        d.register_node(workhorse("win", 20));
+        d.refresh_from_memory(&[
+            mem("mac", Some(0), Some(10), None),
+            mem("mac", Some(0), Some(10), None),
+            mem("mac", Some(0), Some(10), None),
+            mem("win", Some(0), Some(60), None),
+            mem("win", Some(0), Some(60), None),
+            mem("win", Some(0), Some(60), None),
+        ]);
+        let decision =
+            d.dispatch(DispatchRequest::new("t").candidates(vec!["mac".into(), "win".into()]));
+        assert_eq!(decision.target, Some("mac".to_string()));
+    }
+
+    #[test]
+    fn memory_aware_off_keeps_static_behavior() {
+        // 关闭记忆驱动：即使 win 历史成功率低，仍按静态负载/延迟选择。
+        let mut d = DispatcherAgent::new("dispatcher"); // 默认关闭
+        d.register_node(workhorse("mac", 50));
+        d.register_node(workhorse("win", 10));
+        d.refresh_from_memory(&[
+            mem("win", Some(0), Some(5), None),
+            mem("win", Some(0), Some(5), None),
+            mem("win", Some(0), Some(5), None),
+        ]);
+        let decision =
+            d.dispatch(DispatchRequest::new("t").candidates(vec!["mac".into(), "win".into()]));
+        // 静态：win 延迟 10 < mac 50，仍选 win；reason 无“记忆驱动”。
+        assert_eq!(decision.target, Some("win".to_string()));
+        assert!(!decision.reason.contains("记忆驱动"));
+    }
+
+    #[test]
+    fn insufficient_samples_falls_back_to_static() {
+        // mac 仅 2 条样本（< MIN_MEMORY_SAMPLES=3）：回退静态键，仍按延迟选 mac。
+        let mut d = DispatcherAgent::new("dispatcher").memory_aware(true);
+        d.register_node(workhorse("mac", 5));
+        d.register_node(workhorse("win", 50));
+        d.refresh_from_memory(&[
+            mem("mac", Some(0), Some(5), None),
+            mem("mac", Some(1), Some(5), None),
+        ]);
+        let decision =
+            d.dispatch(DispatchRequest::new("t").candidates(vec!["mac".into(), "win".into()]));
+        assert_eq!(decision.target, Some("mac".to_string()));
+        assert!(!decision.reason.contains("记忆驱动"));
+    }
+
+    #[test]
+    fn refresh_then_dispatch_uses_updated_memory() {
+        // 先注册（无记忆），调度走静态；注入失败记忆后开启记忆驱动，改为选成功率更高的节点。
+        let mut d = DispatcherAgent::new("dispatcher").memory_aware(true);
+        d.register_node(workhorse("mac", 5));
+        d.register_node(workhorse("win", 10));
+        d.refresh_from_memory(&[
+            mem("mac", Some(1), Some(5), None),
+            mem("mac", Some(1), Some(5), None),
+            mem("mac", Some(1), Some(5), None),
+            mem("win", Some(0), Some(10), None),
+            mem("win", Some(0), Some(10), None),
+            mem("win", Some(0), Some(10), None),
+        ]);
+        let decision =
+            d.dispatch(DispatchRequest::new("t").candidates(vec!["mac".into(), "win".into()]));
+        // mac 成功率 0%（3 失败）→ 键劣于 win（100%），即使 mac 延迟更低。
+        assert_eq!(decision.target, Some("win".to_string()));
+        assert!(decision.reason.contains("记忆驱动"));
+    }
+
+    #[test]
+    fn rank_key_memory_precedes_static() {
+        // RankKey 有序性：Memory 恒优于 Static。
+        assert!(RankKey::Memory(0, 0, 0) < RankKey::Static(0, 0));
+        // Memory 内档高者（10 - tier 小）优。
+        assert!(RankKey::Memory(1, 0, 0) < RankKey::Memory(5, 0, 0));
+        // 同档比 avg。
+        assert!(RankKey::Memory(0, 10, 50) < RankKey::Memory(0, 60, 50));
+        // Static 保持 (load, latency)。
+        assert!(RankKey::Static(0, 40) < RankKey::Static(1, 5));
     }
 }

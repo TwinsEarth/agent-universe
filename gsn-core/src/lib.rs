@@ -1,7 +1,7 @@
 // payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
 // 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
 #![recursion_limit = "256"]
-//! Agent Universe gsn-core v5.0.3
+//! Agent Universe gsn-core v5.0.4
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -67,10 +67,11 @@ pub use swarm::{AgentNode, CollectiveDecision, EmergenceDetector, LightweightCon
 pub use topology::{NeighborManager, TopologyGraph};
 pub use verifier::VerifierClient;
 
-// v5.0.0: 持久化记忆（FLEET-MEMORY-DESIGN §3.1）
+// v5.0.0: 持久化记忆（FLEET-MEMORY-DESIGN §3.1）；v5.0.4: 隐私 fail-closed
 pub use memory::{
-    MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore,
-    RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
+    scan_entry_for_secret, MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus,
+    PersistentMemoryStore, RotatedFileStatus, SecretHit, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES,
+    DEFAULT_TAIL_MAX_CHARS,
 };
 
 // MCP + ACA (v2.3.2)

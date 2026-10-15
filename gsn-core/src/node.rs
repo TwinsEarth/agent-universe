@@ -225,7 +225,34 @@ fn record_sandbox_exec_memory(
         Err(p) => p.into_inner(),
     };
     if let Err(e) = guard.append(entry) {
-        eprintln!("⚠️ 记忆追加失败（不影响执行结果）: {e}");
+        match e {
+            // 隐私 fail-closed：明文绝不落盘；改记一条不含 secret 的审计占位，
+            // 不阻断 sandbox exec 主流程（仍可观测、可计数）。
+            crate::memory::MemoryError::SecretRefused { field, kind } => {
+                let mut placeholder = crate::memory::MemoryEntry::new(format!("sbx-{sandbox_id}"))
+                    .gate("sandbox.exec")
+                    .argv(vec![language.to_string()])
+                    .ms(wall_ms)
+                    .conclusion(format!(
+                        "[隐私审核] 该条记忆的 {field} 含疑似凭据（{kind}），已拒绝落盘明文"
+                    ))
+                    .add_tag("sandbox")
+                    .add_tag(language)
+                    .add_tag("audit-secret");
+                if let Some(code) = exit_code {
+                    if let Ok(code32) = i32::try_from(code) {
+                        placeholder = placeholder.exit_code(code32);
+                    }
+                }
+                match guard.append(placeholder) {
+                    Ok(()) => eprintln!(
+                        "🛡️ 记忆隐私审核 fail-closed：{field} 命中 {kind}，明文未写入（已记审计占位）"
+                    ),
+                    Err(e2) => eprintln!("⚠️ 隐私审计占位追加失败（不影响执行结果）: {e2}"),
+                }
+            }
+            other => eprintln!("⚠️ 记忆追加失败（不影响执行结果）: {other}"),
+        }
     }
 }
 
@@ -4209,6 +4236,39 @@ mod memory_wiring_tests {
         assert_eq!(e.stderr_tail.as_deref(), Some("boom\n"));
         assert_eq!(e.conclusion.as_deref(), Some("exit=2 (bash)"));
         assert!(e.tags.contains(&"bash".to_string()));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn secret_exec_falls_back_to_audit_placeholder() {
+        // stdout 中泄漏 token：fail-closed 不落明文，改记一条脱敏审计占位。
+        let path = tmp_path("secret");
+        let store = Arc::new(std::sync::Mutex::new(PersistentMemoryStore::open(&path)));
+        let secret = "ghp_0123456789abcdef0123456789";
+        let payload = serde_json::json!({
+            "id": "sb9",
+            "exit_code": 0,
+            "stdout": format!("token={secret}\n"),
+            "stderr": "",
+            "wall_ms": 3
+        });
+        record_sandbox_exec_memory(&store, "sb9", "python", &payload);
+
+        let entries = store.lock().unwrap().load_all().unwrap();
+        assert_eq!(entries.len(), 1, "应只落一条审计占位");
+        let e = &entries[0];
+        assert_eq!(e.task_id, "sbx-sb9");
+        assert_eq!(e.stdout_tail, None, "明文 stdout 不应落盘");
+        assert_eq!(e.stderr_tail, None);
+        let conclusion = e.conclusion.as_deref().unwrap();
+        assert!(conclusion.contains("[隐私审核]"), "{conclusion}");
+        assert!(conclusion.contains("stdout_tail"));
+        assert!(e.tags.contains(&"audit-secret".to_string()));
+        assert!(e.tags.contains(&"python".to_string()));
+        assert_eq!(e.exit_code, Some(0));
+        // 磁盘文件中绝不能出现 token 明文。
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains(secret), "token 明文写入了档案");
         let _ = std::fs::remove_file(&path);
     }
 }

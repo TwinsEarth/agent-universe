@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.7");
+            println!("agent-universe v5.0.8");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1066,6 +1066,7 @@ fn print_memory_help() {
     println!("  query    组合条件检索（同 list，末尾给出结论摘要）");
     println!("  status   显示容量状态（当前/滚动文件字节、上限）");
     println!("  profile  节点画像：从记忆聚合节点历史（样本/成功率/耗时/P95/能力）");
+    println!("  digest   会话摘要：按 task_id 聚合条目（条目/成功率/耗时/gate/结论要点）");
     println!("  path     显示 memory.jsonl 路径");
     println!("\n选项:");
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
@@ -1616,9 +1617,91 @@ async fn run_memory(args: &[String]) -> i32 {
                 1
             }
         },
+        "digest" => match store.load_all() {
+            Ok(entries) => {
+                let tid_filter = mem_flag_value(rest, "--task-id");
+                let nid_filter = mem_flag_value(rest, "--node-id");
+                let limit = match mem_flag_value(rest, "--limit") {
+                    Some(v) => match v.parse::<usize>() {
+                        Ok(n) => Some(n),
+                        Err(_) => {
+                            eprintln!("参数错误: --limit 需要数字，得到 {v}");
+                            return 2;
+                        }
+                    },
+                    None => None,
+                };
+                let filtered: Vec<gsn_core::MemoryEntry> = entries
+                    .into_iter()
+                    .filter(|e| {
+                        if let Some(t) = &tid_filter {
+                            if e.task_id != *t {
+                                return false;
+                            }
+                        }
+                        if let Some(n) = &nid_filter {
+                            if e.node_id.as_deref() != Some(n.as_str()) {
+                                return false;
+                            }
+                        }
+                        true
+                    })
+                    .collect();
+                let digests = gsn_core::digest_sessions(&filtered);
+                let json_out = rest.iter().any(|a| a == "--json");
+                if json_out {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&digests).unwrap_or_default()
+                    );
+                } else if digests.is_empty() {
+                    println!("（无匹配的记忆条目，无法生成会话摘要）");
+                } else {
+                    let hdr = format!(
+                        "{:<20} {:>5} {:>7} {:>7} {:>7}  {:>6}  {}",
+                        "task_id", "条目", "成功率", "avg_ms", "max_ms", "gates", "结论要点"
+                    );
+                    println!("{hdr}");
+                    let shown = limit.map_or(digests.len(), |l| l.min(digests.len()));
+                    for d in &digests[..shown] {
+                        let rate = d
+                            .success_rate
+                            .map(|r| format!("{:.0}%", r * 100.0))
+                            .unwrap_or_else(|| "-".to_string());
+                        let avg = d
+                            .avg_ms
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let max = d
+                            .max_ms
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let gates = if d.gates.is_empty() {
+                            "-".to_string()
+                        } else {
+                            d.gates.join(",")
+                        };
+                        let concl = if d.conclusions.is_empty() {
+                            "-".to_string()
+                        } else {
+                            d.conclusions.join(" | ")
+                        };
+                        println!(
+                            "{:<20} {:>5} {:>7} {:>7} {:>7}  {:>6}  {}",
+                            d.task_id, d.entries, rate, avg, max, gates, concl
+                        );
+                    }
+                }
+                0
+            }
+            Err(err) => {
+                eprintln!("读取失败: {err}");
+                1
+            }
+        },
         other => {
             eprintln!(
-                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/path）"
+                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/digest/path）"
             );
             1
         }

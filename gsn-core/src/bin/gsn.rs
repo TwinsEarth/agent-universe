@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.8");
+            println!("agent-universe v5.0.9");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1699,9 +1699,56 @@ async fn run_memory(args: &[String]) -> i32 {
                 1
             }
         },
+        "verify-chain" => match store.verify_chain() {
+            Ok(reports) => {
+                let json_out = rest.iter().any(|a| a == "--json");
+                if json_out {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&reports).unwrap_or_default()
+                    );
+                } else {
+                    let header = format!(
+                        "{:<44} {:>6} {:>6} {:>6}  {:>6}  {}",
+                        "file", "条目", "旧格式", "损坏行", "断点", "状态"
+                    );
+                    println!("{header}");
+                    let mut all_ok = true;
+                    for r in &reports {
+                        if !r.ok {
+                            all_ok = false;
+                        }
+                        let status = if r.ok { "OK" } else { "损坏" };
+                        let broken = r
+                            .broken_at
+                            .map(|b| b.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        println!(
+                            "{:<44} {:>6} {:>6} {:>6}  {:>6}  {}",
+                            r.path, r.entries, r.unsigned_entries, r.corrupt_lines, broken, status
+                        );
+                    }
+                    if all_ok {
+                        let ok_line = "哈希链完整：未发现篡改/损坏证据";
+                        println!("{ok_line}");
+                    } else {
+                        eprintln!("哈希链校验未通过：存在损坏行或链断点（见上表）");
+                    }
+                }
+                if reports.iter().all(|r| r.ok) {
+                    0
+                } else {
+                    1
+                }
+            }
+            Err(err) => {
+                eprintln!("读取失败: {err}");
+                1
+            }
+        },
         other => {
             eprintln!(
-                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/digest/path）"
+                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/digest/verify-chain/path）"
             );
             1
         }

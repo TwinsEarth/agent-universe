@@ -15,6 +15,7 @@
 //! - 群体智能飞轮 `Flywheel`（v2.4.6）
 
 pub mod agent_memory;
+pub mod chain;
 pub mod digest;
 pub mod enhanced;
 pub mod flywheel;
@@ -25,6 +26,7 @@ pub mod privacy;
 pub mod shared_memory;
 
 pub use agent_memory::AgentMemory;
+pub use chain::{verify_chain_file, ChainFileReport};
 pub use digest::{digest_sessions, SessionDigest, DIGEST_CONCLUSION_MAX};
 pub use enhanced::{EnhancedMemory, RatedMemory};
 pub use flywheel::Flywheel;

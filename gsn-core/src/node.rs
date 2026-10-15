@@ -192,6 +192,7 @@ fn record_sandbox_exec_memory(
     memory_store: &MemoryStoreHandle,
     sandbox_id: &str,
     language: &str,
+    node_id: &str,
     payload: &serde_json::Value,
 ) {
     let exit_code = payload.get("exit_code").and_then(|v| v.as_i64());
@@ -206,6 +207,7 @@ fn record_sandbox_exec_memory(
     };
 
     let mut entry = crate::memory::MemoryEntry::new(format!("sbx-{sandbox_id}"))
+        .node_id(node_id)
         .gate("sandbox.exec")
         .argv(vec![language.to_string()])
         .ms(wall_ms)
@@ -230,6 +232,7 @@ fn record_sandbox_exec_memory(
             // 不阻断 sandbox exec 主流程（仍可观测、可计数）。
             crate::memory::MemoryError::SecretRefused { field, kind } => {
                 let mut placeholder = crate::memory::MemoryEntry::new(format!("sbx-{sandbox_id}"))
+                    .node_id(node_id)
                     .gate("sandbox.exec")
                     .argv(vec![language.to_string()])
                     .ms(wall_ms)
@@ -380,6 +383,8 @@ pub struct DaemonArgs {
     pub relay_probe_secs: u64,
     /// v3.9.18: 全量 relay 巡检周期（秒，默认 3600）。
     pub relay_maintenance_secs: u64,
+    /// v5.0.6: 本节点标识（写入记忆 `node_id`，调配 Agent 聚合节点画像）。
+    pub node_id: String,
 }
 
 impl Default for DaemonArgs {
@@ -399,6 +404,7 @@ impl Default for DaemonArgs {
             relay_cooldown_secs: crate::relay_pool::DEFAULT_FAILOVER_COOLDOWN_SECS,
             relay_probe_secs: 300,
             relay_maintenance_secs: 3600,
+            node_id: "local".to_string(),
         }
     }
 }
@@ -461,6 +467,7 @@ pub fn print_daemon_help() {
     println!("  --relay-cooldown <secs>       relay 掉线后 failover 冷却秒数 (默认: 60)");
     println!("  --relay-probe <secs>          快速故障探测周期秒数 (默认: 300)");
     println!("  --relay-maintenance <secs>    全量 relay 巡检周期秒数 (默认: 3600)");
+    println!("  --node-id <id>                本节点标识，写入记忆 node_id (默认: local)");
     println!("  --help              显示帮助");
 }
 
@@ -542,6 +549,10 @@ pub fn parse_daemon_args(args: &[String]) -> DaemonArgs {
                 d.relay_maintenance_secs = require_value(args, i, "--relay-maintenance")
                     .parse()
                     .unwrap_or(3600);
+                i += 2;
+            }
+            "--node-id" => {
+                d.node_id = require_value(args, i, "--node-id");
                 i += 2;
             }
             "--version" | "-V" => {
@@ -2415,6 +2426,7 @@ async fn run_api_server(
     market: MarketActorHandle,
     sandbox_mgr: Arc<std::sync::Mutex<SandboxManager>>,
     memory_store: MemoryStoreHandle,
+    daemon_node_id: String,
     plugin_host: Arc<std::sync::Mutex<crate::plugin::PluginHost>>,
     crdt: CrdtHandle,
     shard_ctrl: ShardCtrlTx,
@@ -2450,6 +2462,7 @@ async fn run_api_server(
         let market = market.clone();
         let sandbox_mgr = sandbox_mgr.clone();
         let memory_store = memory_store.clone();
+        let daemon_node_id = daemon_node_id.clone();
         let plugin_host = plugin_host.clone();
         let orchestrator = orchestrator.clone();
         let crdt = crdt.clone();
@@ -2827,9 +2840,16 @@ async fn run_api_server(
                 if status == 200 {
                     if let Some((sandbox_id, language)) = parse_sandbox_exec(path_part, &body) {
                         let mem = memory_store.clone();
+                        let node_id = daemon_node_id.clone();
                         let payload_c = payload.clone();
                         tokio::task::spawn_blocking(move || {
-                            record_sandbox_exec_memory(&mem, &sandbox_id, &language, &payload_c);
+                            record_sandbox_exec_memory(
+                                &mem,
+                                &sandbox_id,
+                                &language,
+                                &node_id,
+                                &payload_c,
+                            );
                         });
                     }
                 }
@@ -3836,6 +3856,7 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
         market,
         sandbox_mgr,
         memory_store,
+        args.node_id.clone(),
         plugin_host,
         crdt_handle,
         shard_ctrl_tx,
@@ -4207,7 +4228,7 @@ mod memory_wiring_tests {
             "stderr": "",
             "wall_ms": 12
         });
-        record_sandbox_exec_memory(&store, "sb1", "python", &payload);
+        record_sandbox_exec_memory(&store, "sb1", "python", "node-a", &payload);
 
         let entries = store.lock().unwrap().load_all().unwrap();
         assert_eq!(entries.len(), 1);
@@ -4219,6 +4240,7 @@ mod memory_wiring_tests {
         assert_eq!(e.ms, Some(12));
         assert_eq!(e.stdout_tail.as_deref(), Some("hello\n"));
         assert_eq!(e.conclusion.as_deref(), Some("exit=0 ok (python)"));
+        assert_eq!(e.node_id.as_deref(), Some("node-a"));
         assert!(e.tags.contains(&"sandbox".to_string()));
         assert!(e.tags.contains(&"python".to_string()));
         let _ = std::fs::remove_file(&path);
@@ -4235,7 +4257,7 @@ mod memory_wiring_tests {
             "stderr": "boom\n",
             "wall_ms": 5
         });
-        record_sandbox_exec_memory(&store, "sb2", "bash", &payload);
+        record_sandbox_exec_memory(&store, "sb2", "bash", "node-a", &payload);
 
         let entries = store.lock().unwrap().load_all().unwrap();
         assert_eq!(entries.len(), 1);
@@ -4260,7 +4282,7 @@ mod memory_wiring_tests {
             "stderr": "",
             "wall_ms": 3
         });
-        record_sandbox_exec_memory(&store, "sb9", "python", &payload);
+        record_sandbox_exec_memory(&store, "sb9", "python", "node-a", &payload);
 
         let entries = store.lock().unwrap().load_all().unwrap();
         assert_eq!(entries.len(), 1, "应只落一条审计占位");
@@ -4295,7 +4317,7 @@ mod memory_wiring_tests {
             "stderr": "",
             "wall_ms": 4
         });
-        record_sandbox_exec_memory(&store, "sbR", "python", &payload);
+        record_sandbox_exec_memory(&store, "sbR", "python", "node-a", &payload);
 
         let entries = store.lock().unwrap().load_all().unwrap();
         assert_eq!(entries.len(), 1, "应只落一条脱敏记忆（无占位）");

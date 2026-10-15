@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.5");
+            println!("agent-universe v5.0.6");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1065,6 +1065,7 @@ fn print_memory_help() {
     println!("  recall   按条件检索（同 list 的过滤选项）");
     println!("  query    组合条件检索（同 list，末尾给出结论摘要）");
     println!("  status   显示容量状态（当前/滚动文件字节、上限）");
+    println!("  profile  节点画像：从记忆聚合节点历史（样本/成功率/耗时/P95/能力）");
     println!("  path     显示 memory.jsonl 路径");
     println!("\n选项:");
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
@@ -1073,6 +1074,7 @@ fn print_memory_help() {
     println!("  --allow-secret        append 时关闭隐私 fail-closed（默认开启；风险自负）");
     println!("  --redact              append 命中 secret 时字段级脱敏后落盘（保留上下文）");
     println!("  --task-id <id>        任务标识（append 必填）");
+    println!("  --node-id <id>        append 标注来源节点；profile 过滤到单节点");
     println!("  --gate <名称>         闸门/来源（如 ci）");
     println!("  --conclusion <文本>   结论");
     println!("  --tag <标签>          标签（可重复，多个为 AND）");
@@ -1094,6 +1096,18 @@ fn mem_value_after(rest: &[String], i: usize, name: &str) -> Result<String, Stri
     rest.get(i + 1)
         .cloned()
         .ok_or_else(|| format!("{name} 需要一个参数"))
+}
+
+/// v5.0.6：从参数列表取 `--name <value>`（无则 None；只取第一次出现）。
+fn mem_flag_value(rest: &[String], name: &str) -> Option<String> {
+    let mut i = 0;
+    while i + 1 < rest.len() {
+        if rest[i] == name {
+            return Some(rest[i + 1].clone());
+        }
+        i += 1;
+    }
+    None
 }
 
 /// 解析 memory.jsonl 路径（默认 data-dir/memory.jsonl）。
@@ -1345,6 +1359,7 @@ async fn run_memory(args: &[String]) -> i32 {
         }
         "append" => {
             let mut task_id: Option<String> = None;
+            let mut node_id: Option<String> = None;
             let mut gate: Option<String> = None;
             let mut conclusion: Option<String> = None;
             let mut tags: Vec<String> = Vec::new();
@@ -1363,6 +1378,16 @@ async fn run_memory(args: &[String]) -> i32 {
                     "--task-id" => match mem_value_after(rest, i, name) {
                         Ok(v) => {
                             task_id = Some(v);
+                            i += 2;
+                        }
+                        Err(e) => {
+                            parse_err = Some(e);
+                            i += 1;
+                        }
+                    },
+                    "--node-id" => match mem_value_after(rest, i, name) {
+                        Ok(v) => {
+                            node_id = Some(v);
                             i += 2;
                         }
                         Err(e) => {
@@ -1473,6 +1498,9 @@ async fn run_memory(args: &[String]) -> i32 {
                 }
             };
             let mut e = gsn_core::MemoryEntry::new(tid);
+            if let Some(n) = node_id {
+                e = e.node_id(n);
+            }
             if let Some(g) = gate {
                 e = e.gate(g);
             }
@@ -1531,9 +1559,66 @@ async fn run_memory(args: &[String]) -> i32 {
                 2
             }
         },
+        // v5.0.6：节点画像——从记忆聚合节点历史（样本/成功率/耗时/P95/观察能力）。
+        "profile" => match store.load_all() {
+            Ok(entries) => {
+                let filter = mem_flag_value(rest, "--node-id");
+                let mut nodes: Vec<(String, gsn_core::NodeProfile)> = Vec::new();
+                for e in &entries {
+                    let Some(nid) = e.node_id.as_deref() else {
+                        continue;
+                    };
+                    if let Some(f) = &filter {
+                        if nid != f {
+                            continue;
+                        }
+                    }
+                    if !nodes.iter().any(|(id, _)| id == nid) {
+                        let p = gsn_core::NodeProfile::new(nid, gsn_core::FleetRole::Unknown)
+                            .aggregate_from_entries(&entries);
+                        nodes.push((nid.to_string(), p));
+                    }
+                }
+                nodes.sort_by(|a, b| a.0.cmp(&b.0));
+                if nodes.is_empty() {
+                    let hint = "（无带 node_id 的记忆条目；可 append --node-id <id> 或由 daemon --node-id 自动标注）";
+                    println!("{}", hint);
+                } else {
+                    let hdr = format!(
+                        "{:<16} {:>6} {:>8} {:>10} {:>8}  {}",
+                        "node_id", "样本数", "成功率", "avg_ms", "p95_ms", "观察能力"
+                    );
+                    println!("{}", hdr);
+                    for (nid, p) in &nodes {
+                        let rate = p
+                            .success_rate
+                            .map(|r| format!("{:.0}%", r * 100.0))
+                            .unwrap_or_else(|| "-".to_string());
+                        let avg = p
+                            .avg_ms
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let p95 = p
+                            .p95_ms
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "-".to_string());
+                        let caps = p.observed_capabilities.join(",");
+                        println!(
+                            "{:<16} {:>6} {:>8} {:>10} {:>8}  {}",
+                            nid, p.history_n, rate, avg, p95, caps
+                        );
+                    }
+                }
+                0
+            }
+            Err(err) => {
+                eprintln!("读取失败: {err}");
+                1
+            }
+        },
         other => {
             eprintln!(
-                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/path）"
+                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/path）"
             );
             1
         }

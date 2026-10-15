@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.2");
+            println!("agent-universe v5.0.3");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1064,9 +1064,12 @@ fn print_memory_help() {
     println!("  list     列出记忆（当前 + 滚动档案，可过滤）");
     println!("  recall   按条件检索（同 list 的过滤选项）");
     println!("  query    组合条件检索（同 list，末尾给出结论摘要）");
+    println!("  status   显示容量状态（当前/滚动文件字节、上限）");
     println!("  path     显示 memory.jsonl 路径");
     println!("\n选项:");
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
+    println!("  --max-bytes <n>       单文件软上限覆盖（0=不限，仅本次调用）");
+    println!("  --keep-rotated <n>    保留滚动文件数覆盖（仅本次调用）");
     println!("  --task-id <id>        任务标识（append 必填）");
     println!("  --gate <名称>         闸门/来源（如 ci）");
     println!("  --conclusion <文本>   结论");
@@ -1116,6 +1119,7 @@ fn parse_memory_query(rest: &[String]) -> Result<(gsn_core::MemoryQuery, bool), 
         let name = rest[i].as_str();
         match name {
             "--data-dir" => i += 2,
+            "--max-bytes" | "--keep-rotated" => i += 2,
             "--json" => {
                 json_out = true;
                 i += 1;
@@ -1223,6 +1227,58 @@ fn print_memory_summary(entries: &[gsn_core::MemoryEntry]) {
     println!("匹配 {total} 条：成功 {ok}、失败 {failed}、无退出码 {no_code}；总耗时 {total_ms} ms");
 }
 
+/// 扫描容量覆盖参数 `--max-bytes <n>` / `--keep-rotated <n>`。
+fn parse_memory_capacity(rest: &[String]) -> Result<(Option<u64>, Option<usize>), String> {
+    let mut max_bytes: Option<u64> = None;
+    let mut keep_rotated: Option<usize> = None;
+    let mut i = 0;
+    while i < rest.len() {
+        match rest[i].as_str() {
+            "--max-bytes" => {
+                let v = mem_value_after(rest, i, "--max-bytes")?;
+                max_bytes = Some(
+                    v.parse()
+                        .map_err(|_| format!("--max-bytes 需要数字，得到 {v}"))?,
+                );
+                i += 2;
+            }
+            "--keep-rotated" => {
+                let v = mem_value_after(rest, i, "--keep-rotated")?;
+                keep_rotated = Some(
+                    v.parse()
+                        .map_err(|_| format!("--keep-rotated 需要数字，得到 {v}"))?,
+                );
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+    Ok((max_bytes, keep_rotated))
+}
+
+/// 以人类可读方式展示记忆存储容量状态。
+fn print_memory_status(s: &gsn_core::MemoryStorageStatus) {
+    println!("记忆存储容量");
+    println!("路径: {}", s.path);
+    println!(
+        "当前文件: {} 字节 / {} 条（单文件上限 {}）",
+        s.current_bytes, s.current_entries, s.max_bytes
+    );
+    if s.rotated.is_empty() {
+        println!("滚动文件: 无（保留 {} 个）", s.keep_rotated);
+    } else {
+        println!("滚动文件（保留 {} 个）：", s.keep_rotated);
+        for r in &s.rotated {
+            println!("  memory.{}.jsonl: {} 字节", r.index, r.bytes);
+        }
+    }
+    match s.disk_bound_bytes {
+        Some(bound) => println!("磁盘合计 {} 字节 / 硬上限 {}", s.total_bytes, bound),
+        None => println!("磁盘合计 {} 字节（未设上限）", s.total_bytes),
+    }
+    println!("tail 字段最大字符: {}", s.tail_max_chars);
+}
+
 async fn run_memory(args: &[String]) -> i32 {
     if args.is_empty() || args[0] == "--help" || args[0] == "-h" {
         print_memory_help();
@@ -1238,12 +1294,43 @@ async fn run_memory(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let store = gsn_core::PersistentMemoryStore::open(&path);
+    let mut store = gsn_core::PersistentMemoryStore::open(&path);
+    // 容量覆盖（仅影响本次 CLI 调用）：--max-bytes / --keep-rotated。
+    let (max_bytes_override, keep_rotated_override) = match parse_memory_capacity(rest) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("参数错误: {e}");
+            return 2;
+        }
+    };
+    if let Some(mb) = max_bytes_override {
+        store = store.max_bytes(mb);
+    }
+    if let Some(kr) = keep_rotated_override {
+        store = store.keep_rotated(kr);
+    }
 
     match op {
         "path" => {
             println!("{}", path.display());
             0
+        }
+        "status" => {
+            let json_out = rest.iter().any(|a| a == "--json");
+            match store.status() {
+                Ok(s) => {
+                    if json_out {
+                        println!("{}", serde_json::to_string_pretty(&s).unwrap_or_default());
+                    } else {
+                        print_memory_status(&s);
+                    }
+                    0
+                }
+                Err(err) => {
+                    eprintln!("读取状态失败: {err}");
+                    1
+                }
+            }
         }
         "append" => {
             let mut task_id: Option<String> = None;
@@ -1260,6 +1347,7 @@ async fn run_memory(args: &[String]) -> i32 {
                 let name = rest[i].as_str();
                 match name {
                     "--data-dir" => i += 2,
+                    "--max-bytes" | "--keep-rotated" => i += 2,
                     "--task-id" => match mem_value_after(rest, i, name) {
                         Ok(v) => {
                             task_id = Some(v);

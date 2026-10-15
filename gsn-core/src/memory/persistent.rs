@@ -233,6 +233,30 @@ pub const DEFAULT_KEEP_ROTATED: usize = 2;
 /// 默认 tail 字段最大字符数。
 pub const DEFAULT_TAIL_MAX_CHARS: usize = 2000;
 
+/// 一个滚动归档文件（memory.<index>.jsonl）的容量信息。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RotatedFileStatus {
+    pub index: usize,
+    pub bytes: u64,
+}
+
+/// 记忆存储的容量状态快照（当前文件 + 全部滚动文件）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct MemoryStorageStatus {
+    pub path: String,
+    /// 单文件软上限（字节）；0 表示不限。
+    pub max_bytes: u64,
+    pub keep_rotated: usize,
+    pub tail_max_chars: usize,
+    pub current_bytes: u64,
+    pub current_entries: usize,
+    pub rotated: Vec<RotatedFileStatus>,
+    /// 当前文件 + 全部滚动文件合计字节。
+    pub total_bytes: u64,
+    /// 磁盘硬上限；`None` 表示不限。
+    pub disk_bound_bytes: Option<u64>,
+}
+
 /// 有界 append-only JSONL 记忆存储。
 ///
 /// 仅持有路径与配置（无内部可变状态），因此读写方法都用 `&self`。
@@ -301,6 +325,34 @@ impl PersistentMemoryStore {
         } else {
             Some(self.max_bytes * (self.keep_rotated as u64 + 1))
         }
+    }
+
+    /// 采集当前文件与全部滚动文件的容量状态（不修改任何内容）。
+    pub fn status(&self) -> Result<MemoryStorageStatus, MemoryError> {
+        let current_bytes = fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
+        let current_entries = self.load_current()?.len();
+        let mut rotated: Vec<RotatedFileStatus> = Vec::new();
+        for i in 1..=self.keep_rotated {
+            let p = self.rotated_path(i);
+            if p.exists() {
+                rotated.push(RotatedFileStatus {
+                    index: i,
+                    bytes: fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+                });
+            }
+        }
+        let rotated_bytes = rotated.iter().map(|r| r.bytes).sum::<u64>();
+        Ok(MemoryStorageStatus {
+            path: self.path.display().to_string(),
+            max_bytes: self.max_bytes,
+            keep_rotated: self.keep_rotated,
+            tail_max_chars: self.tail_max_chars,
+            current_bytes,
+            current_entries,
+            rotated,
+            total_bytes: current_bytes + rotated_bytes,
+            disk_bound_bytes: self.disk_bound_bytes(),
+        })
     }
 
     fn rotated_path(&self, i: usize) -> PathBuf {
@@ -651,6 +703,59 @@ mod tests {
             fs::remove_file(store.rotated_path(i)).ok();
         }
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn status_reports_bytes_and_rotated_files() {
+        let p = tmp_path("status");
+        let store = PersistentMemoryStore::open(&p)
+            .max_bytes(220)
+            .keep_rotated(2)
+            .tail_max_chars(50);
+        for i in 0..6 {
+            store
+                .append(
+                    MemoryEntry::new(format!("s-task-{i}"))
+                        .at(format!("2026-10-13T0{i}:00:00Z"))
+                        .exit_code(i)
+                        .conclusion(format!("conclusion number {i}")),
+                )
+                .unwrap();
+        }
+        let s = store.status().unwrap();
+        assert_eq!(s.max_bytes, 220);
+        assert_eq!(s.keep_rotated, 2);
+        assert!(s.current_entries > 0);
+        assert!(s.current_bytes <= 220);
+        // 已发生轮转：至少有一个滚动文件。
+        assert!(!s.rotated.is_empty(), "应至少有一个滚动文件");
+        // total_bytes 与各文件字节之和一致。
+        let rotated_sum: u64 = s.rotated.iter().map(|r| r.bytes).sum();
+        assert_eq!(s.total_bytes, s.current_bytes + rotated_sum);
+        // 硬上限 = 220 × (2+1) = 660。
+        assert_eq!(s.disk_bound_bytes, Some(660));
+        // status 不影响 load_all：最新条目仍在。
+        assert!(store
+            .load_all()
+            .unwrap()
+            .iter()
+            .any(|e| e.task_id == "s-task-5"));
+        for i in 1..=2 {
+            fs::remove_file(store.rotated_path(i)).ok();
+        }
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn empty_status_is_zeroed() {
+        let p = tmp_path("status-empty");
+        let store = PersistentMemoryStore::open(&p);
+        let s = store.status().unwrap();
+        assert_eq!(s.current_bytes, 0);
+        assert_eq!(s.current_entries, 0);
+        assert!(s.rotated.is_empty());
+        assert_eq!(s.total_bytes, 0);
+        assert_eq!(s.disk_bound_bytes, Some(DEFAULT_MAX_BYTES * 3));
     }
 
     #[test]

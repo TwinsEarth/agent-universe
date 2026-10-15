@@ -16,7 +16,7 @@
 use gsn_core::identity::Keypair;
 use gsn_core::memory::{
     Cat7Block, Cat7Field, FieldVerdict, FleetAccess, FleetKind, FleetMemory, LineageGraph,
-    SvafAssessment, SvafDecision,
+    RemixRecord, RemixStore, SvafAssessment, SvafDecision,
 };
 use gsn_core::node;
 
@@ -33,7 +33,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.3");
+            println!("agent-universe v5.1.4");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1106,6 +1106,7 @@ fn print_memory_help() {
     println!("  gsn memory fleet import <blocks.json>（导入 CAT7 交换块，去重+完整性校验）");
     println!("  gsn memory fleet assess --blocks <blocks.json> --assessor <id> --accept <字段,..> --reject <字段,..>");
     println!("  gsn memory fleet lineage link --child <hash> --parent <hash>（另: ancestors/root/children/status）");
+    println!("  gsn memory fleet remix add --blocks <blocks.json> --assessor <id> --understanding <自己的理解> --accept <字段,..> --reject <字段,..>（另: list/origin/status）");
     println!("  角色: observer(读) < contributor(读+写) < captain(+策展) < admin(+管理)");
 }
 
@@ -2271,9 +2272,225 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "remix" => {
+                    // v5.1.4：remix 再混合（remix.jsonl）——只存接收方自己的角色评估
+                    // 与理解，不复制原始同伴信号。调用形如 gsn memory fleet remix <add|list|origin|status>。
+                    let remix_path = data_dir.join("remix.jsonl");
+                    let rsub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!("错误: remix 需指定子操作（add/list/origin/status）");
+                            return 1;
+                        }
+                    };
+                    match rsub {
+                        "add" => {
+                            let blocks_path = match mem_flag_value(rest, "--blocks") {
+                                Some(p) => p,
+                                None => {
+                                    eprintln!("错误: remix add 需 --blocks <blocks.json>");
+                                    return 1;
+                                }
+                            };
+                            let assessor = match mem_flag_value(rest, "--assessor") {
+                                Some(a) => a,
+                                None => {
+                                    eprintln!("错误: remix add 需 --assessor <id>");
+                                    return 1;
+                                }
+                            };
+                            let understanding = match mem_flag_value(rest, "--understanding") {
+                                Some(u) => u,
+                                None => {
+                                    eprintln!("错误: remix add 需 --understanding <自己的理解>");
+                                    return 1;
+                                }
+                            };
+                            let accept_fields = match mem_flag_value(rest, "--accept")
+                                .map(|s| parse_svaf_fields(&s))
+                                .transpose()
+                            {
+                                Ok(v) => v.unwrap_or_default(),
+                                Err(bad) => {
+                                    eprintln!("错误: --accept 含未知字段 '{bad}'");
+                                    return 1;
+                                }
+                            };
+                            let reject_fields = match mem_flag_value(rest, "--reject")
+                                .map(|s| parse_svaf_fields(&s))
+                                .transpose()
+                            {
+                                Ok(v) => v.unwrap_or_default(),
+                                Err(bad) => {
+                                    eprintln!("错误: --reject 含未知字段 '{bad}'");
+                                    return 1;
+                                }
+                            };
+                            let text = match std::fs::read_to_string(&blocks_path) {
+                                Ok(t) => t,
+                                Err(e) => {
+                                    eprintln!("读取交换块文件失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let raw_blocks: Vec<Cat7Block> = match serde_json::from_str(&text) {
+                                Ok(b) => b,
+                                Err(e) => {
+                                    eprintln!("解析 CAT7 交换块失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            // 一次只再混合一个来源块（一个块配一份自己的理解）。
+                            let b = if raw_blocks.len() == 1 {
+                                &raw_blocks[0]
+                            } else {
+                                eprintln!(
+                                    "错误: remix add 仅支持单个来源块（实际 {} 个）",
+                                    raw_blocks.len()
+                                );
+                                return 1;
+                            };
+                            let mut assessment = match SvafAssessment::for_block(b, &assessor) {
+                                Ok(a) => a,
+                                Err(e) => {
+                                    eprintln!(
+                                        "再混合失败（原始块未通过完整性校验，fail-closed）: {e}"
+                                    );
+                                    return 1;
+                                }
+                            };
+                            for f in &accept_fields {
+                                assessment.set(*f, FieldVerdict::Accept);
+                            }
+                            for f in &reject_fields {
+                                // reject 后设，覆盖 accept。
+                                assessment.set(*f, FieldVerdict::Reject);
+                            }
+                            let rec = match RemixRecord::create(
+                                b,
+                                &assessment,
+                                &assessor,
+                                &understanding,
+                            ) {
+                                Ok(r) => r,
+                                Err(e) => {
+                                    eprintln!("再混合失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let mut store = match RemixStore::open(&remix_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开再混合库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let added = store.add(rec.clone());
+                            if let Err(e) = store.save() {
+                                eprintln!("保存再混合库失败: {e}");
+                                return 1;
+                            }
+                            if added {
+                                println!(
+                                    "再混合完成（接收方 {assessor}）：来源 {} → 新块 {}（决策 {:?}）",
+                                    rec.origin_claim_hash,
+                                    rec.remix_block.claim_hash,
+                                    rec.decision
+                                );
+                            } else {
+                                println!(
+                                    "再混合已存在，跳过（新块 {}）",
+                                    rec.remix_block.claim_hash
+                                );
+                            }
+                            0
+                        }
+                        "list" => {
+                            let store = match RemixStore::open(&remix_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开再混合库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            if mem_flag_value(rest, "--json").is_some() {
+                                match serde_json::to_string(store.records()) {
+                                    Ok(s) => println!("{s}"),
+                                    Err(e) => {
+                                        eprintln!("错误: 序列化再混合记录失败: {e}");
+                                        return 1;
+                                    }
+                                }
+                            } else {
+                                println!("再混合记录（共 {} 条）：", store.records().len());
+                                for r in store.records() {
+                                    println!(
+                                        "  {} → {}（{}）：{}",
+                                        r.origin_claim_hash,
+                                        r.remix_block.claim_hash,
+                                        r.assessor,
+                                        r.remix_block.content
+                                    );
+                                }
+                            }
+                            0
+                        }
+                        "origin" => {
+                            let claim = match mem_flag_value(rest, "--claim") {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!("错误: origin 需 --claim <来源 hash>");
+                                    return 1;
+                                }
+                            };
+                            let store = match RemixStore::open(&remix_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开再混合库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let found = store.by_origin(&claim);
+                            println!("来源 {} 的再混合（{} 条）：", claim, found.len());
+                            for r in found {
+                                println!(
+                                    "  {}（{}）：{}",
+                                    r.remix_block.claim_hash, r.assessor, r.remix_block.content
+                                );
+                            }
+                            0
+                        }
+                        "status" => {
+                            let store = match RemixStore::open(&remix_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开再混合库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let mut origins = std::collections::HashSet::new();
+                            for r in store.records() {
+                                origins.insert(r.origin_claim_hash.clone());
+                            }
+                            println!("再混合库: {}", remix_path.display());
+                            println!(
+                                "再混合记录: {}，涉及来源: {}",
+                                store.records().len(),
+                                origins.len()
+                            );
+                            0
+                        }
+                        other_rsub => {
+                            eprintln!(
+                                "错误: 未知 remix 子操作 '{other_rsub}'（add/list/origin/status）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/help）"
                     );
                     1
                 }

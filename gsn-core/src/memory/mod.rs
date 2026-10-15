@@ -26,6 +26,7 @@ pub mod layered;
 pub mod lineage;
 pub mod persistent;
 pub mod privacy;
+pub mod remix;
 pub mod shared_memory;
 pub mod svaf;
 
@@ -47,5 +48,6 @@ pub use persistent::{
     RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
 };
 pub use privacy::{redact_entry, redact_secrets, scan_entry_for_secret, SecretHit};
+pub use remix::{RemixError, RemixRecord, RemixStore};
 pub use shared_memory::SwarmMemory;
 pub use svaf::{Cat7Field, FieldVerdict, SvafAssessment, SvafDecision, SvafError};

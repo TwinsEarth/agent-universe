@@ -1,7 +1,12 @@
-//! Memory Sharing（v2.4.2+）—— **v3.5.9 状态登记（DOC-05 / 自审 F-4）：纯算法库，
-//! 未在 `gsn-daemon` 启动运行图中构造。** 下列三层记忆与飞轮类型仅由 `lib.rs`
-//! re-export 供库使用者/测试引用，生产数据面（市场、P2P、官方插件）不读写它们；
-//! 属待决项（接线启用 or 收敛删除），见 `docs/CAPABILITY-STATUS.md`。
+//! Memory Sharing（v2.4.2+）。
+//!
+//! 接线状态（v5.0.1 起）：
+//! - [`persistent`] 持久化个体记忆（append-only `memory.jsonl`）**已接线进 `gsn-daemon`
+//!   启动运行图**：sandbox exec 成功后自动构造并追加一条记忆（见 node.rs 的
+//!   `record_sandbox_exec_memory`）。
+//! - 下列三层记忆与飞轮（AgentMemory / SwarmMemory / IntergenMemory / Flywheel）仍为纯
+//!   算法库，仅由 `lib.rs` re-export 供库使用者/测试引用，生产数据面暂不读写，属待决项
+//!   （后续版本接线或收敛删除），见 `docs/CAPABILITY-STATUS.md`。
 //!
 //! 三层记忆：
 //! - 个体记忆 `AgentMemory` / `EnhancedMemory`（v2.4.4：检索/评价/压缩遗忘）

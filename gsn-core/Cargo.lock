@@ -958,7 +958,7 @@ dependencies = [
  "k256",
  "libc",
  "libp2p",
- "rand 0.8.8",
+ "rand 0.10.3",
  "reed-solomon-erasure",
  "regex",
  "rusqlite",

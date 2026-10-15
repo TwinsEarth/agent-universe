@@ -1,12 +1,12 @@
 [package]
 name = "gsn-core"
-version = "0.5.4"
+version = "0.5.5"
 edition = "2021"
 # MSRV（W-01，v3.5.7）：锁定依赖中最高的 rust-version 是 time 0.3.x 家族要求的 1.88；
 # 已用 rustc 1.88.0 实测 `cargo check --bins --locked` 通过。CI 有对应 MSRV 关卡。
 # 仅约束库与二进制；测试/clippy 仍以 stable 运行。
 rust-version = "1.88"
-description = "Agent Universe 核心库 v5.0.4: relay-only 纯中继模式（NodeMode::Relay，Circuit Relay + DHT 转发，不 publish CRDT 快照/分片心跳）+ 通用访问日志降 debug + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
+description = "Agent Universe 核心库 v5.0.5: relay-only 纯中继模式（NodeMode::Relay，Circuit Relay + DHT 转发，不 publish CRDT 快照/分片心跳）+ 通用访问日志降 debug + 跨平台客户端 + CLI/REST/MCP - 群众化的 AGI 路线，去中心化的智能体共享 & 开源网络"
 license = "MIT"
 repository = "https://github.com/TwinsEarth/agent-universe"
 homepage = "https://github.com/TwinsEarth/agent-universe"
@@ -68,6 +68,9 @@ futures = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 reed-solomon-erasure = "6.0.0"
+# v5.0.5 字段级脱敏：对自由文本字段做确定性的 secret 定位与掩码（先脱敏再落盘）。
+# regex 为纯 Rust 实现（无 C 依赖），MSRV 1.65+，与本 crate MSRV 1.88 兼容。
+regex = "1.10"
 
 # 第三轮：链上信任锚完整接入（Base / Arbitrum 测试网+主网双就绪）。
 # 仅新增两项最小密码学原语（均 RustCrypto 出品、MSRV 1.88 兼容），不引入

@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.4");
+            println!("agent-universe v5.0.5");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1071,6 +1071,7 @@ fn print_memory_help() {
     println!("  --max-bytes <n>       单文件软上限覆盖（0=不限，仅本次调用）");
     println!("  --keep-rotated <n>    保留滚动文件数覆盖（仅本次调用）");
     println!("  --allow-secret        append 时关闭隐私 fail-closed（默认开启；风险自负）");
+    println!("  --redact              append 命中 secret 时字段级脱敏后落盘（保留上下文）");
     println!("  --task-id <id>        任务标识（append 必填）");
     println!("  --gate <名称>         闸门/来源（如 ci）");
     println!("  --conclusion <文本>   结论");
@@ -1314,6 +1315,11 @@ async fn run_memory(args: &[String]) -> i32 {
     if rest.iter().any(|a| a == "--allow-secret") {
         store = store.privacy_audit(false);
     }
+    // v5.0.5：--redact 命中 secret 改为字段级脱敏后落盘（保留上下文，加 audit-redacted）。
+    // 若同时给 --allow-secret（已关闭审核），则 --allow-secret 优先，redact 不生效。
+    if rest.iter().any(|a| a == "--redact") {
+        store = store.redact_secrets(true);
+    }
 
     match op {
         "path" => {
@@ -1353,7 +1359,7 @@ async fn run_memory(args: &[String]) -> i32 {
                 match name {
                     "--data-dir" => i += 2,
                     "--max-bytes" | "--keep-rotated" => i += 2,
-                    "--allow-secret" => i += 1,
+                    "--allow-secret" | "--redact" => i += 1,
                     "--task-id" => match mem_value_after(rest, i, name) {
                         Ok(v) => {
                             task_id = Some(v);

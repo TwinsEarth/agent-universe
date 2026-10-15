@@ -28,7 +28,7 @@ pub use flywheel::Flywheel;
 pub use handoff::{EvidenceGrade, TraceLedger, TransferBundle};
 pub use layered::{IntergenMemory, LayeredMemory};
 pub use persistent::{
-    MemoryEntry, MemoryError, MemoryQuery, PersistentMemoryStore, DEFAULT_KEEP_ROTATED,
-    DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
+    MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore,
+    RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
 };
 pub use shared_memory::SwarmMemory;

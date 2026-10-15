@@ -27,7 +27,7 @@ first_version() {
 expect() {
   local label="$1" want="$2" got="$3"
   if [ "$got" != "$want" ]; then
-    echo "FAIL: $label 期望 $want，实际 ${got:-<缺失>}"; fail=1
+    echo "FAIL: $label 期望 ${want}，实际 ${got:-<缺失>}"; fail=1
   else
     echo "ok:   $label = $got"
   fi

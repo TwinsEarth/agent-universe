@@ -14,7 +14,7 @@
 //! 需要鉴权：用 --token <t> 或 GSN_API_TOKEN 提供 Bearer 令牌（不配置则不发该头）。
 
 use gsn_core::identity::Keypair;
-use gsn_core::memory::{FleetAccess, FleetKind, FleetMemory};
+use gsn_core::memory::{Cat7Block, FleetAccess, FleetKind, FleetMemory};
 use gsn_core::node;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,7 +30,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.0");
+            println!("agent-universe v5.1.1");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1093,23 +1093,27 @@ fn print_memory_help() {
     println!("  --until <RFC3339>     仅返回该时间之前（不含边界）");
     println!("  --limit <n>           最多返回条数");
     println!("  --json                以 JSON 输出（不含摘要）");
-    println!("\nfleet 子操作（v5.1.0 集体记忆）：");
+    println!("\nfleet 子操作（v5.1.1 集体记忆）：");
     println!("  gsn memory fleet post --kind fact|decision|open_problem --role <角色> --author <id> --content <文本>");
     println!("  gsn memory fleet list [--kind <k>] [--role <角色>] [--archived] [--json]");
     println!("  gsn memory fleet status [--role <角色>]");
     println!("  gsn memory fleet curate --claim <hash> --role captain|admin");
     println!("  gsn memory fleet purge --role admin");
+    println!("  gsn memory fleet export --cat7（导出 CAT7 七字段交换块 JSON）");
+    println!("  gsn memory fleet import <blocks.json>（导入 CAT7 交换块，去重+完整性校验）");
     println!("  角色: observer(读) < contributor(读+写) < captain(+策展) < admin(+管理)");
 }
 
 fn print_fleet_help() {
-    println!("用法: gsn memory fleet <子操作> [选项]（v5.1.0 集体记忆基座）");
+    println!("用法: gsn memory fleet <子操作> [选项]（v5.1.1 集体记忆基座 + CAT7 交换）");
     println!("子操作:");
     println!("  post     发布集体记忆（--kind/--author/--content 必填，需 contributor+）");
     println!("  list     列出集体记忆（可 --kind 过滤；--archived 含归档；需 observer+）");
     println!("  status   显示策展统计与文件字节（需 observer+）");
     println!("  curate   策展归档（--claim <hash>，需 captain+）");
     println!("  purge    清空集体记忆（需 admin）");
+    println!("  export   导出 CAT7 七字段交换块（--cat7 标记；JSON 数组输出）");
+    println!("  import   导入 CAT7 交换块（<blocks.json> 路径；逐块校验+按 claim 去重）");
     println!("选项:");
     println!("  --kind fact|decision|open_problem   策展分类");
     println!("  --role observer|contributor|captain|admin   执行者角色（默认 observer）");
@@ -1942,9 +1946,50 @@ async fn run_memory(args: &[String]) -> i32 {
                         1
                     }
                 },
+                "export" => {
+                    // v5.1.1：导出 CAT7 七字段交换块（跨 Agent 记忆交换标准单元）。
+                    let blocks = fm.export_cat7();
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&blocks).unwrap_or_default()
+                    );
+                    0
+                }
+                "import" => {
+                    // v5.1.1：导入 CAT7 交换块（--data-dir 指向本机集体记忆）。
+                    if rest.len() < 2 {
+                        eprintln!("错误: import 需提供 <blocks.json> 路径");
+                        return 1;
+                    }
+                    let path = rest[1].to_string();
+                    let text = match std::fs::read_to_string(&path) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("读取交换块文件失败: {e}");
+                            return 1;
+                        }
+                    };
+                    let blocks: Vec<Cat7Block> = match serde_json::from_str(&text) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("解析 CAT7 交换块失败: {e}");
+                            return 1;
+                        }
+                    };
+                    match fm.import_cat7(&blocks) {
+                        Ok((added, skipped)) => {
+                            println!("导入完成: 新增 {added} 条，跳过 {skipped} 条（已存在）");
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("导入失败: {e}");
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/help）"
                     );
                     1
                 }

@@ -164,6 +164,8 @@ pub enum FleetError {
     NotFound(String),
     /// 前缀匹配到多个 Active 条目（需完整 claim_hash 消歧）。
     Ambiguous(String),
+    /// CAT7 块完整性校验失败（claim_hash 与内容不符，拒绝导入）。
+    InvalidBlock(String),
 }
 
 impl fmt::Display for FleetError {
@@ -177,6 +179,9 @@ impl fmt::Display for FleetError {
             Self::Json(e) => write!(f, "JSON 解析错误: {e}"),
             Self::NotFound(h) => write!(f, "未找到活跃条目: {h}"),
             Self::Ambiguous(h) => write!(f, "前缀匹配到多个活跃条目（请用完整 claim_hash）: {h}"),
+            Self::InvalidBlock(h) => {
+                write!(f, "CAT7 块完整性校验失败（claim_hash 与内容不符）: {h}")
+            }
         }
     }
 }
@@ -296,6 +301,62 @@ impl FleetMemory {
         // 避免同一 claim 双行（Active + Archived）导致跨进程重读出现幻影。
         self.flush_all()?;
         Ok(updated)
+    }
+
+    /// 导出 CAT7 交换块（v5.1.1）：按文件内顺序，`source` 取前一条 Active 的
+    /// claim_hash（顺序血缘近似；语义血缘由 v5.1.3 lineage 提供）。
+    pub fn export_cat7(&self) -> Vec<crate::memory::cat7::Cat7Block> {
+        let mut blocks = Vec::new();
+        let mut prev: Option<String> = None;
+        for e in &self.entries {
+            if e.status == FleetStatus::Active {
+                blocks.push(crate::memory::cat7::Cat7Block::from_fleet_entry(
+                    e,
+                    prev.as_deref(),
+                ));
+                prev = Some(e.claim_hash.clone());
+            }
+        }
+        blocks
+    }
+
+    /// 导入 CAT7 交换块（v5.1.1）：原子导入（全有或全无）——
+    /// 先对所有块做完整性校验（任一失败立即拒绝，此时不写任何条），
+    /// 全部通过后再按 claim_hash 去重（已存在跳过）并一次性落盘，
+    /// 保留块内 created_at 与作者。返回 (新增, 跳过)。
+    pub fn import_cat7(
+        &mut self,
+        blocks: &[crate::memory::cat7::Cat7Block],
+    ) -> Result<(usize, usize), FleetError> {
+        // 第一遍：全量校验（失败即返回，无任何写入；保证全有/全无）。
+        for b in blocks {
+            if !b.verify() {
+                return Err(FleetError::InvalidBlock(b.claim_hash.clone()));
+            }
+        }
+        // 第二遍：去重 + 收集（内存改动，尚未落盘）。
+        let mut added = 0usize;
+        let mut skipped = 0usize;
+        for b in blocks {
+            if self.entries.iter().any(|e| e.claim_hash == b.claim_hash) {
+                skipped += 1;
+                continue;
+            }
+            self.entries.push(FleetEntry {
+                kind: b.kind,
+                author: b.author.clone(),
+                author_role: FleetAccess::Contributor,
+                content: b.content.clone(),
+                ts: b.created_at.clone(),
+                status: FleetStatus::Active,
+                claim_hash: b.claim_hash.clone(),
+            });
+            added += 1;
+        }
+        if added > 0 {
+            self.flush_all()?;
+        }
+        Ok((added, skipped))
     }
 
     /// 全量重写文件（entries 为权威镜像，损坏行随重写清除）。
@@ -582,5 +643,83 @@ mod tests {
             Some(FleetKind::OpenProblem)
         );
         assert_eq!(FleetKind::parse("fact"), Some(FleetKind::Fact));
+    }
+
+    // ---- v5.1.1：CAT7 导出 / 导入 ----
+
+    /// 导出：按文件内顺序，source 逐块指向前一条 Active 的 claim_hash（顺序血缘）。
+    #[test]
+    fn export_cat7_chains_source_in_order() {
+        let p = tmp_path("export-cat7");
+        let mut m = FleetMemory::open(&p).unwrap();
+        m.post(FleetAccess::Contributor, FleetKind::Fact, "n1", "f1")
+            .unwrap();
+        m.post(FleetAccess::Contributor, FleetKind::Decision, "n2", "d1")
+            .unwrap();
+        m.post(FleetAccess::Contributor, FleetKind::OpenProblem, "n3", "o1")
+            .unwrap();
+        let blocks = m.export_cat7();
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].source, None);
+        assert_eq!(
+            blocks[1].source.as_deref(),
+            Some(blocks[0].claim_hash.as_str())
+        );
+        assert_eq!(
+            blocks[2].source.as_deref(),
+            Some(blocks[1].claim_hash.as_str())
+        );
+        // 每个块均可通过完整性校验（跨 Agent 接收方可独立验证）。
+        assert!(blocks.iter().all(|b| b.verify()));
+        // confidence 诚实为 None（未评估）。
+        assert!(blocks.iter().all(|b| b.confidence.is_none()));
+    }
+
+    /// 导出 → 新实例导入：去重（已存在跳过）+ 保留 created_at/作者。
+    #[test]
+    fn import_cat7_dedups_and_roundtrips() {
+        let p = tmp_path("import-cat7");
+        let mut m = FleetMemory::open(&p).unwrap();
+        m.post(FleetAccess::Contributor, FleetKind::Fact, "n1", "f1")
+            .unwrap();
+        let blocks = m.export_cat7();
+
+        // 另一个节点：导入同样的块。
+        let p2 = tmp_path("import-cat7-peer");
+        let mut m2 = FleetMemory::open(&p2).unwrap();
+        let (added, skipped) = m2.import_cat7(&blocks).unwrap();
+        assert_eq!(added, 1);
+        assert_eq!(skipped, 0);
+        let (added2, skipped2) = m2.import_cat7(&blocks).unwrap();
+        assert_eq!(added2, 0);
+        assert_eq!(skipped2, 1, "重复导入必须被去重");
+        // 跨实例内容一致。
+        let rows = m2.list(FleetAccess::Observer, None, false).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].claim_hash, blocks[0].claim_hash);
+        assert_eq!(rows[0].content, "f1");
+    }
+
+    /// 导入完整性校验 fail-closed：篡改 content 的块必须被整体拒绝（不落盘任何条）。
+    #[test]
+    fn import_cat7_rejects_tampered_block() {
+        let p = tmp_path("import-tamper");
+        let mut m = FleetMemory::open(&p).unwrap();
+        let mut blocks = {
+            let p_src = tmp_path("import-tamper-src");
+            let mut mm = FleetMemory::open(&p_src).unwrap();
+            mm.post(FleetAccess::Contributor, FleetKind::Fact, "n1", "f1")
+                .unwrap();
+            mm.post(FleetAccess::Contributor, FleetKind::Decision, "n2", "d1")
+                .unwrap();
+            mm.export_cat7()
+        };
+        // 篡改第二块内容（不改 claim_hash → verify 失败）。
+        blocks[1].content = "d1（被篡改）".to_string();
+        let err = m.import_cat7(&blocks).unwrap_err();
+        assert!(matches!(err, FleetError::InvalidBlock(_)));
+        // fail-closed：任何条都不落盘。
+        let st = m.status(FleetAccess::Observer).unwrap();
+        assert_eq!(st.entries, 0);
     }
 }

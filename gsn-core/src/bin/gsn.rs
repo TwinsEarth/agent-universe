@@ -15,8 +15,9 @@
 
 use gsn_core::identity::Keypair;
 use gsn_core::memory::{
-    Cat7Block, Cat7Field, EnvTrace, EnvTraceStore, FieldVerdict, FleetAccess, FleetKind,
-    FleetMemory, LineageGraph, RemixRecord, RemixStore, SvafAssessment, SvafDecision, TraceKind,
+    consolidate_mid_to_long, consolidate_short_to_mid, Cat7Block, Cat7Field, ConsolidationEntry,
+    ConsolidationStore, EnvTrace, EnvTraceStore, FieldVerdict, FleetAccess, FleetKind, FleetMemory,
+    LineageGraph, RemixRecord, RemixStore, Stage, SvafAssessment, SvafDecision, TraceKind,
 };
 use gsn_core::node;
 
@@ -33,7 +34,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.5");
+            println!("agent-universe v5.1.6");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -2692,9 +2693,320 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "consolidation" => {
+                    // v5.1.6：记忆巩固三阶段（consolidation.jsonl）——短期（TTL）→
+                    // 中期（快照）→ 长期（分布式存储 + Merkle-SHA256）。
+                    // 调用形如 gsn memory fleet consolidation <short|mid|long|list|status|help>。
+                    let cons_path = data_dir.join("consolidation.jsonl");
+                    let csub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!(
+                                "错误: consolidation 需指定子操作（short/mid/long/list/status）"
+                            );
+                            return 1;
+                        }
+                    };
+                    match csub {
+                        "short" => {
+                            // 创建短期记忆条目：--content <X> --by <agent> --ttl <秒>。
+                            let content = match mem_flag_value(rest, "--content") {
+                                Some(c) if !c.trim().is_empty() => c,
+                                _ => {
+                                    eprintln!("错误: short 需非空 --content <内容>");
+                                    return 1;
+                                }
+                            };
+                            let by = match mem_flag_value(rest, "--by") {
+                                Some(b) if !b.trim().is_empty() => b,
+                                _ => {
+                                    eprintln!("错误: short 需 --by <agent>");
+                                    return 1;
+                                }
+                            };
+                            let ttl = match mem_flag_value(rest, "--ttl") {
+                                Some(t) => match t.parse::<u64>() {
+                                    Ok(v) if v > 0 => v,
+                                    _ => {
+                                        eprintln!("错误: --ttl 必须是正整数秒");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: short 需 --ttl <秒>（短期 TTL，到期后巩固）");
+                                    return 1;
+                                }
+                            };
+                            let entry = match ConsolidationEntry::new_short(&content, &by, ttl) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    eprintln!("创建短期记忆失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let mut store = match ConsolidationStore::open(&cons_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开巩固库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            if !store.add(entry.clone()) {
+                                eprintln!("巩固条目已存在，跳过（{}）", entry.short_id());
+                                return 0;
+                            }
+                            match store.save() {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    eprintln!("保存巩固库失败: {e}");
+                                    return 1;
+                                }
+                            }
+                            println!(
+                                "短期记忆已记录（{by}）：{} | TTL {} 秒 | 到期后可巩固",
+                                entry.short_id(),
+                                ttl
+                            );
+                            0
+                        }
+                        "mid" => {
+                            // 短期 → 中期巩固：--from <short-id> --content <摘要> --by <agent>
+                            // [--force]（TTL 未到期时 force 绕过）。
+                            let bref = match mem_flag_value(rest, "--from") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: mid 需 --from <short-entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let content = match mem_flag_value(rest, "--content") {
+                                Some(c) if !c.trim().is_empty() => c,
+                                _ => {
+                                    eprintln!("错误: mid 需非空 --content <摘要>");
+                                    return 1;
+                                }
+                            };
+                            let by = match mem_flag_value(rest, "--by") {
+                                Some(b) if !b.trim().is_empty() => b,
+                                _ => {
+                                    eprintln!("错误: mid 需 --by <agent>");
+                                    return 1;
+                                }
+                            };
+                            let force = rest.iter().any(|a| a == "--force");
+                            let mut store = match ConsolidationStore::open(&cons_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开巩固库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let short = match store.by_id(&bref) {
+                                Some(e) => e.clone(),
+                                None => {
+                                    eprintln!("错误: 短期条目不存在（{bref}）");
+                                    return 1;
+                                }
+                            };
+                            let now = std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0);
+                            let mid =
+                                match consolidate_short_to_mid(&short, &content, &by, now, force) {
+                                    Ok(e) => e,
+                                    Err(e) => {
+                                        eprintln!("短期→中期巩固失败（fail-closed）: {e}");
+                                        return 1;
+                                    }
+                                };
+                            if !store.add(mid.clone()) {
+                                eprintln!("巩固条目已存在，跳过（{}）", mid.short_id());
+                                return 0;
+                            }
+                            match store.save() {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    eprintln!("保存巩固库失败: {e}");
+                                    return 1;
+                                }
+                            }
+                            println!(
+                                "中期快照已巩固（{by}）：{} | 来源 {} 条 | 摘要 {}",
+                                mid.short_id(),
+                                mid.source_refs.len(),
+                                mid.content
+                            );
+                            0
+                        }
+                        "long" => {
+                            // 中期 → 长期巩固：--from <mid-id> --by <agent>（自动 Merkle-SHA256）。
+                            let bref = match mem_flag_value(rest, "--from") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: long 需 --from <mid-entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let by = match mem_flag_value(rest, "--by") {
+                                Some(b) if !b.trim().is_empty() => b,
+                                _ => {
+                                    eprintln!("错误: long 需 --by <agent>");
+                                    return 1;
+                                }
+                            };
+                            let mut store = match ConsolidationStore::open(&cons_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开巩固库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let mid = match store.by_id(&bref) {
+                                Some(e) => e.clone(),
+                                None => {
+                                    eprintln!("错误: 中期条目不存在（{bref}）");
+                                    return 1;
+                                }
+                            };
+                            let long = match consolidate_mid_to_long(&mid, &by) {
+                                Ok(e) => e,
+                                Err(e) => {
+                                    eprintln!("中期→长期巩固失败（fail-closed）: {e}");
+                                    return 1;
+                                }
+                            };
+                            if !store.add(long.clone()) {
+                                eprintln!("巩固条目已存在，跳过（{}）", long.short_id());
+                                return 0;
+                            }
+                            match store.save() {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    eprintln!("保存巩固库失败: {e}");
+                                    return 1;
+                                }
+                            }
+                            println!(
+                                "长期记忆已巩固（{by}）：{} | Merkle 根 {} | 来源 {} 条",
+                                long.short_id(),
+                                long.merkle_root.as_deref().unwrap_or("（无）"),
+                                long.source_refs.len()
+                            );
+                            0
+                        }
+                        "list" => {
+                            let store = match ConsolidationStore::open(&cons_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开巩固库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            println!("记忆巩固（共 {} 条）：", store.entries().len());
+                            for e in store.entries() {
+                                let stage = match e.stage {
+                                    Stage::Short => "短期",
+                                    Stage::Mid => "中期",
+                                    Stage::Long => "长期",
+                                };
+                                println!(
+                                    "  {}  {}  TTL {}  来源 {}  Merkle {}  巩固者 {}",
+                                    e.short_id(),
+                                    stage,
+                                    e.ttl_secs
+                                        .map(|t| format!("{t}s"))
+                                        .unwrap_or_else(|| "-".to_string()),
+                                    e.source_refs.len(),
+                                    e.merkle_root
+                                        .as_deref()
+                                        .map(|m| m.chars().take(16).collect::<String>())
+                                        .unwrap_or_else(|| "-".to_string()),
+                                    e.consolidated_by
+                                );
+                            }
+                            0
+                        }
+                        "status" => {
+                            let eid = match mem_flag_value(rest, "--id") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: status 需 --id <entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let store = match ConsolidationStore::open(&cons_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开巩固库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let e = match store.by_id(&eid) {
+                                Some(e) => e,
+                                None => {
+                                    eprintln!("错误: 巩固条目不存在（{eid}）");
+                                    return 1;
+                                }
+                            };
+                            let stage = match e.stage {
+                                Stage::Short => "短期（TTL）",
+                                Stage::Mid => "中期（快照）",
+                                Stage::Long => "长期（分布式 + Merkle）",
+                            };
+                            println!("条目: {}", e.short_id());
+                            println!("完整 id: {}", e.entry_id);
+                            println!("阶段: {}", stage);
+                            println!("巩固者: {}", e.consolidated_by);
+                            println!("创建时间: {}", e.created_at);
+                            println!(
+                                "TTL: {}",
+                                e.ttl_secs
+                                    .map(|t| format!("{t}s"))
+                                    .unwrap_or_else(|| "（无，长期）".to_string())
+                            );
+                            println!("内容: {}", e.content);
+                            println!("来源 refs（{} 条）：", e.source_refs.len());
+                            for s in &e.source_refs {
+                                println!("  {}", s.chars().take(16).collect::<String>());
+                            }
+                            match &e.merkle_root {
+                                Some(m) => {
+                                    println!("Merkle 根: {}", m);
+                                    println!(
+                                        "Merkle 校验: {}",
+                                        if e.verify_merkle() {
+                                            "通过"
+                                        } else {
+                                            "失败"
+                                        }
+                                    );
+                                }
+                                None => println!("Merkle 根: （无，非长期）"),
+                            }
+                            0
+                        }
+                        "help" => {
+                            println!("consolidation 用法：");
+                            println!("  gsn memory fleet consolidation short --content <X> --by <agent> --ttl <秒>");
+                            println!("  gsn memory fleet consolidation mid --from <short-id> --content <摘要> --by <agent> [--force]");
+                            println!("  gsn memory fleet consolidation long --from <mid-id> --by <agent>");
+                            println!("  gsn memory fleet consolidation list");
+                            println!("  gsn memory fleet consolidation status --id <entry-id>");
+                            println!("说明：记忆巩固三阶段（短期 TTL → 中期快照 → 长期分布式存储 + Merkle-SHA256），阶段只能前进，源条目不可变。");
+                            0
+                        }
+                        other_csub => {
+                            eprintln!(
+                                "错误: 未知 consolidation 子操作 '{other_csub}'（short/mid/long/list/status/help）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/help）"
                     );
                     1
                 }

@@ -16,8 +16,9 @@
 use gsn_core::identity::Keypair;
 use gsn_core::memory::{
     consolidate_mid_to_long, consolidate_short_to_mid, Cat7Block, Cat7Field, ConsolidationEntry,
-    ConsolidationStore, EnvTrace, EnvTraceStore, FieldVerdict, FleetAccess, FleetKind, FleetMemory,
-    LineageGraph, RemixRecord, RemixStore, Stage, SvafAssessment, SvafDecision, TraceKind,
+    ConsolidationStore, EnvTrace, EnvTraceStore, FadePolicy, FadeStage, FadeStore, FieldVerdict,
+    FleetAccess, FleetKind, FleetMemory, LineageGraph, RemixRecord, RemixStore, Stage,
+    SvafAssessment, SvafDecision, TraceKind,
 };
 use gsn_core::node;
 
@@ -34,7 +35,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.6");
+            println!("agent-universe v5.1.7");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -3004,9 +3005,321 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "fade" => {
+                    // v5.1.7：主动遗忘（fade.jsonl）——FadeMem 式自适应衰减/淘汰，
+                    // 降低存储、保持检索质量（存储收益数字实测，不预设）。
+                    // 调用形如 gsn memory fleet fade <register|touch|score|run|restore|stats|help>。
+                    let fade_path = data_dir.join("fade.jsonl");
+                    let fsub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!(
+                                "错误: fade 需指定子操作（register/touch/score/run/restore/stats）"
+                            );
+                            return 1;
+                        }
+                    };
+                    let now_secs = || {
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0)
+                    };
+                    match fsub {
+                        "register" => {
+                            // 登记一条可衰减记忆：--id <entry-id> --importance <1-5>
+                            // --half-life <秒> [--stage short|mid|long]。
+                            let eid = match mem_flag_value(rest, "--id") {
+                                Some(r) if !r.trim().is_empty() => r,
+                                _ => {
+                                    eprintln!("错误: register 需非空 --id <entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let importance = match mem_flag_value(rest, "--importance") {
+                                Some(v) => match v.parse::<u8>() {
+                                    Ok(imp) if (1..=5).contains(&imp) => imp,
+                                    _ => {
+                                        eprintln!("错误: --importance 必须是 1-5");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: register 需 --importance <1-5>");
+                                    return 1;
+                                }
+                            };
+                            let half_life = match mem_flag_value(rest, "--half-life") {
+                                Some(v) => match v.parse::<u64>() {
+                                    Ok(h) if h > 0 => h,
+                                    _ => {
+                                        eprintln!("错误: --half-life 必须是正整数秒");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: register 需 --half-life <秒>");
+                                    return 1;
+                                }
+                            };
+                            let stage = match mem_flag_value(rest, "--stage") {
+                                Some(st) => match FadeStage::parse(&st) {
+                                    Some(s) => s,
+                                    None => {
+                                        eprintln!("错误: --stage 必须是 short/mid/long");
+                                        return 1;
+                                    }
+                                },
+                                None => FadeStage::Short,
+                            };
+                            let mut store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            match store.register(&eid, stage, importance, half_life, now_secs()) {
+                                Ok(e) => {
+                                    if let Err(save_err) = store.save() {
+                                        eprintln!("保存衰减库失败: {save_err}");
+                                        return 1;
+                                    }
+                                    println!(
+                                        "衰减条目已登记（{}，{}）重要度 {} 半衰期 {}s",
+                                        e.entry_id,
+                                        e.stage.label(),
+                                        e.importance,
+                                        e.half_life_secs
+                                    );
+                                    0
+                                }
+                                Err(e) => {
+                                    eprintln!("登记衰减条目失败（fail-closed）: {e}");
+                                    1
+                                }
+                            }
+                        }
+                        "touch" => {
+                            let eid = match mem_flag_value(rest, "--id") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: touch 需 --id <entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let mut store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            match store.touch(&eid, now_secs()) {
+                                Ok(()) => {
+                                    if let Err(save_err) = store.save() {
+                                        eprintln!("保存衰减库失败: {save_err}");
+                                        return 1;
+                                    }
+                                    println!(
+                                        "已刷新访问（{}）累计访问 {} 次",
+                                        eid,
+                                        store.get(&eid).map(|e| e.access_count).unwrap_or(0)
+                                    );
+                                    0
+                                }
+                                Err(e) => {
+                                    eprintln!("刷新访问失败: {e}");
+                                    1
+                                }
+                            }
+                        }
+                        "score" => {
+                            let eid = match mem_flag_value(rest, "--id") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: score 需 --id <entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let at = match mem_flag_value(rest, "--at") {
+                                Some(v) => match v.parse::<u64>() {
+                                    Ok(t) => t,
+                                    Err(_) => {
+                                        eprintln!("错误: --at 必须是 epoch 秒");
+                                        return 1;
+                                    }
+                                },
+                                None => now_secs(),
+                            };
+                            let store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            match store.get(&eid) {
+                                Some(e) => {
+                                    let sc = e.score(at);
+                                    println!(
+                                        "条目 {}（{}）有效分 {:.4} | 最后访问 {} | 累计 {} 次 | {}",
+                                        e.entry_id,
+                                        e.stage.label(),
+                                        sc,
+                                        e.last_access_at,
+                                        e.access_count,
+                                        if e.faded_at.is_some() {
+                                            "已淘汰"
+                                        } else {
+                                            "活跃"
+                                        }
+                                    );
+                                    0
+                                }
+                                None => {
+                                    eprintln!("错误: 衰减条目不存在（{eid}）");
+                                    1
+                                }
+                            }
+                        }
+                        "run" => {
+                            // 执行一轮主动遗忘：--min-score <f> [--max-active <n>]
+                            // [--no-access-ttl <秒>] [--force-long]。
+                            let mut policy = FadePolicy::default();
+                            if let Some(v) = mem_flag_value(rest, "--min-score") {
+                                match v.parse::<f64>() {
+                                    Ok(m) => policy.min_score = m,
+                                    Err(_) => {
+                                        eprintln!("错误: --min-score 必须是浮点数");
+                                        return 1;
+                                    }
+                                }
+                            }
+                            if let Some(v) = mem_flag_value(rest, "--max-active") {
+                                match v.parse::<usize>() {
+                                    Ok(n) => policy.max_active = n,
+                                    Err(_) => {
+                                        eprintln!("错误: --max-active 必须是非负整数");
+                                        return 1;
+                                    }
+                                }
+                            }
+                            if let Some(v) = mem_flag_value(rest, "--no-access-ttl") {
+                                match v.parse::<u64>() {
+                                    Ok(t) => policy.no_access_ttl = Some(t),
+                                    Err(_) => {
+                                        eprintln!("错误: --no-access-ttl 必须是非负整数秒");
+                                        return 1;
+                                    }
+                                }
+                            }
+                            if rest.iter().any(|a| a == "--force-long") {
+                                policy.protect_long = false;
+                            }
+                            let mut store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let report = store.fade(now_secs(), &policy);
+                            if let Err(save_err) = store.save() {
+                                eprintln!("保存衰减库失败: {save_err}");
+                                return 1;
+                            }
+                            println!("主动遗忘执行完成（存储收益数字实测，不预设）");
+                            println!(
+                                "  淘汰 {} 条，实测释放 {} 字节",
+                                report.freed_count(),
+                                report.total_freed_bytes
+                            );
+                            println!(
+                                "  受保护的长期条目 {} 条（--force-long 可绕过）",
+                                report.skipped_long
+                            );
+                            for o in &report.faded {
+                                println!(
+                                    "  - {}（{}）淘汰时有效分 {:.4} 释放 {} 字节",
+                                    o.entry_id,
+                                    o.stage.label(),
+                                    o.score_at_fade,
+                                    o.freed_bytes
+                                );
+                            }
+                            0
+                        }
+                        "restore" => {
+                            let eid = match mem_flag_value(rest, "--id") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: restore 需 --id <entry-id>");
+                                    return 1;
+                                }
+                            };
+                            let mut store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            match store.restore(&eid) {
+                                Ok(()) => {
+                                    if let Err(save_err) = store.save() {
+                                        eprintln!("保存衰减库失败: {save_err}");
+                                        return 1;
+                                    }
+                                    println!("已恢复条目（{eid}）");
+                                    0
+                                }
+                                Err(e) => {
+                                    eprintln!("恢复失败: {e}");
+                                    1
+                                }
+                            }
+                        }
+                        "stats" => {
+                            let store = match FadeStore::open(&fade_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开衰减库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let st = store.stats();
+                            println!("主动遗忘（FadeMem）统计：");
+                            println!("  活跃条目 {} 条", st.active_count);
+                            println!("  已淘汰 {} 条", st.faded_count);
+                            println!("  实测释放 {} 字节（不预设收益）", st.freed_bytes);
+                            println!("  登记总数 {} 条", st.total());
+                            0
+                        }
+                        "help" => {
+                            println!("fade 用法：");
+                            println!("  gsn memory fleet fade register --id <entry-id> --importance <1-5> --half-life <秒> [--stage short|mid|long]");
+                            println!("  gsn memory fleet fade touch --id <entry-id>");
+                            println!(
+                                "  gsn memory fleet fade score --id <entry-id> [--at <epoch秒>]"
+                            );
+                            println!("  gsn memory fleet fade run [--min-score <f>] [--max-active <n>] [--no-access-ttl <秒>] [--force-long]");
+                            println!("  gsn memory fleet fade restore --id <entry-id>");
+                            println!("  gsn memory fleet fade stats");
+                            println!("说明：有效分 = 重要度 * 0.5^(闲置时长/半衰期)；低于 min-score 淘汰、超出 max-active 淘汰最低分、no-access-ttl 超时淘汰；长期条目默认受保护；存储收益数字实测，不预设。");
+                            0
+                        }
+                        other_fsub => {
+                            eprintln!(
+                                "错误: 未知 fade 子操作 '{other_fsub}'（register/touch/score/run/restore/stats/help）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/fade/help）"
                     );
                     1
                 }

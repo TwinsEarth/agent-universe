@@ -2,8 +2,8 @@
 
 对 TwinsEarth/agent-universe 仓库的全面分析测试清单。测试项基于仓库文档中明确记录的测试命令、回归脚本、CI 检查门禁及版本历史构建。
 
-- **当前最新版本**：v5.1.4（2026-10-16 发布，PR #139 → main 8c18db12 → tag v5.1.4 → Release 414022568）
-- **当前测试基线**：**935 个 lib 测试全部通过**（v5.1.4 实测：`test result: ok. 935 passed; 0 failed`，含 14 个 remix 新测试）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。
+- **当前最新版本**：v5.1.7（2026-10-16 发布，PR #142 → tag v5.1.7 → Release；前序 v5.1.5 PR #140 / v5.1.6 PR #141 已发版）
+- **当前测试基线**：**993 个 lib 测试全部通过**（v5.1.7 实测：`test result: ok. 993 passed; 0 failed`，v5.1.6 consolidation 19 项 + v5.1.7 fade 23 项新增）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。
 - 仓库：https://github.com/TwinsEarth/agent-universe
 
 ## 维护规则
@@ -19,7 +19,7 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-RUST-001 | cargo test 全量 lib 测试 | 通过 | — | gsn-core/ 目录，v5.1.4 实测 935 passed / 0 failed |
+| TC-RUST-001 | cargo test 全量 lib 测试 | 通过 | — | gsn-core/ 目录，v5.1.7 实测 993 passed / 0 failed |
 | TC-RUST-002 | cargo test --workspace 全量 workspace 测试 | 通过 | — | 仓库根目录，workspace 全量通过 |
 | TC-RUST-003 | cargo clippy -- -D warnings 零告警 | 通过 | — | 所有 workspace 成员，clippy 无任何 warning |
 | TC-RUST-004 | cargo fmt --check 格式干净 | 通过 | — | 全仓库，fmt 无 diff |
@@ -33,7 +33,7 @@
 | TC-RUST-012 | sandbox/ 模块：沙箱类型、隔离级别、资源限制、进程级运行时 | 通过 | — | 单元测试 + 真实沙箱执行验证 |
 | TC-RUST-013 | crdt/ 模块：LWW 键值 CRDT | 通过 | — | 单元测试，多副本收敛验证 |
 | TC-RUST-014 | erasure/ 模块：Reed-Solomon 纠删码、分片放置与重建 | 通过 | — | scripts/regression-erasure.sh：ingest→分发→缺失分片重建 |
-| TC-RUST-015 | memory/ 模块：个体/群体记忆库（library-only，v5.0.x 起含 fleet/cat7/svaf/lineage/remix） | 通过 | — | 单元测试，v5.1.4 remix 14 项全过 |
+| TC-RUST-015 | memory/ 模块：个体/群体记忆库（library-only，v5.0.x 起含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade） | 通过 | — | 单元测试，v5.1.6 consolidation 19 项全过；v5.1.7 fade 23 项全过 |
 | TC-RUST-016 | storage/ 模块：SQLite 本地持久化、WAL、重启恢复 | 通过 | — | 单元测试 + 重启后数据完整性验证 |
 | TC-RUST-017 | verifier/ 模块：Verifier HTTP 客户端 | 通过 | — | 单元测试，HTTP 请求/响应处理 |
 | TC-RUST-018 | swarm/ 模块：涌现检测、轻量共识（library-only） | 通过 | — | 单元测试，涌现检测算法 |
@@ -87,7 +87,7 @@
 |---|---|---|---|---|
 | TC-CI-001 | Linux fmt/build/test/clippy | 通过 | — | GitHub Actions rust-test 矩阵，Linux runner |
 | TC-CI-002 | Windows fmt/build/test/clippy | 通过 | — | v2.9.2 接入 Windows CI，winjob 等专属代码首次有 CI |
-| TC-CI-003 | macOS fmt/build/test/clippy | 阻塞 | 2026-10-16 | GitHub macos runner 容量/配额持续不足（macos-latest arm64 多次排队未获认领；已改 macos-13 仍排队 8h+）。代码正确性由 MacMini 本地 935 测试 + 真机冒烟实证，容量恢复后补跑 |
+| TC-CI-003 | macOS fmt/build/test/clippy | 阻塞 | 2026-10-16 | GitHub macos runner 容量/配额持续不足（macos-13 排队未认领，v5.1.5/v5.1.6/v5.1.7 均 9/10 success + macos-13 queued 放行）。代码正确性由 MacMini 本地 993 测试 + 真机冒烟实证，容量恢复后补跑 |
 | TC-CI-004 | client-build 三平台构建（macOS/Windows/Linux） | 通过 | — | .github/workflows/client-build.yml，推送 tag 时触发 |
 | TC-CI-005 | workbench-check 工作台构建检查 | 通过 | — | v2.9.0 引入，检查 Tauri 2 工作台构建 |
 | TC-CI-006 | static-gates job | 通过 | — | check-no-panics + check-unsafe-containment |
@@ -103,7 +103,7 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-JS-001 | JS SDK 模块加载与导出 | 通过 | — | js/index.js + js/lib/ 下模块（keychain/models/dht/market/aca/mcp），v5.1.4 实测 23 项通过 |
+| TC-JS-001 | JS SDK 模块加载与导出 | 通过 | — | js/index.js + js/lib/ 下模块（keychain/models/dht/market/aca/mcp），v5.1.7 实测 23 项通过 |
 | TC-JS-002 | jsDelivr CDN 公开分发验证 | 通过 | — | https://cdn.jsdelivr.net/gh/TwinsEarth/agent-universe@main/js/index.js |
 | TC-JS-003 | npm 公共 registry 安装验证 | 通过 | — | npm install @twinsearth/agent-universe |
 
@@ -193,7 +193,7 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-BASE-001 | 935 个 lib 测试全部通过（v5.1.4 基线） | 通过 | — | cargo test，gsn-core lib |
+| TC-BASE-001 | 993 个 lib 测试全部通过（v5.1.7 基线） | 通过 | — | cargo test，gsn-core lib（970 + 23 fade） |
 | TC-BASE-002 | workspace 测试全部通过 | 通过 | — | cargo test --workspace |
 | TC-BASE-003 | clippy -D warnings 零告警 | 通过 | — | cargo clippy -- -D warnings |
 | TC-BASE-004 | cargo fmt --check 干净 | 通过 | — | cargo fmt --check |
@@ -213,4 +213,4 @@
 
 **维护说明**：每次发版由 QA 更新"测试结果/修正时间"；大版本发布前由负责人确认全表无"待执行/失败/阻塞"。
 
-**历史基线备注**：旧基线 v5.1.2 曾记录 741 lib / 1051 workspace；v5.1.4 起实测基线更新为 **935 lib**（含 fleet/cat7/svaf/lineage/remix 记忆系统测试）。
+**历史基线备注**：旧基线 v5.1.2 曾记录 741 lib / 1051 workspace；v5.1.4 起实测基线更新为 **935 lib**；v5.1.6 后 **970 lib**（+consolidation 19）；v5.1.7 起 **993 lib**（+fade 23），含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade 记忆系统测试。

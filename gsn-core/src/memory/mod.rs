@@ -21,6 +21,7 @@ pub mod consolidation;
 pub mod digest;
 pub mod enhanced;
 pub mod envtrace;
+pub mod fade;
 pub mod fleet;
 pub mod flywheel;
 pub mod handoff;
@@ -42,6 +43,9 @@ pub use consolidation::{
 pub use digest::{digest_sessions, SessionDigest, DIGEST_CONCLUSION_MAX};
 pub use enhanced::{EnhancedMemory, RatedMemory};
 pub use envtrace::{EnvTrace, EnvTraceError, EnvTraceStore, TraceDelta, TraceKind};
+pub use fade::{
+    FadeEntry, FadeError, FadeOutcome, FadePolicy, FadeReport, FadeStage, FadeStats, FadeStore,
+};
 pub use fleet::{
     fleet_claim_hash, FleetAccess, FleetEntry, FleetError, FleetKind, FleetMemory, FleetStatus,
     FleetStatusReport,

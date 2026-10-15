@@ -1,12 +1,13 @@
 // payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
 // 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
 #![recursion_limit = "256"]
-//! Agent Universe gsn-core v5.1.6
+//! Agent Universe gsn-core v5.1.7
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
 //! 群体智能 = 网络结构的 Scaling Law
 //! 从 token 网络结构向智能体网络结构演进
+//! v5.1.7: 主动遗忘（FadeMem 自适应衰减/淘汰，存储收益数字实测，不预设）
 //! v5.1.6: 记忆巩固三阶段（短期 TTL → 中期快照 → 长期分布式存储 + Merkle-SHA256）
 //! v5.1.5: 环境痕迹/快照接续（pack_diff 快照即环境痕迹，Agent 可从第 k 步接续，仅记录后续变化）
 //! v5.1.4: remix 再混合（仅存接收方自己的角色评估与理解，不复制原始同伴信号）

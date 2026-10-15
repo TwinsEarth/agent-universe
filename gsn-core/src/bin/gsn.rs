@@ -15,8 +15,8 @@
 
 use gsn_core::identity::Keypair;
 use gsn_core::memory::{
-    Cat7Block, Cat7Field, FieldVerdict, FleetAccess, FleetKind, FleetMemory, LineageGraph,
-    RemixRecord, RemixStore, SvafAssessment, SvafDecision,
+    Cat7Block, Cat7Field, EnvTrace, EnvTraceStore, FieldVerdict, FleetAccess, FleetKind,
+    FleetMemory, LineageGraph, RemixRecord, RemixStore, SvafAssessment, SvafDecision, TraceKind,
 };
 use gsn_core::node;
 
@@ -33,7 +33,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.4");
+            println!("agent-universe v5.1.5");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -2488,9 +2488,213 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "envtrace" => {
+                    // v5.1.5：环境痕迹/快照接续（envtrace.jsonl）——pack_diff 快照即
+                    // 环境痕迹，Agent 可从第 k 步接续，仅记录后续变化。
+                    // 调用形如 gsn memory fleet envtrace <add|list|status|help>。
+                    let envtrace_path = data_dir.join("envtrace.jsonl");
+                    let esub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!("错误: envtrace 需指定子操作（add/list/status）");
+                            return 1;
+                        }
+                    };
+                    match esub {
+                        "add" => {
+                            // 新增一条后续变化：--step <N> --kind <file|env|proc|net|other>
+                            // --subject <X> [--detail <Y>] [--by <agent>] [--from <base_ref>]。
+                            // 无 --from → 新起点痕迹（base_step=0）；有 --from → 从第 k 步接续。
+                            let step = match mem_flag_value(rest, "--step") {
+                                Some(s) => match s.parse::<u64>() {
+                                    Ok(v) => v,
+                                    Err(_) => {
+                                        eprintln!("错误: --step 必须是正整数");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: add 需 --step <N>");
+                                    return 1;
+                                }
+                            };
+                            let kind = match mem_flag_value(rest, "--kind") {
+                                Some(k) => {
+                                    match TraceKind::parse(&k) {
+                                        Some(t) => t,
+                                        None => {
+                                            eprintln!("错误: 未知变化类型 '{k}'（file/env/proc/net/other）");
+                                            return 1;
+                                        }
+                                    }
+                                }
+                                None => {
+                                    eprintln!("错误: add 需 --kind <file|env|proc|net|other>");
+                                    return 1;
+                                }
+                            };
+                            let subject = match mem_flag_value(rest, "--subject") {
+                                Some(s) if !s.trim().is_empty() => s,
+                                _ => {
+                                    eprintln!("错误: add 需非空 --subject <变化对象>");
+                                    return 1;
+                                }
+                            };
+                            let detail = mem_flag_value(rest, "--detail").unwrap_or_default();
+                            let by = mem_flag_value(rest, "--by")
+                                .unwrap_or_else(|| "local-cli".to_string());
+                            let from = mem_flag_value(rest, "--from");
+                            let mut store = match EnvTraceStore::open(&envtrace_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开环境痕迹库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            // 确定接续基点：无 --from → 新起点；有 --from → 前驱必须存在。
+                            let base = match &from {
+                                None => match EnvTrace::start(&by) {
+                                    Ok(t) => t,
+                                    Err(e) => {
+                                        eprintln!("创建环境痕迹失败: {e}");
+                                        return 1;
+                                    }
+                                },
+                                Some(bref) => {
+                                    let prior = match store.by_ref(bref) {
+                                        Some(p) => p.clone(),
+                                        None => {
+                                            eprintln!("错误: 接续前驱不存在（--from {bref}）");
+                                            return 1;
+                                        }
+                                    };
+                                    match EnvTrace::continue_from(&prior, &by) {
+                                        Ok(t) => t,
+                                        Err(e) => {
+                                            eprintln!("接续环境痕迹失败: {e}");
+                                            return 1;
+                                        }
+                                    }
+                                }
+                            };
+                            let mut trace = base;
+                            let delta = gsn_core::memory::TraceDelta {
+                                step,
+                                kind,
+                                subject,
+                                detail,
+                                recorded_by: by.clone(),
+                            };
+                            match trace.append_delta(delta) {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    eprintln!(
+                                        "记录后续变化失败（仅记录第 k 步之后，fail-closed）: {e}"
+                                    );
+                                    return 1;
+                                }
+                            }
+                            if !store.add(trace.clone()) {
+                                eprintln!("环境痕迹已存在，跳过（{}）", trace.short_ref());
+                                return 0;
+                            }
+                            match store.save() {
+                                Ok(()) => {}
+                                Err(e) => {
+                                    eprintln!("保存环境痕迹库失败: {e}");
+                                    return 1;
+                                }
+                            }
+                            println!(
+                                "环境痕迹已记录（{by}）：步骤 {step} → 痕迹 {}（起点第 {} 步，共 {} 条变化）",
+                                trace.short_ref(),
+                                trace.base_step,
+                                trace.deltas.len()
+                            );
+                            0
+                        }
+                        "list" => {
+                            let store = match EnvTraceStore::open(&envtrace_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开环境痕迹库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            println!("环境痕迹（共 {} 条）：", store.traces().len());
+                            for t in store.traces() {
+                                println!(
+                                    "  {}  起点步骤 {}  变化 {}  创建者 {}  完整校验 {}",
+                                    t.short_ref(),
+                                    t.base_step,
+                                    t.deltas.len(),
+                                    t.creator,
+                                    if t.verify() { "通过" } else { "失败" }
+                                );
+                            }
+                            0
+                        }
+                        "status" => {
+                            let bref = match mem_flag_value(rest, "--ref") {
+                                Some(r) => r,
+                                None => {
+                                    eprintln!("错误: status 需 --ref <trace_ref>");
+                                    return 1;
+                                }
+                            };
+                            let store = match EnvTraceStore::open(&envtrace_path) {
+                                Ok(s) => s,
+                                Err(e) => {
+                                    eprintln!("打开环境痕迹库失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let t = match store.by_ref(&bref) {
+                                Some(t) => t,
+                                None => {
+                                    eprintln!("错误: 环境痕迹不存在（{bref}）");
+                                    return 1;
+                                }
+                            };
+                            println!("痕迹: {}", t.short_ref());
+                            println!("完整 ref: {}", t.trace_ref);
+                            println!("创建者: {}", t.creator);
+                            println!("创建时间: {}", t.created_at);
+                            println!("接续起点（第 k 步）: {}", t.base_step);
+                            println!(
+                                "前驱: {}",
+                                t.base_ref.as_deref().unwrap_or("（无，新起点）")
+                            );
+                            println!("后续变化（{} 条）：", t.deltas.len());
+                            for d in &t.deltas {
+                                println!(
+                                    "  [{}] {:?} {} | {} | 记录者 {}",
+                                    d.step, d.kind, d.subject, d.detail, d.recorded_by
+                                );
+                            }
+                            println!("最后步骤: {}", t.last_step());
+                            println!("链式完整性: {}", if t.verify() { "通过" } else { "失败" });
+                            0
+                        }
+                        "help" => {
+                            println!("envtrace 用法：");
+                            println!("  gsn memory fleet envtrace add --step <N> --kind <file|env|proc|net|other> --subject <X> [--detail <Y>] [--by <agent>] [--from <base_ref>]");
+                            println!("  gsn memory fleet envtrace list");
+                            println!("  gsn memory fleet envtrace status --ref <trace_ref>");
+                            println!("说明：pack_diff 快照即环境痕迹，可从第 k 步接续、仅记录后续变化（step > 接续起点），链式哈希防篡改。");
+                            0
+                        }
+                        other_esub => {
+                            eprintln!(
+                                "错误: 未知 envtrace 子操作 '{other_esub}'（add/list/status/help）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/help）"
                     );
                     1
                 }

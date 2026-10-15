@@ -15,8 +15,8 @@
 
 use gsn_core::identity::Keypair;
 use gsn_core::memory::{
-    Cat7Block, Cat7Field, FieldVerdict, FleetAccess, FleetKind, FleetMemory, SvafAssessment,
-    SvafDecision,
+    Cat7Block, Cat7Field, FieldVerdict, FleetAccess, FleetKind, FleetMemory, LineageGraph,
+    SvafAssessment, SvafDecision,
 };
 use gsn_core::node;
 
@@ -33,7 +33,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.2");
+            println!("agent-universe v5.1.3");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1105,6 +1105,7 @@ fn print_memory_help() {
     println!("  gsn memory fleet export --cat7（导出 CAT7 七字段交换块 JSON）");
     println!("  gsn memory fleet import <blocks.json>（导入 CAT7 交换块，去重+完整性校验）");
     println!("  gsn memory fleet assess --blocks <blocks.json> --assessor <id> --accept <字段,..> --reject <字段,..>");
+    println!("  gsn memory fleet lineage link --child <hash> --parent <hash>（另: ancestors/root/children/status）");
     println!("  角色: observer(读) < contributor(读+写) < captain(+策展) < admin(+管理)");
 }
 
@@ -1120,6 +1121,9 @@ fn print_fleet_help() {
     println!("  import   导入 CAT7 交换块（<blocks.json> 路径；逐块校验+按 claim 去重）");
     println!(
         "  assess   SVAF 字段级评估（--blocks/--assessor/--accept/--reject；逐字段接受/拒绝）"
+    );
+    println!(
+        "  lineage  血缘（link/ancestors/root/children/status；--child/--parent/--claim；写入 lineage.jsonl）"
     );
     println!("选项:");
     println!("  --kind fact|decision|open_problem   策展分类");
@@ -2134,6 +2138,132 @@ async fn run_memory(args: &[String]) -> i32 {
                     );
                     println!("导入完成: 新增 {added} 条，跳过 {skipped} 条（已存在）");
                     0
+                }
+                "lineage" => {
+                    // v5.1.3：内容哈希键的父/祖先链（lineage.jsonl），独立于 fleet-memory。
+                    // 调用形如 gsn memory fleet lineage <link|ancestors|root|children|status>。
+                    let lineage_path = data_dir.join("lineage.jsonl");
+                    let lsub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!(
+                                "错误: lineage 需指定子操作（link/ancestors/root/children/status）"
+                            );
+                            return 1;
+                        }
+                    };
+                    let mut g = match LineageGraph::open(&lineage_path) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            eprintln!("打开血缘库失败: {e}");
+                            return 1;
+                        }
+                    };
+                    match lsub {
+                        "link" => {
+                            let child = match mem_flag_value(rest, "--child") {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!("错误: link 需 --child <claim_hash>");
+                                    return 1;
+                                }
+                            };
+                            let parent = match mem_flag_value(rest, "--parent") {
+                                Some(p) => p,
+                                None => {
+                                    eprintln!("错误: link 需 --parent <claim_hash>");
+                                    return 1;
+                                }
+                            };
+                            if let Err(e) = g.link(&child, &parent) {
+                                eprintln!("建立血缘失败: {e}");
+                                return 1;
+                            }
+                            if let Err(e) = g.save() {
+                                eprintln!("保存血缘失败: {e}");
+                                return 1;
+                            }
+                            println!("已建立血缘: {child} 派生自 {parent}");
+                            0
+                        }
+                        "ancestors" => {
+                            let claim = match mem_flag_value(rest, "--claim") {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!("错误: ancestors 需 --claim <hash>");
+                                    return 1;
+                                }
+                            };
+                            match g.ancestors(&claim) {
+                                Ok(anc) => {
+                                    if mem_flag_value(rest, "--json").is_some() {
+                                        println!("{}", serde_json::to_string(&anc).unwrap());
+                                    } else {
+                                        println!("祖先链（最近在前，共 {} 代）：", anc.len());
+                                        for (i, h) in anc.iter().enumerate() {
+                                            println!("  {}. {h}", i + 1);
+                                        }
+                                    }
+                                    0
+                                }
+                                Err(e) => {
+                                    eprintln!("查询祖先失败: {e}");
+                                    1
+                                }
+                            }
+                        }
+                        "root" => {
+                            let claim = match mem_flag_value(rest, "--claim") {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!("错误: root 需 --claim <hash>");
+                                    return 1;
+                                }
+                            };
+                            match g.root(&claim) {
+                                Ok(r) => {
+                                    println!("根节点: {r}");
+                                    0
+                                }
+                                Err(e) => {
+                                    eprintln!("查询根失败: {e}");
+                                    1
+                                }
+                            }
+                        }
+                        "children" => {
+                            let claim = match mem_flag_value(rest, "--claim") {
+                                Some(c) => c,
+                                None => {
+                                    eprintln!("错误: children 需 --claim <hash>");
+                                    return 1;
+                                }
+                            };
+                            let kids = g.children_of(&claim);
+                            println!("直接子节点（{} 个）：", kids.len());
+                            for k in &kids {
+                                println!("  {k}");
+                            }
+                            0
+                        }
+                        "status" => {
+                            let recs = g.records();
+                            let mut nodes = std::collections::HashSet::new();
+                            for r in &recs {
+                                nodes.insert(r.child.clone());
+                                nodes.insert(r.parent.clone());
+                            }
+                            println!("血缘库: {}", lineage_path.display());
+                            println!("边数: {}，涉及节点: {}", recs.len(), nodes.len());
+                            0
+                        }
+                        other_lsub => {
+                            eprintln!(
+                                "错误: 未知 lineage 子操作 '{other_lsub}'（link/ancestors/root/children/status）"
+                            );
+                            1
+                        }
+                    }
                 }
                 other_sub => {
                     eprintln!(

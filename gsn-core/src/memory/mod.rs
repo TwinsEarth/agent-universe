@@ -23,6 +23,7 @@ pub mod fleet;
 pub mod flywheel;
 pub mod handoff;
 pub mod layered;
+pub mod lineage;
 pub mod persistent;
 pub mod privacy;
 pub mod shared_memory;
@@ -40,6 +41,7 @@ pub use fleet::{
 pub use flywheel::Flywheel;
 pub use handoff::{EvidenceGrade, TraceLedger, TransferBundle};
 pub use layered::{IntergenMemory, LayeredMemory};
+pub use lineage::{LineageError, LineageGraph, LineageRecord};
 pub use persistent::{
     MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore,
     RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,

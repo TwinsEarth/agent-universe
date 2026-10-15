@@ -16,6 +16,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use super::chain::{verify_chain_file, ChainFileReport};
+
 /// 一条持久化记忆，字段对齐 FLEET §3.1。
 ///
 /// 可选字段在为空时不序列化，使旧版本（缺字段）写出的 JSON 也能被
@@ -47,6 +49,13 @@ pub struct MemoryEntry {
     pub conclusion: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub tags: Vec<String>,
+    /// v5.0.9：链式完整性哈希。
+    /// `prev_hash` 指向前一条目（同文件内）的 `hash`，首条/旧格式为 `None`；
+    /// `hash` 为 SHA-256(canonical || "|" || prev_hash)，canonical 忽略本两个字段。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub prev_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub hash: Option<String>,
 }
 
 impl MemoryEntry {
@@ -65,6 +74,8 @@ impl MemoryEntry {
             stderr_tail: None,
             conclusion: None,
             tags: Vec::new(),
+            prev_hash: None,
+            hash: None,
         }
     }
 
@@ -117,6 +128,24 @@ impl MemoryEntry {
     pub fn add_tag(mut self, t: impl Into<String>) -> Self {
         self.tags.push(t.into());
         self
+    }
+
+    /// v5.0.9：计算本条目的链式哈希（canonical 忽略 `hash` / `prev_hash` 两个字段）。
+    /// 哈希输入 = `SHA-256(canonical || "|" || prev_hash)`，`prev_hash` 为 `None` 时取空串。
+    /// 返回小写十六进制 64 字符。
+    pub fn compute_hash(&self) -> Result<String, MemoryError> {
+        let mut c = self.clone();
+        c.prev_hash = None;
+        c.hash = None;
+        let canon = serde_json::to_vec(&c).map_err(|e| MemoryError::Json(e.to_string()))?;
+        let prev = self.prev_hash.as_deref().unwrap_or("");
+        let mut h = sha2::Sha256::new();
+        use sha2::Digest;
+        h.update(&canon);
+        h.update(b"|");
+        h.update(prev.as_bytes());
+        let out = h.finalize();
+        Ok(hex::encode(out))
     }
 
     /// 按字符数截断两个 tail 字段（防止单行过大）。`max_chars=0` 表示不截断。
@@ -481,6 +510,12 @@ impl PersistentMemoryStore {
             }
         }
         entry.truncate_tails(self.tail_max_chars);
+        // v5.0.9：完整性哈希链。prev 指向当前文件最后一条的 hash（旧格式/空文件为 None），
+        // 随后计算本条 hash 并写入。链为**文件内**成链：轮转产生新链段（首条 prev=None），
+        // 由 verify_chain 按文件逐一验证（旋转属容量管理，段间不跨文件衔接）。
+        entry.prev_hash = self.last_entry_hash()?;
+        let h = entry.compute_hash()?;
+        entry.hash = Some(h);
         let line = serde_json::to_vec(&entry)?;
         let line_len = line.len() as u64 + 1; // + 换行
 
@@ -528,6 +563,25 @@ impl PersistentMemoryStore {
     /// 仅读取当前文件（最新一段）的记忆。
     pub fn load_current(&self) -> Result<Vec<MemoryEntry>, MemoryError> {
         self.read_file(&self.path)
+    }
+
+    /// v5.0.9：当前文件最后一条的 `hash`（无文件/无条目/旧格式 → `None`）。
+    fn last_entry_hash(&self) -> Result<Option<String>, MemoryError> {
+        Ok(self.load_current()?.last().and_then(|e| e.hash.clone()))
+    }
+
+    /// v5.0.9：完整性哈希链验证（当前文件 + 全部滚动文件，逐文件独立成链）。
+    /// 返回每个文件一份报告；任何文件 `ok=false` 即存在篡改/损坏证据。
+    pub fn verify_chain(&self) -> Result<Vec<ChainFileReport>, MemoryError> {
+        let mut reports = Vec::new();
+        reports.push(verify_chain_file(&self.path)?);
+        for i in 1..=self.keep_rotated {
+            let p = self.rotated_path(i);
+            if p.exists() {
+                reports.push(verify_chain_file(&p)?);
+            }
+        }
+        Ok(reports)
     }
 
     /// 读取当前文件 + 全部滚动文件，按时间从老到新排序。
@@ -751,9 +805,10 @@ mod tests {
     #[test]
     fn rotation_keeps_bounded_and_loadable() {
         let p = tmp_path("rotate");
-        // 极小上限：每写 1~2 条即轮转；保留 2 个滚动文件。
+        // v5.0.9 起每行含 hash/prev_hash（各 64 位 hex），单行约 250 B：
+        // 上限取 600，容纳 1~2 条后轮转；保留 2 个滚动文件。
         let store = PersistentMemoryStore::open(&p)
-            .max_bytes(220)
+            .max_bytes(600)
             .keep_rotated(2)
             .tail_max_chars(50);
         for i in 0..8 {
@@ -768,7 +823,7 @@ mod tests {
 
         // 当前文件始终不超过软上限。
         let cur_size = fs::metadata(&p).unwrap().len();
-        assert!(cur_size <= 220, "current size {cur_size} exceeds max");
+        assert!(cur_size <= 600, "current size {cur_size} exceeds max");
 
         // 磁盘总占用不超过硬上限（当前 + 2 滚动）。
         let bound = store.disk_bound_bytes().unwrap();
@@ -796,7 +851,7 @@ mod tests {
     fn status_reports_bytes_and_rotated_files() {
         let p = tmp_path("status");
         let store = PersistentMemoryStore::open(&p)
-            .max_bytes(220)
+            .max_bytes(600)
             .keep_rotated(2)
             .tail_max_chars(50);
         for i in 0..6 {
@@ -810,17 +865,17 @@ mod tests {
                 .unwrap();
         }
         let s = store.status().unwrap();
-        assert_eq!(s.max_bytes, 220);
+        assert_eq!(s.max_bytes, 600);
         assert_eq!(s.keep_rotated, 2);
         assert!(s.current_entries > 0);
-        assert!(s.current_bytes <= 220);
+        assert!(s.current_bytes <= 600);
         // 已发生轮转：至少有一个滚动文件。
         assert!(!s.rotated.is_empty(), "应至少有一个滚动文件");
         // total_bytes 与各文件字节之和一致。
         let rotated_sum: u64 = s.rotated.iter().map(|r| r.bytes).sum();
         assert_eq!(s.total_bytes, s.current_bytes + rotated_sum);
-        // 硬上限 = 220 × (2+1) = 660。
-        assert_eq!(s.disk_bound_bytes, Some(660));
+        // 硬上限 = 600 × (2+1) = 1800。
+        assert_eq!(s.disk_bound_bytes, Some(1800));
         // status 不影响 load_all：最新条目仍在。
         assert!(store
             .load_all()
@@ -890,8 +945,9 @@ mod tests {
     #[test]
     fn keep_zero_drops_history() {
         let p = tmp_path("keep0");
+        // v5.0.9：单行含哈希字段约 250 B，上限取 400（可容 1 条后即轮转）。
         let store = PersistentMemoryStore::open(&p)
-            .max_bytes(120)
+            .max_bytes(400)
             .keep_rotated(0);
         for i in 0..5 {
             store
@@ -899,7 +955,7 @@ mod tests {
                 .unwrap();
         }
         // 不保留任何滚动文件，磁盘上只有当前文件且不超过上限。
-        assert!(fs::metadata(&p).unwrap().len() <= 120);
+        assert!(fs::metadata(&p).unwrap().len() <= 400);
         fs::remove_file(&p).ok();
     }
 

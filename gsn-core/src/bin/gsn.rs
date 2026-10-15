@@ -14,7 +14,10 @@
 //! 需要鉴权：用 --token <t> 或 GSN_API_TOKEN 提供 Bearer 令牌（不配置则不发该头）。
 
 use gsn_core::identity::Keypair;
-use gsn_core::memory::{Cat7Block, FleetAccess, FleetKind, FleetMemory};
+use gsn_core::memory::{
+    Cat7Block, Cat7Field, FieldVerdict, FleetAccess, FleetKind, FleetMemory, SvafAssessment,
+    SvafDecision,
+};
 use gsn_core::node;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,7 +33,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.1");
+            println!("agent-universe v5.1.2");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1101,6 +1104,7 @@ fn print_memory_help() {
     println!("  gsn memory fleet purge --role admin");
     println!("  gsn memory fleet export --cat7（导出 CAT7 七字段交换块 JSON）");
     println!("  gsn memory fleet import <blocks.json>（导入 CAT7 交换块，去重+完整性校验）");
+    println!("  gsn memory fleet assess --blocks <blocks.json> --assessor <id> --accept <字段,..> --reject <字段,..>");
     println!("  角色: observer(读) < contributor(读+写) < captain(+策展) < admin(+管理)");
 }
 
@@ -1114,15 +1118,42 @@ fn print_fleet_help() {
     println!("  purge    清空集体记忆（需 admin）");
     println!("  export   导出 CAT7 七字段交换块（--cat7 标记；JSON 数组输出）");
     println!("  import   导入 CAT7 交换块（<blocks.json> 路径；逐块校验+按 claim 去重）");
+    println!(
+        "  assess   SVAF 字段级评估（--blocks/--assessor/--accept/--reject；逐字段接受/拒绝）"
+    );
     println!("选项:");
     println!("  --kind fact|decision|open_problem   策展分类");
     println!("  --role observer|contributor|captain|admin   执行者角色（默认 observer）");
     println!("  --author <id>       发布者 agent_id");
     println!("  --content <文本>    记忆内容");
     println!("  --claim <hash>      curate 目标 claim_hash");
+    println!("  --assessor <id>     assess 评估方（接收方）agent_id");
+    println!("  --accept <字段,..>  assess 显式接受字段（kind/author/content/source/confidence/created_at）");
+    println!("  --reject <字段,..>  assess 显式拒绝字段（reject 覆盖 accept）");
+    println!("  --blocks <路径>     assess 待评估交换块文件");
     println!("  --archived          list 时包含已归档条目");
     println!("  --data-dir <目录>   节点数据目录（默认 ~/.gsn/data）");
     println!("  --json              以 JSON 输出");
+}
+
+/// 解析 SVAF 逗号分隔字段列表（未知字段 → Err(该字段名)，调用方 fail-closed）。
+fn parse_svaf_fields(csv: &str) -> Result<Vec<Cat7Field>, String> {
+    let mut out = Vec::new();
+    for part in csv.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        match Cat7Field::parse(p) {
+            Some(f) => {
+                if !out.contains(&f) {
+                    out.push(f);
+                }
+            }
+            None => return Err(p.to_string()),
+        }
+    }
+    Ok(out)
 }
 
 /// 取 `--name` 后的值。
@@ -1986,6 +2017,123 @@ async fn run_memory(args: &[String]) -> i32 {
                             1
                         }
                     }
+                }
+                "assess" => {
+                    // v5.1.2：SVAF 字段级评估——逐字段接受/拒绝，而非整条接受/拒绝。
+                    let blocks_path = match mem_flag_value(rest, "--blocks") {
+                        Some(p) => p,
+                        None => {
+                            eprintln!("错误: assess 需用 --blocks <blocks.json> 指定交换块");
+                            return 1;
+                        }
+                    };
+                    let assessor = match mem_flag_value(rest, "--assessor") {
+                        Some(a) => a,
+                        None => {
+                            eprintln!("错误: assess 需用 --assessor <id> 指定评估方");
+                            return 1;
+                        }
+                    };
+                    let accept_fields = match mem_flag_value(rest, "--accept")
+                        .map(|s| parse_svaf_fields(&s))
+                        .transpose()
+                    {
+                        Ok(v) => v.unwrap_or_default(),
+                        Err(bad) => {
+                            eprintln!(
+                                "错误: --accept 含未知字段 '{bad}'（支持: kind/author/content/source/confidence/created_at）"
+                            );
+                            return 1;
+                        }
+                    };
+                    let reject_fields = match mem_flag_value(rest, "--reject")
+                        .map(|s| parse_svaf_fields(&s))
+                        .transpose()
+                    {
+                        Ok(v) => v.unwrap_or_default(),
+                        Err(bad) => {
+                            eprintln!("错误: --reject 含未知字段 '{bad}'");
+                            return 1;
+                        }
+                    };
+                    let text = match std::fs::read_to_string(&blocks_path) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            eprintln!("读取交换块文件失败: {e}");
+                            return 1;
+                        }
+                    };
+                    let raw_blocks: Vec<Cat7Block> = match serde_json::from_str(&text) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("解析 CAT7 交换块失败: {e}");
+                            return 1;
+                        }
+                    };
+                    let mut full = 0usize;
+                    let mut partial = 0usize;
+                    let mut rejected = 0usize;
+                    let mut adopted_blocks: Vec<Cat7Block> = Vec::new();
+                    for b in &raw_blocks {
+                        // 前置完整性校验（篡改块不能进入评估，整批 fail-closed）。
+                        let mut assessment = match SvafAssessment::for_block(b, &assessor) {
+                            Ok(a) => a,
+                            Err(e) => {
+                                eprintln!("评估失败（块未通过完整性校验，fail-closed）: {e}");
+                                return 1;
+                            }
+                        };
+                        for f in &accept_fields {
+                            assessment.set(*f, FieldVerdict::Accept);
+                        }
+                        for f in &reject_fields {
+                            // reject 后设，覆盖 accept。
+                            assessment.set(*f, FieldVerdict::Reject);
+                        }
+                        let decision = assessment.decision();
+                        if decision == SvafDecision::Reject {
+                            rejected += 1;
+                            continue;
+                        }
+                        match assessment.apply(b) {
+                            Ok(Some(adopted)) => {
+                                // 以 SvafDecision 为准计数（PartialAccept 即使字段值因
+                                // None/同秒巧合相同，也仍是部分接受）。
+                                if decision == SvafDecision::AcceptAll {
+                                    full += 1;
+                                } else {
+                                    partial += 1;
+                                }
+                                adopted_blocks.push(adopted);
+                            }
+                            Ok(None) => {
+                                // decision 非 reject 时不应为 None：防御性 fail-closed。
+                                eprintln!("评估内部不一致，拒绝整批");
+                                return 1;
+                            }
+                            Err(e) => {
+                                eprintln!("应用评估失败: {e}");
+                                return 1;
+                            }
+                        }
+                    }
+                    // 导入处理后块（剥离块仍通过 verify；import_cat7 再做一次去重）。
+                    let (added, skipped) = if adopted_blocks.is_empty() {
+                        (0usize, 0usize)
+                    } else {
+                        match fm.import_cat7(&adopted_blocks) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("导入失败: {e}");
+                                return 1;
+                            }
+                        }
+                    };
+                    println!(
+                        "字段级评估完成（评估方 {assessor}）：全接受 {full}，部分接受 {partial}（已剥离未接受字段），拒绝 {rejected}"
+                    );
+                    println!("导入完成: 新增 {added} 条，跳过 {skipped} 条（已存在）");
+                    0
                 }
                 other_sub => {
                     eprintln!(

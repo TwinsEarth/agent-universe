@@ -458,8 +458,9 @@ impl FleetMemory {
     }
 }
 
-fn now_iso() -> String {
-    // 轻量本地时间戳：UTC（RFC3339 简化）。避免额外依赖 chrono。
+pub(crate) fn now_iso() -> String {
+    // 轻量本地时间戳：UTC（Unix 秒）。避免额外依赖 chrono；
+    // 供 fleet 策展与 svaf（v5.1.2 剥离 created_at 时重建）共用。
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

@@ -1,6 +1,6 @@
 [package]
 name = "au-client"
-version = "5.0.5"
+version = "5.0.6"
 description = "Agent Universe v2.9.0 桌面工作台"
 edition = "2021"
 

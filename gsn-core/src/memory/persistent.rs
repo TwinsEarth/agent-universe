@@ -25,6 +25,10 @@ pub struct MemoryEntry {
     /// RFC3339 UTC 时间戳（`chrono::Utc::now().to_rfc3339()`）。
     pub at: String,
     pub task_id: String,
+    /// v5.0.6：来源节点标识（daemon `--node-id` / CLI `--node-id`）。
+    /// 调配 Agent 据此聚合节点历史画像（耗时/成功率/能力）。
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub node_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub gate: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -51,6 +55,7 @@ impl MemoryEntry {
         Self {
             at: chrono::Utc::now().to_rfc3339(),
             task_id: task_id.into(),
+            node_id: None,
             gate: None,
             argv: Vec::new(),
             cwd_rel: None,
@@ -66,6 +71,11 @@ impl MemoryEntry {
     /// 覆盖时间戳（测试或外部时钟时使用）。
     pub fn at(mut self, at: impl Into<String>) -> Self {
         self.at = at.into();
+        self
+    }
+    /// v5.0.6：标注来源节点标识（daemon / CLI 写入时填充）。
+    pub fn node_id(mut self, n: impl Into<String>) -> Self {
+        self.node_id = Some(n.into());
         self
     }
     pub fn gate(mut self, g: impl Into<String>) -> Self {
@@ -857,7 +867,24 @@ mod tests {
         let e: MemoryEntry = serde_json::from_str(raw).unwrap();
         assert_eq!(e.task_id, "old");
         assert_eq!(e.exit_code, None);
+        assert_eq!(e.node_id, None);
         assert!(e.tags.is_empty());
+    }
+
+    #[test]
+    fn node_id_roundtrips_and_defaults_to_none() {
+        // 带 node_id 的新 JSON 往返无损。
+        let e = MemoryEntry::new("t")
+            .node_id("mac-mini")
+            .ms(12)
+            .exit_code(0);
+        let raw = serde_json::to_string(&e).unwrap();
+        let back: MemoryEntry = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back.node_id.as_deref(), Some("mac-mini"));
+        // 不含 node_id 字段的序列化（None 时不输出），旧格式兼容。
+        assert!(!serde_json::to_string(&MemoryEntry::new("t"))
+            .unwrap()
+            .contains("node_id"));
     }
 
     #[test]

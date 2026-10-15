@@ -14,6 +14,7 @@
 //! 需要鉴权：用 --token <t> 或 GSN_API_TOKEN 提供 Bearer 令牌（不配置则不发该头）。
 
 use gsn_core::identity::Keypair;
+use gsn_core::memory::{FleetAccess, FleetKind, FleetMemory};
 use gsn_core::node;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,7 +30,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.9");
+            println!("agent-universe v5.1.0");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1067,6 +1068,8 @@ fn print_memory_help() {
     println!("  status   显示容量状态（当前/滚动文件字节、上限）");
     println!("  profile  节点画像：从记忆聚合节点历史（样本/成功率/耗时/P95/能力）");
     println!("  digest   会话摘要：按 task_id 聚合条目（条目/成功率/耗时/gate/结论要点）");
+    println!("  verify-chain  完整性哈希链校验（逐文件，报告旧格式/损坏行/断点）");
+    println!("  fleet    集体记忆（facts/decisions/open problems + 角色化读写）");
     println!("  path     显示 memory.jsonl 路径");
     println!("\n选项:");
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
@@ -1090,6 +1093,32 @@ fn print_memory_help() {
     println!("  --until <RFC3339>     仅返回该时间之前（不含边界）");
     println!("  --limit <n>           最多返回条数");
     println!("  --json                以 JSON 输出（不含摘要）");
+    println!("\nfleet 子操作（v5.1.0 集体记忆）：");
+    println!("  gsn memory fleet post --kind fact|decision|open_problem --role <角色> --author <id> --content <文本>");
+    println!("  gsn memory fleet list [--kind <k>] [--role <角色>] [--archived] [--json]");
+    println!("  gsn memory fleet status [--role <角色>]");
+    println!("  gsn memory fleet curate --claim <hash> --role captain|admin");
+    println!("  gsn memory fleet purge --role admin");
+    println!("  角色: observer(读) < contributor(读+写) < captain(+策展) < admin(+管理)");
+}
+
+fn print_fleet_help() {
+    println!("用法: gsn memory fleet <子操作> [选项]（v5.1.0 集体记忆基座）");
+    println!("子操作:");
+    println!("  post     发布集体记忆（--kind/--author/--content 必填，需 contributor+）");
+    println!("  list     列出集体记忆（可 --kind 过滤；--archived 含归档；需 observer+）");
+    println!("  status   显示策展统计与文件字节（需 observer+）");
+    println!("  curate   策展归档（--claim <hash>，需 captain+）");
+    println!("  purge    清空集体记忆（需 admin）");
+    println!("选项:");
+    println!("  --kind fact|decision|open_problem   策展分类");
+    println!("  --role observer|contributor|captain|admin   执行者角色（默认 observer）");
+    println!("  --author <id>       发布者 agent_id");
+    println!("  --content <文本>    记忆内容");
+    println!("  --claim <hash>      curate 目标 claim_hash");
+    println!("  --archived          list 时包含已归档条目");
+    println!("  --data-dir <目录>   节点数据目录（默认 ~/.gsn/data）");
+    println!("  --json              以 JSON 输出");
 }
 
 /// 取 `--name` 后的值。
@@ -1746,9 +1775,184 @@ async fn run_memory(args: &[String]) -> i32 {
                 1
             }
         },
+        "fleet" => {
+            // v5.1.0 集体记忆基座：facts/decisions/open problems + 角色化读写。
+            // 注意：run_memory 已把 op（"fleet"）从 rest 去除，rest[0] 即子操作。
+            if rest.is_empty() || rest[0] == "--help" || rest[0] == "help" {
+                print_fleet_help();
+                return 0;
+            }
+            let data_dir = match mem_flag_value(rest, "--data-dir") {
+                Some(d) => std::path::PathBuf::from(d),
+                None => std::env::home_dir().unwrap_or_default().join(".gsn/data"),
+            };
+            let fleet_path = data_dir.join("fleet-memory.jsonl");
+            let role = match mem_flag_value(rest, "--role")
+                .map(|s| FleetAccess::parse(&s))
+                .unwrap_or(Some(FleetAccess::Observer))
+            {
+                Some(r) => r,
+                None => {
+                    eprintln!("错误: 未知角色（支持: observer/contributor/captain/admin）");
+                    return 1;
+                }
+            };
+            let sub = rest[0].as_str();
+            let mut fm = match FleetMemory::open(&fleet_path) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("打开集体记忆失败: {e}");
+                    return 1;
+                }
+            };
+            match sub {
+                "post" => {
+                    let kind =
+                        match mem_flag_value(rest, "--kind").and_then(|s| FleetKind::parse(&s)) {
+                            Some(k) => k,
+                            None => {
+                                eprintln!("错误: --kind 必填（fact|decision|open_problem）");
+                                return 1;
+                            }
+                        };
+                    let author = match mem_flag_value(rest, "--author") {
+                        Some(a) => a,
+                        None => {
+                            eprintln!("错误: --author 必填");
+                            return 1;
+                        }
+                    };
+                    let content = match mem_flag_value(rest, "--content") {
+                        Some(c) => c,
+                        None => {
+                            eprintln!("错误: --content 必填");
+                            return 1;
+                        }
+                    };
+                    match fm.post(role, kind, &author, &content) {
+                        Ok(e) => {
+                            if rest.iter().any(|a| a == "--json") {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&e).unwrap_or_default()
+                                );
+                            } else {
+                                println!(
+                                    "已发布集体记忆: kind={} claim={}",
+                                    e.kind.as_str(),
+                                    &e.claim_hash[..16]
+                                );
+                            }
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("发布失败: {e}");
+                            1
+                        }
+                    }
+                }
+                "list" => {
+                    let kind = mem_flag_value(rest, "--kind").and_then(|s| FleetKind::parse(&s));
+                    let include_archived = rest.iter().any(|a| a == "--archived");
+                    match fm.list(role, kind, include_archived) {
+                        Ok(rows) => {
+                            if rest.iter().any(|a| a == "--json") {
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&rows).unwrap_or_default()
+                                );
+                            } else {
+                                let header = format!(
+                                    "{:<12} {:<22} {:<9} {:<18}  {}",
+                                    "kind", "author", "status", "claim(前16)", "content"
+                                );
+                                println!("{header}");
+                                for e in &rows {
+                                    println!(
+                                        "{:<12} {:<22} {:<9} {:<18}  {}",
+                                        e.kind.as_str(),
+                                        e.author,
+                                        format!("{:?}", e.status),
+                                        &e.claim_hash[..16],
+                                        e.content
+                                    );
+                                }
+                            }
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("读取失败: {e}");
+                            1
+                        }
+                    }
+                }
+                "status" => match fm.status(role) {
+                    Ok(st) => {
+                        if rest.iter().any(|a| a == "--json") {
+                            println!("{}", serde_json::to_string_pretty(&st).unwrap_or_default());
+                        } else {
+                            println!("集体记忆文件: {}", st.file);
+                            println!(
+                                "条目: {}（活跃 {} / 归档 {}）",
+                                st.entries, st.active, st.archived
+                            );
+                            println!(
+                                "策展: facts={} decisions={} open_problems={}",
+                                st.facts, st.decisions, st.open_problems
+                            );
+                            println!("字节: {}（损坏行: {}）", st.file_bytes, st.corrupt_lines);
+                        }
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("读取失败: {e}");
+                        1
+                    }
+                },
+                "curate" => {
+                    let claim = match mem_flag_value(rest, "--claim") {
+                        Some(c) => c,
+                        None => {
+                            eprintln!("错误: --claim 必填");
+                            return 1;
+                        }
+                    };
+                    match fm.curate(role, &claim) {
+                        Ok(e) => {
+                            println!(
+                                "已归档: kind={} claim={}",
+                                e.kind.as_str(),
+                                &e.claim_hash[..16]
+                            );
+                            0
+                        }
+                        Err(e) => {
+                            eprintln!("策展失败: {e}");
+                            1
+                        }
+                    }
+                }
+                "purge" => match fm.purge(role) {
+                    Ok(()) => {
+                        println!("集体记忆已清空");
+                        0
+                    }
+                    Err(e) => {
+                        eprintln!("清空失败: {e}");
+                        1
+                    }
+                },
+                other_sub => {
+                    eprintln!(
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/help）"
+                    );
+                    1
+                }
+            }
+        }
         other => {
             eprintln!(
-                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/digest/verify-chain/path）"
+                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/profile/digest/verify-chain/fleet/path）"
             );
             1
         }

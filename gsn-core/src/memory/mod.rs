@@ -18,6 +18,7 @@ pub mod agent_memory;
 pub mod chain;
 pub mod digest;
 pub mod enhanced;
+pub mod fleet;
 pub mod flywheel;
 pub mod handoff;
 pub mod layered;
@@ -29,6 +30,10 @@ pub use agent_memory::AgentMemory;
 pub use chain::{verify_chain_file, ChainFileReport};
 pub use digest::{digest_sessions, SessionDigest, DIGEST_CONCLUSION_MAX};
 pub use enhanced::{EnhancedMemory, RatedMemory};
+pub use fleet::{
+    fleet_claim_hash, FleetAccess, FleetEntry, FleetError, FleetKind, FleetMemory, FleetStatus,
+    FleetStatusReport,
+};
 pub use flywheel::Flywheel;
 pub use handoff::{EvidenceGrade, TraceLedger, TransferBundle};
 pub use layered::{IntergenMemory, LayeredMemory};

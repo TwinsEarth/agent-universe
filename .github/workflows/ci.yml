@@ -21,12 +21,12 @@ jobs:
         # (Intel)；arm64 正确性由 MacMini 本地全量测试 + 真机冒烟实证，容量恢复后改回。
         os: [ubuntu-latest, macos-13, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # 固定 Node 版本：沙箱 JS 测试用 node；runner 预装 node 随镜像漂移（新版
       # V8 虚拟预留更大，导致 ulimit -v 下启动失败）。固定版本保证可复现。
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
@@ -72,7 +72,7 @@ jobs:
     name: Rust MSRV 1.88.0
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust 1.88.0
         uses: dtolnay/rust-toolchain@v1
@@ -94,7 +94,7 @@ jobs:
     name: Workbench Desktop
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -102,7 +102,7 @@ jobs:
           toolchain: stable
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -134,7 +134,7 @@ jobs:
     name: Python SDK
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -160,10 +160,10 @@ jobs:
     name: JS SDK
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -171,7 +171,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='5.1.6') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='5.1.7') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js
@@ -180,7 +180,7 @@ jobs:
     name: Version Consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Assert all version declarations match VERSION
         run: bash scripts/check-version.sh
 
@@ -188,10 +188,10 @@ jobs:
     name: Solidity Contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
 
@@ -207,9 +207,9 @@ jobs:
     name: Static Gates (panics / unsafe)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
       # 剥离注释/字符串/char 后扫描生产代码：禁止 .unwrap()/.expect()/panic!/

@@ -1,11 +1,13 @@
 //! 审核 Agent（Auditor，v5.0.0 骨架）
 //!
 //! 审核节点行为、记忆条目与任务产出，持有 [`SecurityEngine`]（违规上报/封禁）。
-//! v5.0.0 提供角色定义、消息入口、隐私 fail-closed 最小扫描（凭据特征）与
-//! SecurityEngine 接线；完整隐私规则在 v5.0.4，行为/产出审核在 v5.0.5。
+//! v5.0.0 提供角色定义、消息入口与 SecurityEngine 接线；v5.0.4 起隐私扫描规则下沉到
+//! `memory::privacy` 并接线进持久化写入路径（fail-closed），本 Agent 复用同一套规则。
+//! 行为/产出审核在后续版本。
 //!
 //! 隐私策略对齐 FLEET §4：记忆档案不存 prompt / secret，命中即 **fail-closed 拒绝**。
 
+use crate::memory::privacy::scan_entry_for_secret;
 use crate::memory::MemoryEntry;
 use crate::security::{SecurityEngine, SecurityFlag};
 
@@ -67,17 +69,23 @@ impl AuditorAgent {
         v
     }
 
-    /// 审核一条记忆条目：fail-closed —— 结论/tail 中任一字段含疑似凭据或私钥即拒绝。
+    /// 审核一条记忆条目：fail-closed —— argv / 结论 / tail 中任一字段含疑似凭据或私钥即拒绝。
+    ///
+    /// 扫描规则复用 `memory::privacy`，与持久化写入路径 [`PersistentMemoryStore::append`]
+    /// 使用同一套特征，保证「Agent 审核」与「存储层 fail-closed」结论一致。
+    ///
+    /// [`PersistentMemoryStore::append`]: crate::memory::PersistentMemoryStore::append
     pub fn audit_memory_entry(&mut self, e: &MemoryEntry) -> AuditVerdict {
-        for field in sensitive_fields(e) {
-            if let Some(hit) = detect_secret(field) {
-                return self.record(AuditFinding {
-                    subject: e.task_id.clone(),
-                    code: "AUDIT-SECRET-001".to_string(),
-                    verdict: AuditVerdict::Reject,
-                    detail: format!("记忆条目包含疑似敏感凭据（{hit}），拒绝写入档案"),
-                });
-            }
+        if let Some(hit) = scan_entry_for_secret(e) {
+            return self.record(AuditFinding {
+                subject: e.task_id.clone(),
+                code: "AUDIT-SECRET-001".to_string(),
+                verdict: AuditVerdict::Reject,
+                detail: format!(
+                    "记忆条目 {} 包含疑似敏感凭据（{}），拒绝写入档案",
+                    hit.field, hit.kind
+                ),
+            });
         }
         AuditVerdict::Allow
     }
@@ -98,73 +106,10 @@ impl AuditorAgent {
     }
 }
 
-fn sensitive_fields(e: &MemoryEntry) -> Vec<&str> {
-    let mut v = Vec::new();
-    if let Some(s) = &e.conclusion {
-        v.push(s.as_str());
-    }
-    if let Some(s) = &e.stdout_tail {
-        v.push(s.as_str());
-    }
-    if let Some(s) = &e.stderr_tail {
-        v.push(s.as_str());
-    }
-    v
-}
-
-/// 最小凭据特征扫描（v5.0.0 骨架；v5.0.4 扩展完整规则集）。
-/// 返回命中的类型标签。
-fn detect_secret(s: &str) -> Option<&'static str> {
-    /// (小写匹配串, 类型标签)
-    const PATTERNS: &[(&str, &str)] = &[
-        ("github_pat_", "github fine-grained token"),
-        ("ghp_", "github classic token"),
-        ("gho_", "github oauth token"),
-        ("ghu_", "github user-to-server token"),
-        ("ghs_", "github server-to-server token"),
-        ("-----begin private key-----", "pkcs8 private key"),
-        ("-----begin openssh private key-----", "openssh private key"),
-        ("-----begin rsa private key-----", "rsa private key"),
-        ("-----begin ec private key-----", "ec private key"),
-        ("bearer eyj", "bearer jwt"),
-    ];
-    let lower = s.to_ascii_lowercase();
-    for (needle, label) in PATTERNS {
-        if lower.contains(needle) {
-            return Some(*label);
-        }
-    }
-    // 常见 `sk-` 服务密钥（需后接足够长的字符，避免误判普通词）。
-    if let Some(idx) = lower.find("sk-") {
-        let rest = &lower[idx + 3..];
-        if rest.chars().filter(|c| c.is_ascii_alphanumeric()).count() >= 16 {
-            return Some("service secret key");
-        }
-    }
-    if contains_aws_access_key(s) {
-        return Some("aws access key id");
-    }
-    None
-}
-
-/// AWS Access Key ID：`AKIA` 后接 16 个大写字母/数字（总长 20）。
-fn contains_aws_access_key(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    for w in bytes.windows(20) {
-        if w.starts_with(b"AKIA")
-            && w[4..]
-                .iter()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
-        {
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::privacy::contains_aws_access_key;
 
     fn entry_with(field: &str) -> MemoryEntry {
         MemoryEntry::new("t1").conclusion(field)

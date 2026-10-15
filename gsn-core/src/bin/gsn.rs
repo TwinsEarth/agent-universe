@@ -29,7 +29,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.0.3");
+            println!("agent-universe v5.0.4");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -1070,6 +1070,7 @@ fn print_memory_help() {
     println!("  --data-dir <目录>     节点数据目录（默认同 daemon: ~/.gsn/data）");
     println!("  --max-bytes <n>       单文件软上限覆盖（0=不限，仅本次调用）");
     println!("  --keep-rotated <n>    保留滚动文件数覆盖（仅本次调用）");
+    println!("  --allow-secret        append 时关闭隐私 fail-closed（默认开启；风险自负）");
     println!("  --task-id <id>        任务标识（append 必填）");
     println!("  --gate <名称>         闸门/来源（如 ci）");
     println!("  --conclusion <文本>   结论");
@@ -1309,6 +1310,10 @@ async fn run_memory(args: &[String]) -> i32 {
     if let Some(kr) = keep_rotated_override {
         store = store.keep_rotated(kr);
     }
+    // 隐私审核默认开启（fail-closed）；仅当显式传入 --allow-secret 才关闭（风险自负）。
+    if rest.iter().any(|a| a == "--allow-secret") {
+        store = store.privacy_audit(false);
+    }
 
     match op {
         "path" => {
@@ -1348,6 +1353,7 @@ async fn run_memory(args: &[String]) -> i32 {
                 match name {
                     "--data-dir" => i += 2,
                     "--max-bytes" | "--keep-rotated" => i += 2,
+                    "--allow-secret" => i += 1,
                     "--task-id" => match mem_value_after(rest, i, name) {
                         Ok(v) => {
                             task_id = Some(v);
@@ -1487,6 +1493,13 @@ async fn run_memory(args: &[String]) -> i32 {
                     println!("已追加到 {}", path.display());
                     0
                 }
+                Err(gsn_core::MemoryError::SecretRefused { field, kind }) => {
+                    eprintln!(
+                        "拒绝写入（隐私审核 fail-closed）：{field} 命中疑似凭据（{kind}）。\n\
+                         明文未落盘。若你确认内容安全并坚持写入，可显式加 --allow-secret（风险自负）。"
+                    );
+                    3
+                }
                 Err(err) => {
                     eprintln!("追加失败: {err}");
                     1
@@ -1513,7 +1526,9 @@ async fn run_memory(args: &[String]) -> i32 {
             }
         },
         other => {
-            eprintln!("错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/path）");
+            eprintln!(
+                "错误: 未知 memory 操作 '{other}'（支持: append/list/recall/query/status/path）"
+            );
             1
         }
     }

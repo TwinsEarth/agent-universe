@@ -20,6 +20,7 @@ pub mod flywheel;
 pub mod handoff;
 pub mod layered;
 pub mod persistent;
+pub mod privacy;
 pub mod shared_memory;
 
 pub use agent_memory::AgentMemory;
@@ -31,4 +32,5 @@ pub use persistent::{
     MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore,
     RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
 };
+pub use privacy::{scan_entry_for_secret, SecretHit};
 pub use shared_memory::SwarmMemory;

@@ -133,6 +133,11 @@ fn truncate_field(field: &mut Option<String>, max_chars: usize) {
 pub enum MemoryError {
     Io(String),
     Json(String),
+    /// 隐私审核 fail-closed：条目含疑似凭据，已拒绝落盘（明文绝不写入）。
+    SecretRefused {
+        field: String,
+        kind: String,
+    },
 }
 
 impl fmt::Display for MemoryError {
@@ -140,6 +145,12 @@ impl fmt::Display for MemoryError {
         match self {
             MemoryError::Io(s) => write!(f, "memory io: {s}"),
             MemoryError::Json(s) => write!(f, "memory json: {s}"),
+            MemoryError::SecretRefused { field, kind } => {
+                write!(
+                    f,
+                    "memory secret refused（{field} 命中 {kind}），已拒绝写入档案"
+                )
+            }
         }
     }
 }
@@ -266,10 +277,12 @@ pub struct PersistentMemoryStore {
     max_bytes: u64,
     keep_rotated: usize,
     tail_max_chars: usize,
+    /// 写入前是否做隐私 fail-closed 扫描（默认开启）。
+    privacy_audit: bool,
 }
 
 impl PersistentMemoryStore {
-    /// 以默认参数（1 MB / 保留 2 滚动 / tail 2000）打开 `path`。
+    /// 以默认参数（1 MB / 保留 2 滚动 / tail 2000 / 隐私审核开启）打开 `path`。
     /// 文件与目录在首次 [`append`](Self::append) 时才创建。
     pub fn open(path: impl Into<PathBuf>) -> Self {
         Self {
@@ -277,7 +290,20 @@ impl PersistentMemoryStore {
             max_bytes: DEFAULT_MAX_BYTES,
             keep_rotated: DEFAULT_KEEP_ROTATED,
             tail_max_chars: DEFAULT_TAIL_MAX_CHARS,
+            privacy_audit: true,
         }
+    }
+
+    /// 开关写入前隐私审核（fail-closed）。默认开启；仅当上游已确认内容脱敏、
+    /// 或写入的是审计占位等受信条目时才关闭。
+    pub fn privacy_audit(mut self, on: bool) -> Self {
+        self.privacy_audit = on;
+        self
+    }
+
+    /// 当前是否启用写入前隐私审核。
+    pub fn privacy_audit_enabled(&self) -> bool {
+        self.privacy_audit
     }
 
     /// 设置单文件软上限（字节）。磁盘硬上限 = `max_bytes × (keep_rotated + 1)`。
@@ -391,8 +417,19 @@ impl PersistentMemoryStore {
         Ok(())
     }
 
-    /// 追加一条记忆（原子追加 + 超限前轮转 + tail 截断 + fsync）。
+    /// 追加一条记忆（隐私 fail-closed 前置 + 原子追加 + 超限前轮转 + tail 截断 + fsync）。
+    ///
+    /// 若启用隐私审核（默认），先在 **截断前** 对原始完整内容扫描，命中疑似凭据即返回
+    /// [`MemoryError::SecretRefused`]，绝不落盘明文。
     pub fn append(&self, mut entry: MemoryEntry) -> Result<(), MemoryError> {
+        if self.privacy_audit {
+            if let Some(hit) = crate::memory::privacy::scan_entry_for_secret(&entry) {
+                return Err(MemoryError::SecretRefused {
+                    field: hit.field,
+                    kind: hit.kind.to_string(),
+                });
+            }
+        }
         entry.truncate_tails(self.tail_max_chars);
         let line = serde_json::to_vec(&entry)?;
         let line_len = line.len() as u64 + 1; // + 换行
@@ -797,5 +834,59 @@ mod tests {
         // 不保留任何滚动文件，磁盘上只有当前文件且不超过上限。
         assert!(fs::metadata(&p).unwrap().len() <= 120);
         fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn secret_entry_refused_and_never_persisted() {
+        let p = tmp_path("secret-refuse");
+        let store = PersistentMemoryStore::open(&p);
+        assert!(store.privacy_audit_enabled());
+        let dirty = MemoryEntry::new("t1")
+            .stdout_tail("export GITHUB_TOKEN=ghp_0123456789abcdef0123456789");
+        let err = store.append(dirty).unwrap_err();
+        match err {
+            MemoryError::SecretRefused { field, kind } => {
+                assert_eq!(field, "stdout_tail");
+                assert!(kind.contains("github"));
+            }
+            other => panic!("应 SecretRefused，实际 {other:?}"),
+        }
+        // 明文绝未落盘：文件不应被创建（拒绝发生在创建目录/文件之前）。
+        assert!(!p.exists(), "命中 secret 后文件不应被创建");
+        // 干净条目正常写入。
+        store.append(sample("t2", "2026-10-14T03:00:00Z")).unwrap();
+        let cur = store.load_current().unwrap();
+        assert_eq!(cur.len(), 1);
+        assert_eq!(cur[0].task_id, "t2");
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn privacy_audit_disabled_allows_writes() {
+        let p = tmp_path("secret-allow");
+        let store = PersistentMemoryStore::open(&p).privacy_audit(false);
+        assert!(!store.privacy_audit_enabled());
+        store
+            .append(MemoryEntry::new("t1").conclusion("ghp_0123456789abcdef0123456789"))
+            .unwrap();
+        let cur = store.load_current().unwrap();
+        assert_eq!(cur.len(), 1);
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn audit_runs_before_tail_truncation() {
+        // secret 放在超长 tail 的末尾（超出 tail_max_chars 截断点）：
+        // fail-closed 必须在截断前对原始完整内容扫描，仍应拒绝。
+        let p = tmp_path("secret-tail-edge");
+        let store = PersistentMemoryStore::open(&p).tail_max_chars(10);
+        let mut tail = "a".repeat(5000);
+        tail.push_str("ghp_0123456789abcdef0123456789");
+        let dirty = MemoryEntry::new("t1").stdout_tail(tail);
+        assert!(matches!(
+            store.append(dirty),
+            Err(MemoryError::SecretRefused { .. })
+        ));
+        assert!(!p.exists());
     }
 }

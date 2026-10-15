@@ -26,6 +26,7 @@ pub mod layered;
 pub mod persistent;
 pub mod privacy;
 pub mod shared_memory;
+pub mod svaf;
 
 pub use agent_memory::AgentMemory;
 pub use cat7::Cat7Block;
@@ -45,3 +46,4 @@ pub use persistent::{
 };
 pub use privacy::{redact_entry, redact_secrets, scan_entry_for_secret, SecretHit};
 pub use shared_memory::SwarmMemory;
+pub use svaf::{Cat7Field, FieldVerdict, SvafAssessment, SvafDecision, SvafError};

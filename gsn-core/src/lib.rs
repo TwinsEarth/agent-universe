@@ -1,7 +1,7 @@
 // payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
 // 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
 #![recursion_limit = "256"]
-//! Agent Universe gsn-core v5.1.1
+//! Agent Universe gsn-core v5.1.2
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
@@ -70,12 +70,14 @@ pub use verifier::VerifierClient;
 // v5.0.0: 持久化记忆（FLEET-MEMORY-DESIGN §3.1）；v5.0.4: 隐私 fail-closed
 // v5.1.0: 集体记忆基座（facts/decisions/open problems + 角色化读写）
 // v5.1.1: CAT7 七字段认知记忆块（跨 Agent 记忆交换标准单元）
+// v5.1.2: SVAF 字段级评估（接收方逐字段接受/拒绝，核心字段 fail-closed、可剥离字段剥离）
 pub use memory::{
     digest_sessions, fleet_claim_hash, redact_entry, redact_secrets, scan_entry_for_secret,
-    verify_chain_file, Cat7Block, ChainFileReport, FleetAccess, FleetEntry, FleetError, FleetKind,
-    FleetMemory, FleetStatus, FleetStatusReport, MemoryEntry, MemoryError, MemoryQuery,
-    MemoryStorageStatus, PersistentMemoryStore, RotatedFileStatus, SecretHit, SessionDigest,
-    DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
+    verify_chain_file, Cat7Block, Cat7Field, ChainFileReport, FieldVerdict, FleetAccess,
+    FleetEntry, FleetError, FleetKind, FleetMemory, FleetStatus, FleetStatusReport, MemoryEntry,
+    MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore, RotatedFileStatus,
+    SecretHit, SessionDigest, SvafAssessment, SvafDecision, SvafError, DEFAULT_KEEP_ROTATED,
+    DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
 };
 
 // MCP + ACA (v2.3.2)

@@ -3769,9 +3769,17 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     // 创建）。open 恒成功；容量/滚动/tail 截断均有硬默认（见 persistent.rs），磁盘占用
     // 有硬上限。实际追加失败只在记录点告警，不影响 daemon 与任务执行。
     let memory_path = args.data_dir.join("memory.jsonl");
-    let memory_store: MemoryStoreHandle = Arc::new(std::sync::Mutex::new(
-        crate::memory::PersistentMemoryStore::open(&memory_path),
-    ));
+    let mut memory_store_builder = crate::memory::PersistentMemoryStore::open(&memory_path);
+    // v5.0.5：GSN_MEMORY_REDACT=1/true 时，命中 secret 改为字段级脱敏后落盘
+    // （保留上下文），而非整条拒绝 / 落占位。默认关闭（保持 v5.0.4 fail-closed）。
+    if matches!(
+        std::env::var("GSN_MEMORY_REDACT").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    ) {
+        memory_store_builder = memory_store_builder.redact_secrets(true);
+        println!("✅ 持久化记忆：字段级脱敏已开启（GSN_MEMORY_REDACT）");
+    }
+    let memory_store: MemoryStoreHandle = Arc::new(std::sync::Mutex::new(memory_store_builder));
     println!("✅ 持久化记忆已就绪（{}）", memory_path.display());
 
     // v3.0.0：一切插件化内核（PluginHost）。装配随内核的 T0 系统插件，
@@ -4267,6 +4275,44 @@ mod memory_wiring_tests {
         assert!(e.tags.contains(&"python".to_string()));
         assert_eq!(e.exit_code, Some(0));
         // 磁盘文件中绝不能出现 token 明文。
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains(secret), "token 明文写入了档案");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn secret_exec_redacted_keeps_context() {
+        // 开启 redact：stdout 保留、token 掩码、tag audit-redacted，不阻断 exec。
+        let path = tmp_path("redact");
+        let store = Arc::new(std::sync::Mutex::new(
+            PersistentMemoryStore::open(&path).redact_secrets(true),
+        ));
+        let secret = "ghp_0123456789abcdef0123456789";
+        let payload = serde_json::json!({
+            "id": "sbR",
+            "exit_code": 0,
+            "stdout": format!("before\n{secret}\nafter\n"),
+            "stderr": "",
+            "wall_ms": 4
+        });
+        record_sandbox_exec_memory(&store, "sbR", "python", &payload);
+
+        let entries = store.lock().unwrap().load_all().unwrap();
+        assert_eq!(entries.len(), 1, "应只落一条脱敏记忆（无占位）");
+        let e = &entries[0];
+        let stdout = e.stdout_tail.as_deref().unwrap();
+        assert!(
+            stdout.contains("before") && stdout.contains("after"),
+            "保留上下文: {stdout}"
+        );
+        assert!(stdout.contains("ghp_[REDACTED]"), "掩码 token: {stdout}");
+        assert!(!stdout.contains(secret), "明文残留: {stdout}");
+        assert!(e.tags.contains(&"audit-redacted".to_string()));
+        assert!(
+            !e.tags.contains(&"audit-secret".to_string()),
+            "不应走占位路径"
+        );
+        assert_eq!(e.exit_code, Some(0));
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(!raw.contains(secret), "token 明文写入了档案");
         let _ = std::fs::remove_file(&path);

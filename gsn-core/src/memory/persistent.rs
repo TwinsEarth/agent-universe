@@ -279,6 +279,9 @@ pub struct PersistentMemoryStore {
     tail_max_chars: usize,
     /// 写入前是否做隐私 fail-closed 扫描（默认开启）。
     privacy_audit: bool,
+    /// v5.0.5：命中 secret 时是否改为**字段级脱敏后落盘**（默认 false，
+    /// 保持 v5.0.4「整条拒绝」）。仅在 `privacy_audit=true` 时生效。
+    redact_secrets: bool,
 }
 
 impl PersistentMemoryStore {
@@ -291,6 +294,7 @@ impl PersistentMemoryStore {
             keep_rotated: DEFAULT_KEEP_ROTATED,
             tail_max_chars: DEFAULT_TAIL_MAX_CHARS,
             privacy_audit: true,
+            redact_secrets: false,
         }
     }
 
@@ -304,6 +308,18 @@ impl PersistentMemoryStore {
     /// 当前是否启用写入前隐私审核。
     pub fn privacy_audit_enabled(&self) -> bool {
         self.privacy_audit
+    }
+
+    /// v5.0.5：命中 secret 时改为字段级脱敏后落盘（最小化保留上下文），而非整条
+    /// 拒绝。默认关闭（保持 v5.0.4 fail-closed）；需在隐私审核开启时使用。
+    pub fn redact_secrets(mut self, on: bool) -> Self {
+        self.redact_secrets = on;
+        self
+    }
+
+    /// 当前是否启用字段级脱敏。
+    pub fn redact_enabled(&self) -> bool {
+        self.redact_secrets
     }
 
     /// 设置单文件软上限（字节）。磁盘硬上限 = `max_bytes × (keep_rotated + 1)`。
@@ -417,17 +433,41 @@ impl PersistentMemoryStore {
         Ok(())
     }
 
-    /// 追加一条记忆（隐私 fail-closed 前置 + 原子追加 + 超限前轮转 + tail 截断 + fsync）。
+    /// 追加一条记忆（隐私前置 + 原子追加 + 超限前轮转 + tail 截断 + fsync）。
     ///
-    /// 若启用隐私审核（默认），先在 **截断前** 对原始完整内容扫描，命中疑似凭据即返回
-    /// [`MemoryError::SecretRefused`]，绝不落盘明文。
+    /// 若启用隐私审核（默认），先在 **截断前** 对原始完整内容扫描：
+    /// - 未开启 redact（v5.0.4 默认）：命中疑似凭据即返回 [`MemoryError::SecretRefused`]，
+    ///   绝不落盘明文。
+    /// - 开启 redact（v5.0.5）：对字段内 secret 局部掩码、保留其余上下文，加
+    ///   `audit-redacted` 标记后落盘；**脱敏后复检仍命中**（或脱敏未生效）则 fail-closed
+    ///   返回 [`MemoryError::SecretRefused`]，防止规则漂移漏掩码。
     pub fn append(&self, mut entry: MemoryEntry) -> Result<(), MemoryError> {
         if self.privacy_audit {
             if let Some(hit) = crate::memory::privacy::scan_entry_for_secret(&entry) {
-                return Err(MemoryError::SecretRefused {
-                    field: hit.field,
-                    kind: hit.kind.to_string(),
-                });
+                if self.redact_secrets {
+                    let (redacted, changed) = crate::memory::privacy::redact_entry(&entry);
+                    if changed {
+                        entry = redacted.add_tag("audit-redacted");
+                        // 脱敏后复检：仍命中则 fail-closed（规则漂移兜底）。
+                        if let Some(hit) = crate::memory::privacy::scan_entry_for_secret(&entry) {
+                            return Err(MemoryError::SecretRefused {
+                                field: hit.field,
+                                kind: hit.kind.to_string(),
+                            });
+                        }
+                    } else {
+                        // scan 命中但脱敏未改变任何字段：规则不一致，按该命中拒绝。
+                        return Err(MemoryError::SecretRefused {
+                            field: hit.field,
+                            kind: hit.kind.to_string(),
+                        });
+                    }
+                } else {
+                    return Err(MemoryError::SecretRefused {
+                        field: hit.field,
+                        kind: hit.kind.to_string(),
+                    });
+                }
             }
         }
         entry.truncate_tails(self.tail_max_chars);
@@ -888,5 +928,46 @@ mod tests {
             Err(MemoryError::SecretRefused { .. })
         ));
         assert!(!p.exists());
+    }
+
+    #[test]
+    fn redact_mode_masks_and_persists_context() {
+        let p = tmp_path("redact");
+        let store = PersistentMemoryStore::open(&p).redact_secrets(true);
+        assert!(store.redact_enabled());
+        let dirty = MemoryEntry::new("t1").stdout_tail(
+            "step1 ok\nexport GITHUB_TOKEN=ghp_0123456789abcdef0123456789\nstep3 done",
+        );
+        store.append(dirty).unwrap(); // 脱敏后落盘，不再 Err。
+
+        let cur = store.load_current().unwrap();
+        assert_eq!(cur.len(), 1);
+        let e = &cur[0];
+        let stdout = e.stdout_tail.as_deref().unwrap();
+        assert!(stdout.contains("step1 ok"), "保留上文: {stdout}");
+        assert!(stdout.contains("step3 done"), "保留下文: {stdout}");
+        assert!(stdout.contains("ghp_[REDACTED]"), "掩码 token: {stdout}");
+        assert!(!stdout.contains("0123456789abcdef"), "明文残留: {stdout}");
+        assert!(e.tags.contains(&"audit-redacted".to_string()));
+        // 磁盘文件同样无明文。
+        let raw = fs::read_to_string(&p).unwrap();
+        assert!(!raw.contains("0123456789abcdef"));
+        fs::remove_file(&p).ok();
+    }
+
+    #[test]
+    fn redact_mode_clean_entry_has_no_redact_tag() {
+        let p = tmp_path("redact-clean");
+        let store = PersistentMemoryStore::open(&p).redact_secrets(true);
+        store
+            .append(MemoryEntry::new("t1").conclusion("all clean"))
+            .unwrap();
+        let cur = store.load_current().unwrap();
+        assert_eq!(cur.len(), 1);
+        assert!(
+            !cur[0].tags.contains(&"audit-redacted".to_string()),
+            "干净条目不应加 redact 标记"
+        );
+        fs::remove_file(&p).ok();
     }
 }

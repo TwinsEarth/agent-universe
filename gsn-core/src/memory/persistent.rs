@@ -163,10 +163,17 @@ impl From<serde_json::Error> for MemoryError {
 pub struct MemoryQuery {
     pub task_id: Option<String>,
     pub gate: Option<String>,
-    pub tag: Option<String>,
+    /// 条目需同时包含全部给定标签（AND）；空则不过滤。
+    pub tags: Vec<String>,
     pub conclusion_contains: Option<String>,
+    /// 精确匹配退出码；仅对携带 `exit_code` 的条目生效。
+    pub exit_code: Option<i32>,
+    /// 便捷成功/失败过滤：`Some(true)` 仅 exit=0，`Some(false)` 仅退出码非零。
+    pub ok: Option<bool>,
     /// 仅返回 `at >= since` 的条目；RFC3339 UTC 字符串（`…Z`）字典序等价于时间序。
     pub since: Option<String>,
+    /// 仅返回 `at < until` 的条目（与 `since` 组成半开区间）。
+    pub until: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -182,16 +189,35 @@ impl MemoryQuery {
         self.gate = Some(v.into());
         self
     }
+    /// 追加一个要求标签；可链式重复调用，多个标签为 AND 关系。
     pub fn tag(mut self, v: impl Into<String>) -> Self {
-        self.tag = Some(v.into());
+        self.tags.push(v.into());
+        self
+    }
+    /// 一次性设置要求标签集合（需全部包含）。
+    pub fn tags(mut self, v: Vec<String>) -> Self {
+        self.tags = v;
         self
     }
     pub fn conclusion_contains(mut self, v: impl Into<String>) -> Self {
         self.conclusion_contains = Some(v.into());
         self
     }
+    pub fn exit_code(mut self, v: i32) -> Self {
+        self.exit_code = Some(v);
+        self
+    }
+    /// 便捷成功/失败过滤：`true` 仅 exit=0，`false` 仅退出码非零。
+    pub fn ok(mut self, v: bool) -> Self {
+        self.ok = Some(v);
+        self
+    }
     pub fn since(mut self, v: impl Into<String>) -> Self {
         self.since = Some(v.into());
+        self
+    }
+    pub fn until(mut self, v: impl Into<String>) -> Self {
+        self.until = Some(v.into());
         self
     }
     pub fn limit(mut self, v: usize) -> Self {
@@ -391,10 +417,9 @@ impl PersistentMemoryStore {
                         return false;
                     }
                 }
-                if let Some(tag) = &q.tag {
-                    if !e.tags.contains(tag) {
-                        return false;
-                    }
+                // 多标签 AND：条目须包含全部要求标签。
+                if !q.tags.iter().all(|t| e.tags.contains(t)) {
+                    return false;
                 }
                 if let Some(c) = &q.conclusion_contains {
                     match &e.conclusion {
@@ -402,8 +427,26 @@ impl PersistentMemoryStore {
                         _ => return false,
                     }
                 }
+                if let Some(want) = q.exit_code {
+                    if e.exit_code != Some(want) {
+                        return false;
+                    }
+                }
+                if let Some(want_ok) = q.ok {
+                    // 无退出码的条目无法判定成败，一律排除。
+                    match e.exit_code {
+                        Some(0) if want_ok => {}
+                        Some(c) if !want_ok && c != 0 => {}
+                        _ => return false,
+                    }
+                }
                 if let Some(since) = &q.since {
                     if e.at.as_str() < since.as_str() {
+                        return false;
+                    }
+                }
+                if let Some(until) = &q.until {
+                    if e.at.as_str() >= until.as_str() {
                         return false;
                     }
                 }
@@ -476,13 +519,25 @@ mod tests {
                     .conclusion("relay reachable"),
             )
             .unwrap();
+        // 失败样本：exit=2，带 network + sandbox 标签。
+        store
+            .append(
+                MemoryEntry::new("t3")
+                    .at("2026-10-14T05:00:00Z")
+                    .gate("sandbox.exec")
+                    .exit_code(2)
+                    .add_tag("network")
+                    .add_tag("sandbox")
+                    .conclusion("exit=2 (python)"),
+            )
+            .unwrap();
 
         assert_eq!(
             store
                 .query(&MemoryQuery::new().tag("network"))
                 .unwrap()
                 .len(),
-            1
+            2
         );
         assert_eq!(
             store
@@ -502,6 +557,50 @@ mod tests {
         assert_eq!(
             store
                 .query(&MemoryQuery::new().since("2026-10-14T02:00:00Z"))
+                .unwrap()
+                .len(),
+            2
+        );
+        // 多标签 AND：network + sandbox 仅 t3
+        assert_eq!(
+            store
+                .query(&MemoryQuery::new().tag("network").tag("sandbox"))
+                .unwrap()
+                .len(),
+            1
+        );
+        // 退出码精确匹配
+        assert_eq!(
+            store.query(&MemoryQuery::new().exit_code(2)).unwrap().len(),
+            1
+        );
+        // 成功/失败便捷过滤
+        assert_eq!(
+            store.query(&MemoryQuery::new().ok(true)).unwrap().len(),
+            1,
+            "仅 t1 exit=0"
+        );
+        assert_eq!(
+            store.query(&MemoryQuery::new().ok(false)).unwrap().len(),
+            1,
+            "仅 t3 exit=2；t2 无退出码被排除"
+        );
+        // until 过滤：只返回 03:00 之前（不含边界）
+        assert_eq!(
+            store
+                .query(&MemoryQuery::new().until("2026-10-14T03:00:00Z"))
+                .unwrap()
+                .len(),
+            1
+        );
+        // since + until 半开区间
+        assert_eq!(
+            store
+                .query(
+                    &MemoryQuery::new()
+                        .since("2026-10-14T03:00:00Z")
+                        .until("2026-10-14T05:00:00Z")
+                )
                 .unwrap()
                 .len(),
             1

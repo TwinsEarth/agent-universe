@@ -35,7 +35,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.8");
+            println!("agent-universe v5.1.9");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -3523,9 +3523,179 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "governance" => {
+                    // v5.1.9：记忆治理（防 MemClaw 四失败模式）——
+                    // 未授权泄漏（导出前敏感扫描）/陈旧传播（时间门槛过滤）/
+                    // 矛盾持久化（词级极性冲突检测）/来源坍缩（来源多样性审计）。
+                    // 纯函数、时间可注入、fail-closed；不代替 privacy 写入侧脱敏。
+                    let gsub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!("错误: governance 需指定子操作（check/stale/contradiction/collapse）");
+                            return 1;
+                        }
+                    };
+                    let path = data_dir.join("memory.jsonl");
+                    let store = gsn_core::PersistentMemoryStore::open(&path);
+                    let entries = match store.load_all() {
+                        Ok(es) => es,
+                        Err(e) => {
+                            eprintln!("读取记忆档案失败: {e}");
+                            return 1;
+                        }
+                    };
+                    match gsub {
+                        "check" => {
+                            // 导出安全检查：逐条扫描结论/tails/argv 敏感特征。
+                            let mut denied = 0usize;
+                            for e in &entries {
+                                let d = gsn_core::export_safety_check(e);
+                                if !d.allowed {
+                                    denied += 1;
+                                    println!("拒绝导出 [{}]: {}", e.task_id, d);
+                                }
+                            }
+                            if rest.iter().any(|a| a == "--json") {
+                                println!(
+                                    "{{\"mode\":\"leakage\",\"total\":{},\"denied\":{}}}",
+                                    entries.len(),
+                                    denied
+                                );
+                            } else {
+                                println!(
+                                    "治理-未授权泄漏：共 {} 条，拒绝导出 {} 条",
+                                    entries.len(),
+                                    denied
+                                );
+                            }
+                            0
+                        }
+                        "stale" => {
+                            // 陈旧传播过滤：--max-stale <secs> 必填；--now <epoch> 可注入。
+                            let max_stale = match mem_flag_value(rest, "--max-stale") {
+                                Some(v) => match v.parse::<u64>() {
+                                    Ok(n) => n,
+                                    Err(_) => {
+                                        eprintln!("错误: --max-stale 需为正整数秒");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: stale 需 --max-stale <秒>");
+                                    return 1;
+                                }
+                            };
+                            let now = match mem_flag_value(rest, "--now") {
+                                Some(v) => match v.parse::<u64>() {
+                                    Ok(n) => n,
+                                    Err(_) => {
+                                        eprintln!("错误: --now 需为 epoch 秒");
+                                        return 1;
+                                    }
+                                },
+                                None => chrono::Utc::now().timestamp().max(0) as u64,
+                            };
+                            let rep = gsn_core::freshness_gate(&entries, now, max_stale);
+                            if rest.iter().any(|a| a == "--json") {
+                                let kept_ids: Vec<&str> =
+                                    rep.kept.iter().map(|e| e.task_id.as_str()).collect();
+                                let stale_ids: Vec<&str> =
+                                    rep.stale.iter().map(|e| e.task_id.as_str()).collect();
+                                println!(
+                                    "{{\"mode\":\"stale\",\"now\":{},\"max_stale\":{},\"kept\":{},\"stale\":{}}}",
+                                    now,
+                                    max_stale,
+                                    serde_json::to_string(&kept_ids).unwrap_or_else(|_| "[]".into()),
+                                    serde_json::to_string(&stale_ids).unwrap_or_else(|_| "[]".into())
+                                );
+                            } else {
+                                println!(
+                                    "治理-陈旧传播：now={now}s 门槛 {max_stale}s，保留 {} 条 / 拦下 {} 条",
+                                    rep.kept_count(),
+                                    rep.stale_count()
+                                );
+                                if rep.stale_count() > 0 {
+                                    for e in &rep.stale {
+                                        println!("  - 拦下 [{}]（{}）", e.task_id, e.at);
+                                    }
+                                }
+                            }
+                            0
+                        }
+                        "contradiction" => {
+                            // 矛盾持久化：同 task_id 条目两两做词级极性冲突检测。
+                            let mut pairs = 0usize;
+                            for i in 0..entries.len() {
+                                for j in (i + 1)..entries.len() {
+                                    let a = &entries[i];
+                                    let b = &entries[j];
+                                    if a.task_id != b.task_id {
+                                        continue;
+                                    }
+                                    let (ca, cb) =
+                                        match (a.conclusion.as_deref(), b.conclusion.as_deref()) {
+                                            (Some(x), Some(y)) => (x, y),
+                                            _ => continue,
+                                        };
+                                    let v = gsn_core::detect_contradiction(ca, cb);
+                                    if v.contradicts {
+                                        pairs += 1;
+                                        println!(
+                                            "矛盾对 [{}]: \"{}\" ↔ \"{}\"（共享词 {:?}）",
+                                            a.task_id, ca, cb, v.shared_terms
+                                        );
+                                    }
+                                }
+                            }
+                            println!(
+                                "治理-矛盾持久化：检查 {} 条，命中矛盾对 {} 对",
+                                entries.len(),
+                                pairs
+                            );
+                            0
+                        }
+                        "collapse" => {
+                            // 来源坍缩：来源多样性审计。
+                            let rep = gsn_core::source_diversity(&entries);
+                            if rest.iter().any(|a| a == "--json") {
+                                println!(
+                                    "{{\"mode\":\"collapse\",\"total\":{},\"distinct_nodes\":{},\"max_share\":{:.3},\"collapse_risk\":{}}}",
+                                    rep.total,
+                                    rep.distinct_nodes,
+                                    rep.max_share,
+                                    rep.collapse_risk
+                                );
+                            } else {
+                                println!(
+                                    "治理-来源坍缩：共 {} 条 / {} 个来源，单源最大占比 {:.1}%，坍缩风险 {}",
+                                    rep.total,
+                                    rep.distinct_nodes,
+                                    rep.max_share * 100.0,
+                                    if rep.collapse_risk { "有" } else { "无" }
+                                );
+                            }
+                            0
+                        }
+                        "help" => {
+                            println!("governance 用法：");
+                            println!("  gsn memory fleet governance check [--json]");
+                            println!("  gsn memory fleet governance stale --max-stale <秒> [--now <epoch秒>] [--json]");
+                            println!("  gsn memory fleet governance contradiction");
+                            println!("  gsn memory fleet governance collapse [--json]");
+                            println!("说明：防 MemClaw 四失败模式（未授权泄漏/陈旧传播/矛盾持久化/来源坍缩）；纯函数、时间可注入、fail-closed；导出拒绝不代替 privacy 写入侧脱敏。");
+                            0
+                        }
+                        other_gsub => {
+                            eprintln!(
+                                "错误: 未知 governance 子操作 '{other_gsub}'（check/stale/contradiction/collapse/help）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/fade/portable/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/fade/portable/governance/help）"
                     );
                     1
                 }

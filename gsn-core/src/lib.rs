@@ -1,12 +1,13 @@
 // payment::status_payload 的 serde_json::json! 字面量较大（v3.9.8 增 ZK/OWS/合规三块），
 // 默认 128 的宏递归深度不足；提升到 256（仅编译期展开上限，不影响运行期行为）。
 #![recursion_limit = "256"]
-//! Agent Universe gsn-core v5.1.8
+//! Agent Universe gsn-core v5.1.9
 //!
 //! 群体智能核心库 - 智能体宇宙
 //!
 //! 群体智能 = 网络结构的 Scaling Law
 //! 从 token 网络结构向智能体网络结构演进
+//! v5.1.9: 记忆治理（防 MemClaw 四失败模式：未授权泄漏/陈旧传播/矛盾持久化/来源坍缩）
 //! v5.1.8: 可移植记忆（token_budget + 相关性分级，预算内装包、预算外显式 omitted）
 //! v5.1.7: 主动遗忘（FadeMem 自适应衰减/淘汰，存储收益数字实测，不预设）
 //! v5.1.6: 记忆巩固三阶段（短期 TTL → 中期快照 → 长期分布式存储 + Merkle-SHA256）
@@ -88,6 +89,12 @@ pub use memory::{
 pub use memory::{
     estimate_entry_tokens, estimate_tokens, portable_pack, relevance_score, tier_of, OmittedEntry,
     PortableError, PortablePack, PortableQuery, RelevanceTier, ScoredEntry, TierCounts, MAX_BUDGET,
+};
+// v5.1.9: 记忆治理（防 MemClaw 四失败模式：未授权泄漏/陈旧传播/矛盾持久化/来源坍缩）
+pub use memory::{
+    detect_contradiction, detect_sensitive, export_safety_check, freshness_gate,
+    parse_rfc3339_secs, source_diversity, CollapseReport, ContradictionVerdict, ExportDecision,
+    FreshnessReport, MemClawMode,
 };
 
 // MCP + ACA (v2.3.2)

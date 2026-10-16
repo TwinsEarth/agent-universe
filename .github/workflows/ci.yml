@@ -16,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # v5.2.0 稳定化：GitHub hosted arm64 runner 已恢复，macos-13 长期 queued
+        # v5.2.1 稳定化：GitHub hosted arm64 runner 已恢复，macos-13 长期 queued
         # 且缺 arm64 覆盖；改回 macos-latest(arm64)。若再次无 runner 认领，按先例
         # 以 MacMini 本地全量测试 + 真机冒烟实证放行。
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -171,7 +171,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='5.2.0') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='5.2.1') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

@@ -14,8 +14,8 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 export PATH="$HOME/.cargo/bin:$PATH"
-cargo build --release --workspace
-BIN=gsn-core/target/release/gsn-daemon
+echo "复用 GSN_BIN=${GSN_BIN:-gsn-core/target/release/gsn-daemon}"
+BIN="${GSN_BIN:-gsn-core/target/release/gsn-daemon}"
 ROOT=/tmp/er
 TOKEN=localdev
 rm -rf "$ROOT"; mkdir -p "$ROOT/n0" "$ROOT/n1" "$ROOT/n2"

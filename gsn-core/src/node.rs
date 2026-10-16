@@ -1038,6 +1038,14 @@ fn process_swarm_event(
                         peer.add_kad_address(*peer_id, a.clone());
                     }
                 }
+                // v5.2.2: Identify 失败（50 节点冷启动并发连接风暴下实测出现——
+                // boot 侧 49 个并发入站 Identify 流只有 ~13 个完成，其余超时/断连，
+                // 直接导致 kbucket 填充不足、GetClosestPeers 返回空、路由扩展停滞）。
+                // 补救：断开后按 kbucket 已知地址重拨该 peer，触发新一轮 Identify。
+                Identify(libp2p::identify::Event::Error { peer_id, error, .. }) => {
+                    tracing::warn!(%peer_id, error = %error, "dht: identify 失败，断连重拨重试");
+                    peer.redial_peer(*peer_id);
+                }
                 Identify(_) => {}
                 // v2.7.5: DCUtR 直连升级结果——成功则纳入 direct_peers
                 Dcutr(e) => {
@@ -1077,12 +1085,25 @@ fn process_swarm_event(
                     }
                 }
                 Gossipsub(_) => {}
-                // 跨节点 DHT 查找结果到达：resolve 等待中的 FindPeers 回调。
+                // 跨节点 DHT 查找结果到达：resolve 等待中的 FindPeers 回调；
+                // v5.2.2: 无论有无回调（自举/随机查找不注册 pending_finds），
+                // 都把所有查询学到的节点补齐连接，让迭代 FIND_NODE 能继续向
+                // 新节点追问（否则路由表停在"直连+一跳"，50 节点规模下每节点
+                // 仅 9~17 条，无法达到 K=20 规模门禁）。
                 Kademlia(libp2p::kad::Event::OutboundQueryProgressed {
                     id,
                     result: libp2p::kad::QueryResult::GetClosestPeers(outcome),
                     ..
                 }) => {
+                    if let Ok(ok) = &outcome {
+                        tracing::info!(
+                            learned = ok.peers.len(),
+                            "dht: GetClosestPeers 返回，补齐学习节点连接"
+                        );
+                        peer.dial_learned_peers(&ok.peers);
+                    } else {
+                        tracing::info!(error = ?outcome.as_ref().err(), "dht: GetClosestPeers 查询未返回节点（超时或失败）");
+                    }
                     if let Some(tx) = pending_finds.remove(id) {
                         match outcome {
                             Ok(ok) => {
@@ -1350,6 +1371,16 @@ fn handle_peer_command(
                 if let Err(e) = peer.persist_routing_table() {
                     tracing::warn!("⚠️ 路由表持久化失败: {e}");
                 }
+                // v5.2.2: 追加一次随机 key 的 GetClosestPeers 查询。
+                // 查询结果会经 OutboundQueryProgressed 臂把学到的节点补齐连接，
+                // 使自举迭代从"已连接对端"扩展到"全网可拨号节点"；随机 key
+                // 让每轮返回不同的节点子集，多轮自举可累积覆盖全部节点。
+                peer.find_random_peer();
+                // v5.2.2: 再以 kbucket 已知 peer 为 key 查询（信息富集）。
+                // 纯随机 key 查询在冷启动时可能只问"直连邻居"（learned 恒定
+                // 7/8 死锁，12/50 节点实测）；以已知 peer 作 key 保证向某个
+                // 已连接节点索取其整张路由表，多轮覆盖全网。
+                peer.find_peer_query();
             }
             Err(e) => tracing::warn!("⚠️ Kademlia 自举暂不可用（{e}），稍后重试"),
         },
@@ -3306,7 +3337,11 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     };
     // v3.9.17: DHT 路由持久化——路由表快照落在 data_dir/dht-routing.json，
     // 重启后回填 kbucket 再自举，缩短冷启动收敛；Eclipse 防护随默认配置开启。
-    let dht_cfg = DhtConfig::default().with_routing_persist(args.data_dir.join("dht-routing.json"));
+    // v5.2.2: 支持 GSN_DHT_MAX_PEERS_PER_IP/SUBNET 环境变量放宽同 IP 上限
+    // （共享出口 IP 真实集群 / 单机多节点规模回归场景）。
+    let dht_cfg = DhtConfig::default()
+        .with_routing_persist(args.data_dir.join("dht-routing.json"))
+        .with_eclipse_env_override();
     let mut peer = if relay_cfg.is_some() {
         P2pPeer::with_data_dir_relay_gossip_dht(
             &args.data_dir,
@@ -3696,13 +3731,17 @@ pub async fn run_daemon(args: DaemonArgs) -> anyhow::Result<()> {
     }
 
     // P0-1: 首个 bootstrap 连接建立后触发 Kademlia 自举（等 5s 让连接+add_address），
-    // 随后每 5 分钟重跑一次 self-lookup，保证 churn 下路由表持续被刷新。
+    // v5.2.2: 冷启动阶段 5s/10s/20s/35s/55s/80s 各触发一轮自举（每轮成功后追加
+    // GetClosestPeers 并把学到的节点补齐连接，路由表逐轮扩展），随后每 120s
+    // 重跑一次 self-lookup，保证 churn 下路由表持续被刷新。
     {
         let t = peer_cmd_tx.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let _ = t.send(PeerCommand::BootstrapDht).await;
-            let mut refresh = tokio::time::interval(std::time::Duration::from_secs(300));
+            for delay in [5u64, 10, 20, 35, 55, 80] {
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+                let _ = t.send(PeerCommand::BootstrapDht).await;
+            }
+            let mut refresh = tokio::time::interval(std::time::Duration::from_secs(120));
             loop {
                 refresh.tick().await;
                 let _ = t.send(PeerCommand::BootstrapDht).await;

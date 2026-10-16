@@ -40,13 +40,13 @@ fail=0
 #      直接 POST 旧形状 body 应被拒绝（非 2xx）。
 c1="$(curl -s -o /dev/null -w '%{http_code}' -X POST "127.0.0.1:$API/api/v1/disputes/x/arbitrate" \
   -H 'Content-Type: application/json' -d '{"arbitrator":"did:nau:attacker","guilty":true}')"
-echo "   自报仲裁请求 http=$c1（期望非200，即 400/401/404）"
+echo "   自报仲裁请求 http=${c1}（期望非200，即 400/401/404）"
 case "$c1" in 2??) echo "   ❌ 自报仲裁被接受，存在女巫罚没面"; fail=1;; *) echo "   ✅ 自报仲裁被拒绝";; esac
 
 # 2.2 无凭证 deposit（本地铸币）应被拒绝
 c2="$(curl -s -o /dev/null -w '%{http_code}' -X POST "127.0.0.1:$API/api/v1/accounts/did:nau:attacker/deposit" \
   -H 'Content-Type: application/json' -d '{"amount":1000000}')"
-echo "   无凭证授信 http=$c2（期望非200）"
+echo "   无凭证授信 http=${c2}（期望非200）"
 case "$c2" in 2??) echo "   ❌ 无凭证授信被接受，存在本地铸币面"; fail=1;; *) echo "   ✅ 无凭证授信被拒绝";; esac
 
 # 2.3 新节点不配置治理集时，特权动作整体不可用（空治理集拒绝一切）

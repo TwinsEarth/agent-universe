@@ -458,10 +458,11 @@ fn test_erasure_verify_parity() {
 
 #[test]
 fn test_gsn_daemon_help() {
-    // 验证 gsn-daemon 二进制存在且可运行
-    let bin_path = std::env::var("CARGO_BIN_FILE_GSN_DAEMON")
-        .unwrap_or_else(|_| "./target/debug/gsn-daemon".to_string());
-    let output = std::process::Command::new(&bin_path)
+    // 验证 gsn-daemon 二进制存在且可运行。
+    // 用 CARGO_BIN_EXE 编译期宏定位（cargo 在构建集成测试时注入构建产物绝对路径），
+    // 兼容 CARGO_TARGET_DIR 指向仓库外；不再依赖相对路径回退。
+    let bin_path = env!("CARGO_BIN_EXE_gsn-daemon");
+    let output = std::process::Command::new(bin_path)
         .arg("--help")
         .output()
         .expect("failed to run gsn-daemon");

@@ -24,6 +24,7 @@ pub mod envtrace;
 pub mod fade;
 pub mod fleet;
 pub mod flywheel;
+pub mod governance;
 pub mod handoff;
 pub mod layered;
 pub mod lineage;
@@ -52,6 +53,11 @@ pub use fleet::{
     FleetStatusReport,
 };
 pub use flywheel::Flywheel;
+pub use governance::{
+    detect_contradiction, detect_sensitive, export_safety_check, freshness_gate,
+    parse_rfc3339_secs, source_diversity, CollapseReport, ContradictionVerdict, ExportDecision,
+    FreshnessReport, MemClawMode,
+};
 pub use handoff::{EvidenceGrade, TraceLedger, TransferBundle};
 pub use layered::{IntergenMemory, LayeredMemory};
 pub use lineage::{LineageError, LineageGraph, LineageRecord};

@@ -2,8 +2,8 @@
 
 对 TwinsEarth/agent-universe 仓库的全面分析测试清单。测试项基于仓库文档中明确记录的测试命令、回归脚本、CI 检查门禁及版本历史构建。
 
-- **当前最新版本**：v5.1.8（2026-10-16 发布，PR #143 → tag v5.1.8 → Release；前序 v5.1.5 PR #140 / v5.1.6 PR #141 / v5.1.7 PR #142 已发版）
-- **当前测试基线**：**1023 个 lib 测试全部通过**（v5.1.8 实测：`test result: ok. 1023 passed; 0 failed`，v5.1.7 fade 23 项 + v5.1.8 portable 30 项新增）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。
+- **当前最新版本**：v5.1.9（2026-10-16 开发完成，质量门全绿；v5.1.8 于 2026-10-16 发布，PR #143 → tag v5.1.8 → Release；前序 v5.1.5 PR #140 / v5.1.6 PR #141 / v5.1.7 PR #142 已发版）
+- **当前测试基线**：**1058 个 lib 测试全部通过**（v5.1.9 实测：`test result: ok. 1058 passed; 0 failed` = v5.1.8 基线 1023 + governance 35 项新增）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。
 - 仓库：https://github.com/TwinsEarth/agent-universe
 
 ## 维护规则
@@ -19,7 +19,7 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-RUST-001 | cargo test 全量 lib 测试 | 通过 | — | gsn-core/ 目录，v5.1.8 实测 1023 passed / 0 failed |
+| TC-RUST-001 | cargo test 全量 lib 测试 | 通过 | — | gsn-core/ 目录，v5.1.9 实测 1058 passed / 0 failed |
 | TC-RUST-002 | cargo test --workspace 全量 workspace 测试 | 通过 | — | 仓库根目录，workspace 全量通过 |
 | TC-RUST-003 | cargo clippy -- -D warnings 零告警 | 通过 | — | 所有 workspace 成员，clippy 无任何 warning |
 | TC-RUST-004 | cargo fmt --check 格式干净 | 通过 | — | 全仓库，fmt 无 diff |
@@ -33,7 +33,7 @@
 | TC-RUST-012 | sandbox/ 模块：沙箱类型、隔离级别、资源限制、进程级运行时 | 通过 | — | 单元测试 + 真实沙箱执行验证 |
 | TC-RUST-013 | crdt/ 模块：LWW 键值 CRDT | 通过 | — | 单元测试，多副本收敛验证 |
 | TC-RUST-014 | erasure/ 模块：Reed-Solomon 纠删码、分片放置与重建 | 通过 | — | scripts/regression-erasure.sh：ingest→分发→缺失分片重建 |
-| TC-RUST-015 | memory/ 模块：个体/群体记忆库（library-only，v5.0.x 起含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade/portable） | 通过 | — | 单元测试，v5.1.6 consolidation 19 项全过；v5.1.7 fade 23 项全过；v5.1.8 portable 30 项全过 |
+| TC-RUST-015 | memory/ 模块：个体/群体记忆库（library-only，v5.0.x 起含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade/portable） | 通过 | — | 单元测试，v5.1.6 consolidation 19 项全过；v5.1.7 fade 23 项全过；v5.1.8 portable 30 项全过；v5.1.9 governance 35 项全过 |
 | TC-RUST-016 | storage/ 模块：SQLite 本地持久化、WAL、重启恢复 | 通过 | — | 单元测试 + 重启后数据完整性验证 |
 | TC-RUST-017 | verifier/ 模块：Verifier HTTP 客户端 | 通过 | — | 单元测试，HTTP 请求/响应处理 |
 | TC-RUST-018 | swarm/ 模块：涌现检测、轻量共识（library-only） | 通过 | — | 单元测试，涌现检测算法 |
@@ -193,7 +193,7 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-BASE-001 | 1023 个 lib 测试全部通过（v5.1.8 基线） | 通过 | — | cargo test，gsn-core lib（993 + 30 portable） |
+| TC-BASE-001 | 1058 个 lib 测试全部通过（v5.1.9 基线） | 通过 | — | cargo test，gsn-core lib（1023 + 35 governance） |
 | TC-BASE-002 | workspace 测试全部通过 | 通过 | — | cargo test --workspace |
 | TC-BASE-003 | clippy -D warnings 零告警 | 通过 | — | cargo clippy -- -D warnings |
 | TC-BASE-004 | cargo fmt --check 干净 | 通过 | — | cargo fmt --check |
@@ -213,4 +213,4 @@
 
 **维护说明**：每次发版由 QA 更新"测试结果/修正时间"；大版本发布前由负责人确认全表无"待执行/失败/阻塞"。
 
-**历史基线备注**：旧基线 v5.1.2 曾记录 741 lib / 1051 workspace；v5.1.4 起实测基线更新为 **935 lib**；v5.1.6 后 **970 lib**（+consolidation 19）；v5.1.7 起 **993 lib**（+fade 23）；v5.1.8 起 **1023 lib**（+portable 30），含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade/portable 记忆系统测试。
+**历史基线备注**：旧基线 v5.1.2 曾记录 741 lib / 1051 workspace；v5.1.4 起实测基线更新为 **935 lib**；v5.1.6 后 **970 lib**（+consolidation 19）；v5.1.7 起 **993 lib**（+fade 23）；v5.1.8 起 **1023 lib**（+portable 30）；v5.1.9 起 **1058 lib**（+governance 35），含 fleet/cat7/svaf/lineage/remix/envtrace/consolidation/fade/portable/governance 记忆系统测试。

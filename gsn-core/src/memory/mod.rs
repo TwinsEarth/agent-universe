@@ -28,6 +28,7 @@ pub mod handoff;
 pub mod layered;
 pub mod lineage;
 pub mod persistent;
+pub mod portable;
 pub mod privacy;
 pub mod remix;
 pub mod shared_memory;
@@ -57,6 +58,10 @@ pub use lineage::{LineageError, LineageGraph, LineageRecord};
 pub use persistent::{
     MemoryEntry, MemoryError, MemoryQuery, MemoryStorageStatus, PersistentMemoryStore,
     RotatedFileStatus, DEFAULT_KEEP_ROTATED, DEFAULT_MAX_BYTES, DEFAULT_TAIL_MAX_CHARS,
+};
+pub use portable::{
+    estimate_entry_tokens, estimate_tokens, portable_pack, relevance_score, tier_of, OmittedEntry,
+    PortableError, PortablePack, PortableQuery, RelevanceTier, ScoredEntry, TierCounts, MAX_BUDGET,
 };
 pub use privacy::{redact_entry, redact_secrets, scan_entry_for_secret, SecretHit};
 pub use remix::{RemixError, RemixRecord, RemixStore};

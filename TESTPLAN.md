@@ -2,8 +2,8 @@
 
 对 TwinsEarth/agent-universe 仓库的全面分析测试清单。测试项基于仓库文档中明确记录的测试命令、回归脚本、CI 检查门禁及版本历史构建。
 
-- **当前最新版本**：v5.1.9（2026-10-16 开发完成，质量门全绿；v5.1.8 于 2026-10-16 发布，PR #143 → tag v5.1.8 → Release；前序 v5.1.5 PR #140 / v5.1.6 PR #141 / v5.1.7 PR #142 已发版）
-- **当前测试基线**：**1058 个 lib 测试全部通过**（v5.1.9 实测：`test result: ok. 1058 passed; 0 failed` = v5.1.8 基线 1023 + governance 35 项新增）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。
+- **当前最新版本**：v5.2.0（2026-10-16 稳定化大版本：CI macOS 改回 arm64、全表重跑；v5.1.9 于 2026-10-16 发布，PR #144 → tag v5.1.9 → Release 414564630）
+- **当前测试基线**：**1058 个 lib 测试全部通过**（v5.1.9 实测：`test result: ok. 1058 passed; 0 failed` = v5.1.8 基线 1023 + governance 35 项新增）；clippy `-D warnings` 零告警；cargo fmt 干净；JS 23 项通过；静态关卡 0 panic / unsafe 全 SAFETY；多节点 3/5/10/20/50 回归通过。v5.2.0（大版本）全表重跑：1058 lib / clippy 0 / fmt 0 / 静态关卡 0，基线保持 1058（无新增测试，稳定化仅动 CI 矩阵与版本号）。
 - 仓库：https://github.com/TwinsEarth/agent-universe
 
 ## 维护规则
@@ -87,7 +87,7 @@
 |---|---|---|---|---|
 | TC-CI-001 | Linux fmt/build/test/clippy | 通过 | — | GitHub Actions rust-test 矩阵，Linux runner |
 | TC-CI-002 | Windows fmt/build/test/clippy | 通过 | — | v2.9.2 接入 Windows CI，winjob 等专属代码首次有 CI |
-| TC-CI-003 | macOS fmt/build/test/clippy | 阻塞 | 2026-10-16 | GitHub macos runner 容量/配额持续不足（macos-13 排队未认领，v5.1.5/v5.1.6/v5.1.7 均 9/10 success + macos-13 queued 放行）。代码正确性由 MacMini 本地 993 测试 + 真机冒烟实证，容量恢复后补跑 |
+| TC-CI-003 | macOS fmt/build/test/clippy | 待执行 | 2026-10-16 | v5.2.0 起 CI 矩阵改回 macos-latest(arm64)（macos-13 长期 queued 无 arm64 覆盖）；本轮 PR 观察 runner 认领情况，认领则转通过，仍无 runner 则按先例放行。代码正确性由 MacMini 本地 1058 测试 + 真机冒烟实证 |
 | TC-CI-004 | client-build 三平台构建（macOS/Windows/Linux） | 通过 | — | .github/workflows/client-build.yml，推送 tag 时触发 |
 | TC-CI-005 | workbench-check 工作台构建检查 | 通过 | — | v2.9.0 引入，检查 Tauri 2 工作台构建 |
 | TC-CI-006 | static-gates job | 通过 | — | check-no-panics + check-unsafe-containment |

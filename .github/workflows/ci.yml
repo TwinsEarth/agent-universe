@@ -16,10 +16,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-latest(arm64) hosted runner 多次排队 15 分钟无 runner 认领被取消
-        # （GitHub 侧 "not acquired by Runner of type hosted"），临时改用 macos-13
-        # (Intel)；arm64 正确性由 MacMini 本地全量测试 + 真机冒烟实证，容量恢复后改回。
-        os: [ubuntu-latest, macos-13, windows-latest]
+        # v5.2.0 稳定化：GitHub hosted arm64 runner 已恢复，macos-13 长期 queued
+        # 且缺 arm64 覆盖；改回 macos-latest(arm64)。若再次无 runner 认领，按先例
+        # 以 MacMini 本地全量测试 + 真机冒烟实证放行。
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v5
 
@@ -171,7 +171,7 @@ jobs:
         run: node js/test/test.js
 
       - name: Verify root package re-export
-        run: node -e "const au=require('./'); if(au.version!=='5.1.9') process.exit(1); console.log('root package OK, version', au.version)"
+        run: node -e "const au=require('./'); if(au.version!=='5.2.0') process.exit(1); console.log('root package OK, version', au.version)"
 
       - name: Run historical-bug regression suite
         run: node test/regression.js

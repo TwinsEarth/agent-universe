@@ -44,7 +44,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "启动 N=$N 个节点（K=$K，settle=${SETTLE_SECS}s），工作目录 $WORK"
+echo "启动 N=${N} 个节点（K=${K}，settle=${SETTLE_SECS}s），工作目录 $WORK"
 
 # boot
 mkdir -p "$WORK/n0"
@@ -85,7 +85,7 @@ for i in $(seq 0 $((N-1))); do
 done
 
 echo
-echo "==================== 路由表分布（存活节点 $alive/$N）===================="
+echo "==================== 路由表分布（存活节点 ${alive}/${N}）===================="
 sort -n "$ENTRIES_FILE" | awk -v K="$K" -v N="$alive" '
   { v[NR]=$1; sum+=$1 }
   END {

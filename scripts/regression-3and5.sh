@@ -27,7 +27,7 @@ PASS=0; FAIL=0
 mkdir -p "$AU_REG_DIR"
 
 if [ ! -x "$GSN_BIN" ]; then
-  echo "❌ 找不到可执行二进制: $GSN_BIN（先跑 cargo build --release --workspace）"
+  echo "❌ 找不到可执行二进制: ${GSN_BIN}（先跑 cargo build --release --workspace）"
   exit 2
 fi
 
@@ -64,9 +64,9 @@ start_node() {
   if [ "${LOCAL_ONLY:-1}" = "1" ]; then
     extra_env=(GSN_DISABLE_PUBLIC_RELAY=1)
   fi
-  env "${extra_env[@]}" REST_BEARER_TOKEN="$BEARER" \
+  env ${extra_env:+"${extra_env[@]}"} REST_BEARER_TOKEN="$BEARER" \
     "$GSN_BIN" --listen 127.0.0.1 --port "$p2p" --api-port "$api" \
-      --data-dir "$dir" --mode full "${boot_args[@]}" >"$log" 2>&1 &
+      --data-dir "$dir" --mode full ${boot_args:+"${boot_args[@]}"} >"$log" 2>&1 &
   local pid=$!
   NODES+=("$pid")
   # 等 HTTP 就绪（最多 40s）
@@ -119,7 +119,7 @@ run_three() {
   c1="$(curl -fsS 127.0.0.1:4012/peers | jq -r '.connected_peers')"
   c2="$(curl -fsS 127.0.0.1:4022/peers | jq -r '.connected_peers')"
   echo "   connected_peers: boot=$c0 node1=$c1 node2=$c2"
-  [ "${c0:-0}" -ge 2 ] && ok "boot 发现 ≥2 节点" || bad "boot 连接数不足（$c0）"
+  [ "${c0:-0}" -ge 2 ] && ok "boot 发现 ≥2 节点" || bad "boot 连接数不足（${c0}）"
   [ "${c1:-0}" -ge 1 ] && ok "node1 发现 ≥1 节点" || bad "node1 连接数不足"
   [ "${c2:-0}" -ge 1 ] && ok "node2 发现 ≥1 节点" || bad "node2 连接数不足"
 
@@ -155,7 +155,7 @@ run_three() {
   if wait_cond 4012 /api/v1/crdt/greet "\"value\":\"$val\"" 25 >/dev/null; then
     ok "node1 重启后恢复（身份持久化、状态重新同步）"
     if [ "$id1" != "?" ] && [ "$id1b" = "$id1" ]; then
-      ok "node1 重启后 PeerId 一致（$id1b）"
+      ok "node1 重启后 PeerId 一致（${id1b}）"
     else
       echo "      (PeerId 比对: before=${id1} after=${id1b})"
     fi
@@ -180,7 +180,7 @@ run_five() {
   local c0
   c0="$(curl -fsS 127.0.0.1:5002/peers | jq -r '.connected_peers')"
   echo "   mesh boot connected_peers=$c0"
-  [ "${c0:-0}" -ge 4 ] && ok "5 节点 mesh 形成（boot 连 4 节点）" || bad "mesh 未充分形成（$c0）"
+  [ "${c0:-0}" -ge 4 ] && ok "5 节点 mesh 形成（boot 连 4 节点）" || bad "mesh 未充分形成（${c0}）"
 
   # 广播延迟：从一个叶子节点(m4 api=5042)写，测量 boot 收到的时间
   local m4_api=5042 val="lat-$RANDOM"
@@ -188,9 +188,9 @@ run_five() {
   curl -s -o /dev/null -X POST "127.0.0.1:$m4_api/api/v1/crdt" \
     -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' \
     -d "{\"key\":\"lat\",\"value\":\"$val\"}"
-  t0="$(date +%s%3N)"
+  t0="$(python3 -c 'import time;print(int(time.time()*1000))')"
   if wait_cond 5002 /api/v1/crdt/lat "\"value\":\"$val\"" 30 >/dev/null; then
-    t1="$(date +%s%3N)"; ms=$((t1-t0))
+    t1="$(python3 -c 'import time;print(int(time.time()*1000))')"; ms=$((t1-t0))
     ok "GossipSub 广播到达 boot，延迟约 ${ms}ms（写入到观测）"
   else bad "广播 30s 内未到达 boot"; fi
 }

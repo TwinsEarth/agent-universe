@@ -10,12 +10,12 @@
 //! 设计原则（与 v3.9.16 GossipConfig 一致）：参数可校验、失败快速暴露；
 //! 只派生 `PartialEq`（含 `Duration` 与浮点无关，但统一不派生 `Eq`）。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 
 /// Eclipse 防护参数：控制同一来源可进入路由表的对端数量。
 #[derive(Debug, Clone, PartialEq)]
@@ -72,6 +72,32 @@ impl DhtConfig {
     /// 链式开启路由持久化。
     pub fn with_routing_persist(mut self, path: PathBuf) -> Self {
         self.routing_persist_path = Some(path);
+        self
+    }
+
+    /// 允许用环境变量覆盖 Eclipse 防护上限：
+    /// `GSN_DHT_MAX_PEERS_PER_IP` / `GSN_DHT_MAX_PEERS_PER_SUBNET`。
+    ///
+    /// 默认（不调用本方法）仍使用内置上限（单 IP 4 / 单子网 8），行为不变；
+    /// 仅在显式调用时读取环境变量。用于两类场景：
+    /// - 真实集群中大量节点处于同一出口 IP / NAT 之后，内置上限会误伤正常邻居；
+    /// - 单机多节点规模回归（全部节点同 IP）需要放宽上限才能验证真实 K 桶填充。
+    ///
+    /// 非法取值（非数字、0、或 ip > subnet）由 [`DhtConfig::validate`] 具名拒绝；
+    /// 解析失败的环境变量被忽略（保持内置默认），不静默吞掉后续校验。
+    pub fn with_eclipse_env_override(mut self) -> Self {
+        if let Some(v) = std::env::var("GSN_DHT_MAX_PEERS_PER_IP")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.eclipse.max_peers_per_ip = v;
+        }
+        if let Some(v) = std::env::var("GSN_DHT_MAX_PEERS_PER_SUBNET")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+        {
+            self.eclipse.max_peers_per_subnet = v;
+        }
         self
     }
 
@@ -177,12 +203,19 @@ fn subnet_key(ip: &IpAddr) -> String {
 /// 目标节点 kbucket 填满，使真实邻居被挤出路由表（Eclipse 攻击前提）。
 /// 本守卫在 [`super::peer::P2pPeer::add_kad_address`] 之前执行：
 /// 超限来源的对端「保持连接但不登记进 kbucket」。
+///
+/// v5.2.2：计数维度从「地址」修正为「对端身份（PeerId）」——同一 peer 的
+/// 多个地址（TCP/QUIC/IPv4/IPv6 listen_addrs）只计 1 次。修复 50 节点单机
+/// 回归实测暴露的缺陷：每个 peer 平均 8 个地址，按地址计数会把同一 IP 的
+/// 配额（默认 4，实测放宽到 50）提前吃光，导致后续新连接全部被拒入桶
+/// （实测 min=0，路由表反而退化为 0）。现在「单 IP 最多 N 个不同 peer」，
+/// 语义与 K 桶加固目标一致。
 #[derive(Debug, Clone)]
 pub struct EclipseGuard {
     cfg: EclipseGuardConfig,
-    per_ip: HashMap<String, usize>,
-    per_subnet: HashMap<String, usize>,
-    total: usize,
+    per_ip: HashMap<String, HashSet<PeerId>>,
+    per_subnet: HashMap<String, HashSet<PeerId>>,
+    seen: HashSet<PeerId>,
 }
 
 impl EclipseGuard {
@@ -192,63 +225,88 @@ impl EclipseGuard {
             cfg,
             per_ip: HashMap::new(),
             per_subnet: HashMap::new(),
-            total: 0,
+            seen: HashSet::new(),
         }
     }
 
-    /// 判定该地址是否允许进入 kbucket；允许则计入统计并返回 true。
+    /// 判定该对端（peer_id）的该地址是否允许进入 kbucket；允许则计入统计并返回 true。
     ///
     /// - 无 IP（DNS 等）→ 放行（不计数）；
-    /// - 单 IP 计数 >= max_peers_per_ip → 拒绝；
-    /// - 单子网计数 >= max_peers_per_subnet → 拒绝；
-    /// - 跟踪表已满（total >= max_tracked）且该 IP 未见过的 → 拒绝（保护表大小）。
-    pub fn accept(&mut self, addr: &Multiaddr) -> bool {
+    /// - 同 peer 已在同一 IP/子网登记过 → 放行（多地址只计 1 次）；
+    /// - 该 IP 已登记的不同 peer 数 >= max_peers_per_ip → 拒绝；
+    /// - 该子网已登记的不同 peer 数 >= max_peers_per_subnet → 拒绝；
+    /// - 从未见过的 peer 且跟踪表已满（seen.len() >= max_tracked）→ 拒绝（保护表大小）。
+    pub fn accept(&mut self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
         let Some(ip) = extract_ip(addr) else {
             return true;
         };
         let ip_key = ip.to_string();
         let sub_key = subnet_key(&ip);
-        let ip_n = self.per_ip.get(&ip_key).copied().unwrap_or(0);
-        let sub_n = self.per_subnet.get(&sub_key).copied().unwrap_or(0);
-        if ip_n >= self.cfg.max_peers_per_ip {
+        if let Some(set) = self.per_ip.get(&ip_key) {
+            if set.contains(peer_id) {
+                return true;
+            }
+            if set.len() >= self.cfg.max_peers_per_ip {
+                return false;
+            }
+        }
+        if let Some(set) = self.per_subnet.get(&sub_key) {
+            if set.contains(peer_id) {
+                return true;
+            }
+            if set.len() >= self.cfg.max_peers_per_subnet {
+                return false;
+            }
+        }
+        // 新来源但表已满 → 拒绝，防止跟踪表被海量 IP/对端撑爆。
+        if !self.seen.contains(peer_id) && self.seen.len() >= self.cfg.max_tracked {
             return false;
         }
-        if sub_n >= self.cfg.max_peers_per_subnet {
-            return false;
-        }
-        // 新来源但表已满 → 拒绝，防止跟踪表被海量 IP 撑爆。
-        if ip_n == 0 && self.total >= self.cfg.max_tracked {
-            return false;
-        }
-        *self.per_ip.entry(ip_key).or_insert(0) += 1;
-        *self.per_subnet.entry(sub_key).or_insert(0) += 1;
-        self.total += 1;
+        self.per_ip
+            .entry(ip_key.clone())
+            .or_default()
+            .insert(*peer_id);
+        self.per_subnet.entry(sub_key).or_default().insert(*peer_id);
+        self.seen.insert(*peer_id);
         true
     }
 
     /// 路由表回填（重启后从持久化恢复）时，直接计数而不判定。
     /// 返回是否成功计数（表满时返回 false，调用方跳过该条目）。
-    pub fn count(&mut self, addr: &Multiaddr) -> bool {
+    pub fn count(&mut self, peer_id: &PeerId, addr: &Multiaddr) -> bool {
         let Some(ip) = extract_ip(addr) else {
             return true;
         };
         let ip_key = ip.to_string();
         let sub_key = subnet_key(&ip);
-        if self.per_ip.get(&ip_key).copied().unwrap_or(0) >= self.cfg.max_peers_per_ip {
-            return false;
+        if let Some(set) = self.per_ip.get(&ip_key) {
+            if set.contains(peer_id) {
+                return true;
+            }
+            if set.len() >= self.cfg.max_peers_per_ip {
+                return false;
+            }
         }
-        if self.per_subnet.get(&sub_key).copied().unwrap_or(0) >= self.cfg.max_peers_per_subnet {
-            return false;
+        if let Some(set) = self.per_subnet.get(&sub_key) {
+            if set.contains(peer_id) {
+                return true;
+            }
+            if set.len() >= self.cfg.max_peers_per_subnet {
+                return false;
+            }
         }
-        *self.per_ip.entry(ip_key).or_insert(0) += 1;
-        *self.per_subnet.entry(sub_key).or_insert(0) += 1;
-        self.total += 1;
+        self.per_ip
+            .entry(ip_key.clone())
+            .or_default()
+            .insert(*peer_id);
+        self.per_subnet.entry(sub_key).or_default().insert(*peer_id);
+        self.seen.insert(*peer_id);
         true
     }
 
-    /// 当前跟踪的独立 IP 数量（含子网维度总量）。
+    /// 当前跟踪的独立对端数量。
     pub fn tracked(&self) -> usize {
-        self.total
+        self.seen.len()
     }
 }
 
@@ -303,6 +361,45 @@ mod tests {
         assert_eq!(c.validate(), Err(DhtConfigError::EclipseIpGtSubnet));
     }
 
+    // ─────────── v5.2.2: 环境变量覆盖 Eclipse 上限 ───────────
+
+    /// 三个环境变量场景合并为一个串行测试：
+    /// env 是进程级全局状态，拆成多个并行测试会互相污染（Rust 测试默认并行）。
+    #[test]
+    fn env_override_behavior_serial() {
+        // 1) 不设环境变量 → 保持内置默认 4/8。
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_IP");
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_SUBNET");
+        let c = DhtConfig::default().with_eclipse_env_override();
+        assert_eq!(c.eclipse.max_peers_per_ip, 4);
+        assert_eq!(c.eclipse.max_peers_per_subnet, 8);
+        c.validate().expect("default still valid");
+
+        // 2) 设置合法值 → 覆盖生效。
+        std::env::set_var("GSN_DHT_MAX_PEERS_PER_IP", "50");
+        std::env::set_var("GSN_DHT_MAX_PEERS_PER_SUBNET", "64");
+        let c = DhtConfig::default().with_eclipse_env_override();
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_IP");
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_SUBNET");
+        assert_eq!(c.eclipse.max_peers_per_ip, 50);
+        assert_eq!(c.eclipse.max_peers_per_subnet, 64);
+        c.validate().expect("overridden config valid");
+
+        // 3) 非法值（非数字 / 空串）被忽略；0 通过 override 写入后被 validate 拒绝。
+        std::env::set_var("GSN_DHT_MAX_PEERS_PER_IP", "not-a-number");
+        std::env::set_var("GSN_DHT_MAX_PEERS_PER_SUBNET", "");
+        let c = DhtConfig::default().with_eclipse_env_override();
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_IP");
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_SUBNET");
+        assert_eq!(c.eclipse.max_peers_per_ip, 4, "非法值忽略");
+        assert_eq!(c.eclipse.max_peers_per_subnet, 8, "空串忽略");
+
+        std::env::set_var("GSN_DHT_MAX_PEERS_PER_IP", "0");
+        let z = DhtConfig::default().with_eclipse_env_override();
+        std::env::remove_var("GSN_DHT_MAX_PEERS_PER_IP");
+        assert_eq!(z.validate(), Err(DhtConfigError::EclipsePerIpZero));
+    }
+
     #[test]
     fn same_ip_limited_per_ip() {
         let mut g = EclipseGuard::new(EclipseGuardConfig {
@@ -311,35 +408,44 @@ mod tests {
             max_tracked: 256,
         });
         let a = m("/ip4/10.0.0.1/tcp/4001");
-        let b = m("/ip4/10.0.0.1/tcp/4002");
-        let c = m("/ip4/10.0.0.1/tcp/4003");
-        assert!(g.accept(&a));
-        assert!(g.accept(&b));
-        assert!(!g.accept(&c), "同 IP 第三条应被拒绝");
+        let p1 = PeerId::random();
+        let p2 = PeerId::random();
+        let p3 = PeerId::random();
+        assert!(g.accept(&p1, &a));
+        // v5.2.2: 同一 peer 的第二个地址（不同端口）只计 1 次，必须放行。
+        assert!(g.accept(&p1, &m("/ip4/10.0.0.1/tcp/4002")));
+        assert!(g.accept(&p2, &m("/ip4/10.0.0.1/tcp/4003")));
+        assert!(
+            !g.accept(&p3, &m("/ip4/10.0.0.1/tcp/4004")),
+            "同 IP 第三个不同 peer 应被拒绝"
+        );
     }
 
     #[test]
     fn same_subnet_limited_per_subnet() {
         let mut g = EclipseGuard::new(EclipseGuardConfig {
-            max_peers_per_ip: 2,
+            max_peers_per_ip: 8,
             max_peers_per_subnet: 3,
             max_tracked: 256,
         });
         // 10.0.0.x 同一 /24；10.0.1.x 不同 /24。
-        assert!(g.accept(&m("/ip4/10.0.0.1/tcp/1")));
-        assert!(g.accept(&m("/ip4/10.0.0.2/tcp/1")));
-        assert!(g.accept(&m("/ip4/10.0.0.3/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip4/10.0.0.1/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip4/10.0.0.2/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip4/10.0.0.3/tcp/1")));
         assert!(
-            !g.accept(&m("/ip4/10.0.0.4/tcp/1")),
-            "同 /24 第四条应被拒绝"
+            !g.accept(&PeerId::random(), &m("/ip4/10.0.0.4/tcp/1")),
+            "同 /24 第四个不同 peer 应被拒绝"
         );
-        assert!(g.accept(&m("/ip4/10.0.1.1/tcp/1")), "不同子网放行");
+        assert!(
+            g.accept(&PeerId::random(), &m("/ip4/10.0.1.1/tcp/1")),
+            "不同子网放行"
+        );
     }
 
     #[test]
     fn dns_addr_not_counted() {
         let mut g = EclipseGuard::new(EclipseGuardConfig::default());
-        assert!(g.accept(&m("/dns4/boot.example.com/tcp/4001")));
+        assert!(g.accept(&PeerId::random(), &m("/dns4/boot.example.com/tcp/4001")));
         assert_eq!(g.tracked(), 0);
     }
 
@@ -350,26 +456,29 @@ mod tests {
             max_peers_per_subnet: 2,
             max_tracked: 256,
         });
-        assert!(g.accept(&m("/ip6/2001:db8::1/tcp/1")));
-        assert!(g.accept(&m("/ip6/2001:db8::2/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip6/2001:db8::1/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip6/2001:db8::2/tcp/1")));
         assert!(
-            !g.accept(&m("/ip6/2001:db8::3/tcp/1")),
-            "同 /64 第三条应被拒绝"
+            !g.accept(&PeerId::random(), &m("/ip6/2001:db8::3/tcp/1")),
+            "同 /64 第三个不同 peer 应被拒绝"
         );
-        assert!(g.accept(&m("/ip6/2001:db9::1/tcp/1")), "不同 /64 放行");
+        assert!(
+            g.accept(&PeerId::random(), &m("/ip6/2001:db9::1/tcp/1")),
+            "不同 /64 放行"
+        );
     }
 
     #[test]
     fn tracked_table_cap() {
         let mut g = EclipseGuard::new(EclipseGuardConfig {
-            max_peers_per_ip: 2,
-            max_peers_per_subnet: 2,
+            max_peers_per_ip: 8,
+            max_peers_per_subnet: 8,
             max_tracked: 2,
         });
-        assert!(g.accept(&m("/ip4/10.0.0.1/tcp/1")));
-        assert!(g.accept(&m("/ip4/10.0.1.1/tcp/1")));
-        // 表已满（total=2），新 IP 应拒绝。
-        assert!(!g.accept(&m("/ip4/10.0.2.1/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip4/10.0.0.1/tcp/1")));
+        assert!(g.accept(&PeerId::random(), &m("/ip4/10.0.1.1/tcp/1")));
+        // 表已满（tracked=2），新 peer 应拒绝。
+        assert!(!g.accept(&PeerId::random(), &m("/ip4/10.0.2.1/tcp/1")));
         assert_eq!(g.tracked(), 2);
     }
 
@@ -380,8 +489,8 @@ mod tests {
             max_peers_per_subnet: 8,
             max_tracked: 256,
         });
-        assert!(g.count(&m("/ip4/10.0.0.1/tcp/1")));
-        assert!(g.count(&m("/ip4/10.0.0.1/tcp/2")));
-        assert!(!g.count(&m("/ip4/10.0.0.1/tcp/3")));
+        assert!(g.count(&PeerId::random(), &m("/ip4/10.0.0.1/tcp/1")));
+        assert!(g.count(&PeerId::random(), &m("/ip4/10.0.0.1/tcp/2")));
+        assert!(!g.count(&PeerId::random(), &m("/ip4/10.0.0.1/tcp/3")));
     }
 }

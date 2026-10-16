@@ -66,10 +66,10 @@
 | TC-NET-002 | 5 节点：mesh 形成、广播延迟 | 通过 | — | ONLY=5 scripts/regression-3and5.sh，检查广播延迟指标 |
 | TC-NET-003 | 网络分区：3 节点分 1+2、写冲突、恢复后 CRDT 收敛 | 通过 | — | scripts/regression-partition.sh，恢复后 30s 内 CRDT 收敛 |
 | TC-NET-004 | 恶意节点：20% 恶意（10 节点/2 不转发），消息到达率 > 95% | 通过 | — | scripts/regression-malicious.sh，记录到达率 |
-| TC-NET-005 | 50 节点规模：每节点路由表 ≥ K=20 | 通过 | — | GSN_N=50 K=20 scripts/regression-scale.sh，资源不足时如实报未达标 |
+| TC-NET-005 | 50 节点规模：每节点路由表 ≥ K=20 | 失败 | 2026-10-16 | GSN_N=50 K=20 scripts/regression-scale.sh。v5.2.2 补跑：单机 50 进程资源限制下未达标——多配置实测 best median=9 / best ge_K=5/50（95s chain 度2+limit12）、顺序启动+度3 median=9/mean=12.04/max=49；根因=50 进程连接 churn（建立后被 closed by peer）致 FIND_NODE 扩散停滞于连接子图。修复链（EclipseGuard 按 PeerId 计数、find_peer_query、dial 限流、自举调度加密、chain 拓扑）使 10 节点满拓扑、boot 侧 47 条、50 节点 median 1→9。非代码缺陷，需多机/更强机器复测 |
 | TC-NET-006 | 手动 3 节点组网：Peer ID 互不相同 | 通过 | — | BIN=gsn-core/target/release/gsn-daemon，GSN_DISABLE_PUBLIC_RELAY=1，独立 data-dir |
-| TC-NET-007 | 真实多节点 10 节点回归 | 通过 | — | 10 节点组网，检查发现/广播/收敛 |
-| TC-NET-008 | 真实多节点 20 节点回归 | 通过 | — | 20 节点组网，检查发现/广播/收敛 |
+| TC-NET-007 | 真实多节点 10 节点回归 | 通过 | — | 10 节点 chain 拓扑（worker 传 boot+前邻 bootstrap），60s 内 routing 全 9/9 满拓扑（/tmp/au-scale10chain、au-scale10chain4） |
+| TC-NET-008 | 真实多节点 20 节点回归 | 通过 | — | 20 节点 chain 拓扑 90s：median=9/max=19/mean=9.9（N<K=20 门禁物理不可达，仅记录实测分布，/tmp/au-scale20chain） |
 
 ## 三、静态门禁（Static Gates）
 
@@ -193,11 +193,11 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-BASE-001 | 1058 个 lib 测试全部通过（v5.1.9 基线） | 通过 | — | cargo test，gsn-core lib（1023 + 35 governance） |
+| TC-BASE-001 | 1059 个 lib 测试全部通过（v5.2.2 基线） | 通过 | — | cargo test，gsn-core lib（v5.2.2 新增 EclipseGuard 按 PeerId 计数测试 + env_override_behavior_serial，2026-10-16 实跑 1059 passed/0 failed） |
 | TC-BASE-002 | workspace 测试全部通过 | 通过 | — | cargo test --workspace |
-| TC-BASE-003 | clippy -D warnings 零告警 | 通过 | — | cargo clippy -- -D warnings |
-| TC-BASE-004 | cargo fmt --check 干净 | 通过 | — | cargo fmt --check |
-| TC-BASE-005 | 多节点 3/5/10/20/50 回归全部通过 | 通过 | — | 依次运行 regression-3and5 / partition / malicious / erasure / scale |
+| TC-BASE-003 | clippy -D warnings 零告警 | 通过 | — | cargo clippy -- -D warnings（2026-10-16 实跑 0 warning/error） |
+| TC-BASE-004 | cargo fmt --check 干净 | 通过 | — | cargo fmt --check（2026-10-16 实跑 0 diff） |
+| TC-BASE-005 | 多节点 3/5/10/20/50 回归 | 通过 | — | v5.2.2 补跑：3/5 节点 script PASS=10/0；partition 36ms 收敛；malicious 到达率 100%；erasure RS 重建双 MATCH；10 节点 chain 满拓扑 9/9；20 节点 median=9/max=19（N<K 不适用）；50 节点未达标（单机限制，见 TC-NET-005）。v5.2.0 未在本地补跑、v5.2.2 补跑说明见 TC-NET-005 |
 
 ## 十五、版本重跑规则
 

@@ -527,6 +527,53 @@ impl P2pPeer {
         self.swarm.behaviour_mut().kademlia.get_closest_peers(peer);
     }
 
+    /// v5.2.2: 随机 key 的 GetClosestPeers 查找。
+    ///
+    /// 以自身 PeerId 为 key 时，每次返回的都是"距自身 XOR 最近"的同一批
+    /// K（=20）个节点，路由表扩展一轮即饱和（50 节点实测 max=19 停住）；
+    /// 改用随机 key 使每轮查询返回不同的节点子集，冷启动多轮自举可累积
+    /// 覆盖全网，配合 `dial_learned_peers` 把学到的节点逐一补齐连接。
+    pub fn find_random_peer(&mut self) {
+        let mut key = [0u8; 32];
+        use rand::RngCore;
+        rand::thread_rng().fill_bytes(&mut key);
+        tracing::info!("dht: 发起随机 key GetClosestPeers 查询（迭代扩展路由）");
+        self.swarm
+            .behaviour_mut()
+            .kademlia
+            .get_closest_peers(key.to_vec());
+    }
+
+    /// v5.2.2: 以「kbucket 中随机一个已知 peer」为 key 的 GetClosestPeers 查询。
+    ///
+    /// 纯随机 key 查询只会问"距随机 key XOR 最近"的 3 个节点，冷启动时它们
+    /// 常常都不含信息枢纽（boot），导致每轮只学到同一批直连邻居、路由表
+    /// 停在 ~8 条不扩展（12/50 节点实测 learned 恒定 7/8 的死锁）。
+    /// 以已知 peer 的 PeerId 字节作 key 时，该 peer 距自己 XOR 距离为 0、
+    /// 必然被选为初始查询目标，于是每轮都向"某个已连接节点"索取它的整张
+    /// 路由表；配合 `dial_learned_peers` 把返回的节点补齐连接，多轮覆盖
+    /// 全网。kbucket 为空时静默跳过（冷启动首轮由纯随机 key 查询兜底）。
+    pub fn find_peer_query(&mut self) {
+        use rand::seq::IteratorRandom;
+        let mut rng = rand::thread_rng();
+        let mut picked: Option<libp2p::PeerId> = None;
+        for bucket in self.swarm.behaviour_mut().kademlia.kbuckets() {
+            if let Some(entry) = bucket.iter().choose(&mut rng) {
+                picked = Some(*entry.node.key.preimage());
+                break;
+            }
+        }
+        if let Some(peer_id) = picked {
+            tracing::info!(%peer_id, "dht: 以已知 peer 为 key 发起 GetClosestPeers 查询（信息富集）");
+            self.swarm
+                .behaviour_mut()
+                .kademlia
+                .get_closest_peers(peer_id.to_bytes());
+        } else {
+            tracing::info!("dht: kbucket 为空，跳过 peer-key 查询（由随机 key 查询兜底）");
+        }
+    }
+
     /// P0-1: 把一个已连接 peer 的对端地址登记进 Kademlia kbucket。
     ///
     /// dial 成功只会建立传输连接，**不会**自动让 Kademlia 把对端纳入路由表；
@@ -535,7 +582,7 @@ impl P2pPeer {
     /// 时调用。返回值（RoutingUpdate）可忽略，仅记 debug。
     pub fn add_kad_address(&mut self, peer_id: PeerId, addr: Multiaddr) {
         // v3.9.17: Eclipse 防护——超限来源（单 IP / 子网）保持连接但不登记进 kbucket。
-        if !self.eclipse_guard.accept(&addr) {
+        if !self.eclipse_guard.accept(&peer_id, &addr) {
             tracing::debug!(%peer_id, %addr, "dht: Eclipse 防护拒绝登记该来源（同 IP/子网已达上限）");
             return;
         }
@@ -545,6 +592,83 @@ impl P2pPeer {
             .kademlia
             .add_address(&peer_id, addr.clone());
         tracing::debug!(%peer_id, %addr, ?update, "kademlia add_address");
+    }
+
+    /// v5.2.2: Identify 失败补救——断开已建立的连接并按 kbucket 已知地址重拨，
+    /// 触发新一轮 Identify（50 节点冷启动并发风暴下部分入站 Identify 流超时/断连）。
+    /// kbucket 里无该 peer 地址时静默跳过（等对方重拨/自举再学）。
+    pub fn redial_peer(&mut self, peer_id: PeerId) {
+        let mut addr: Option<Multiaddr> = None;
+        for bucket in self.swarm.behaviour_mut().kademlia.kbuckets() {
+            for entry in bucket.iter() {
+                if *entry.node.key.preimage() == peer_id {
+                    if let Some(a) = entry.node.value.iter().next() {
+                        addr = Some(a.clone());
+                    }
+                    break;
+                }
+            }
+            if addr.is_some() {
+                break;
+            }
+        }
+        if let Some(a) = addr {
+            let _ = self.swarm.disconnect_peer_id(peer_id);
+            match self.swarm.dial(a) {
+                Ok(()) => tracing::info!(%peer_id, "dht: identify 补救重拨已发起"),
+                Err(e) => tracing::debug!(%peer_id, error = %e, "dht: identify 补救重拨未发起"),
+            }
+        }
+    }
+    ///
+    /// 迭代 FIND_NODE 每跳会从响应里学到新节点（PeerInfo 自带其可拨地址），
+    /// 但 libp2p 的 Kademlia 查询只向**已有连接**的对端发请求；学到的节点
+    /// 若不主动 dial，后续跳数无法向它们追问，路由表会停留在"直连 + 一跳"
+    /// 而不会扩展为全网 K 邻居。这正是规模回归（50 节点 K=20）观察到的现象：
+    /// 每节点路由表仅 9~17 条且不再增长。本方法对未连接的学习节点发起 dial，
+    /// 连接建立后由 ConnectionEstablished / Identify 臂补 add_address，迭代得以
+    /// 继续扩展；已在连接中的节点直接跳过。
+    pub fn dial_learned_peers(&mut self, peers: &[libp2p::kad::PeerInfo]) {
+        // v5.2.2: 每轮最多拨 8 个新 peer——50 节点冷启动时一次学 49 个
+        // 若全量并发 dial 会形成拨号风暴（实测 50 节点 median=1：几乎全失败、
+        // 路由表不扩展）；改成每轮小步拨号 + 跳过已连接，靠多轮自举
+        // （15s/30s/60s/120s）分批累积，网络压力小、成功率升。
+        const MAX_DIAL_PER_ROUND: usize = 4;
+        let mut dialed = 0usize;
+        'outer: for info in peers {
+            if dialed >= MAX_DIAL_PER_ROUND {
+                break;
+            }
+            if self.swarm.is_connected(&info.peer_id) {
+                continue;
+            }
+            for addr in &info.addrs {
+                // 只为可拨打的 TCP 地址发起 dial（避免把 /p2p-circuit 等
+                // 无中继段地址当直连目标）；失败静默，交给下一跳重学。
+                if addr
+                    .iter()
+                    .any(|p| matches!(p, libp2p::multiaddr::Protocol::Tcp(_)))
+                {
+                    // v5.2.2: 先登记进 kbucket（Eclipse 防护内、尽力而为）——
+                    // 让下一轮 GetClosestPeers 查询能把请求发到这些节点，迭代
+                    // 扩展不依赖本轮 dial 是否成功；dial 成功后 OnConnected 会再入桶。
+                    self.add_kad_address(info.peer_id, addr.clone());
+                    match self.swarm.dial(addr.clone()) {
+                        Ok(()) => {
+                            dialed += 1;
+                            // 该 peer 已发起拨号，跳过其其余地址，处理下一个 peer。
+                            continue 'outer;
+                        }
+                        Err(e) => {
+                            tracing::debug!(%addr, error = %e, "dht: 学习节点 dial 未建立（下一跳重学）");
+                        }
+                    }
+                }
+            }
+        }
+        if dialed > 0 {
+            tracing::info!(count = dialed, "dht: 已对学习节点发起补齐连接");
+        }
     }
 
     /// v3.9.17: 导出路由表快照（peer id → 已知地址），用于持久化。

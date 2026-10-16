@@ -21,7 +21,7 @@ BEARER="part-token"
 PIDS=()
 mkdir -p "$WORK"
 
-[ -x "$GSN_BIN" ] || { echo "❌ 找不到二进制 $GSN_BIN（先 cargo build --release）"; exit 2; }
+[ -x "$GSN_BIN" ] || { echo "❌ 找不到二进制 ${GSN_BIN}（先 cargo build --release）"; exit 2; }
 
 cleanup() {
   if [ "${KEEP:-0}" != "1" ]; then
@@ -43,7 +43,7 @@ start() {
   # GSN_DISABLE_PUBLIC_RELAY=1：真实制造“本地分区”，否则三方会经公共种子 relay 连通。
   GSN_DISABLE_PUBLIC_RELAY=1 REST_BEARER_TOKEN="$BEARER" \
     "$GSN_BIN" --listen 127.0.0.1 --port "$p2p" --api-port "$api" \
-      --data-dir "$dir" --mode full "${boot_args[@]}" >"$log" 2>&1 &
+      --data-dir "$dir" --mode full ${boot_args:+"${boot_args[@]}"} >"$log" 2>&1 &
   local pid=$!; PIDS+=("$pid")
   local i
   for i in $(seq 1 80); do
@@ -115,7 +115,7 @@ sleep 2
 snap 4102; snap 4112; snap 4122
 
 echo "──────────── 5) 判定 30s 内三方收敛 ────────────"
-t0="$(date +%s%3N)"
+t0="$(python3 -c 'import time;print(int(time.time()*1000))')"
 converged=0
 i=0
 while [ $i -lt 60 ]; do
@@ -127,7 +127,7 @@ while [ $i -lt 60 ]; do
   if [ $((i % 8)) -eq 0 ]; then snap 4102; snap 4112; fi
   sleep 0.5; i=$((i+1))
 done
-t1="$(date +%s%3N)"; ms=$((t1-t0))
+t1="$(python3 -c 'import time;print(int(time.time()*1000))')"; ms=$((t1-t0))
 
 if [ "$converged" = "1" ]; then
   echo "   ✅ 三节点在 ${ms}ms 内收敛到相同值：$v0"

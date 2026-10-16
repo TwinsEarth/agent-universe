@@ -35,7 +35,7 @@ async fn main() {
     let code = match argv[0].as_str() {
         "version" | "-V" | "--version" => {
             println!("gsn {}", VERSION);
-            println!("agent-universe v5.1.7");
+            println!("agent-universe v5.1.8");
             if argv.iter().any(|a| a == "--check") {
                 run_version_check(&argv[1..]).await
             } else {
@@ -3317,9 +3317,215 @@ async fn run_memory(args: &[String]) -> i32 {
                         }
                     }
                 }
+                "portable" => {
+                    // v5.1.8：可移植记忆（token_budget + 相关性分级）——
+                    // 在 token 预算内按相关性分级装包；预算外条目显式列入 omitted
+                    // （可移植性：调用方明确知道哪些没装进去及原因）。
+                    let psub = match rest.get(1) {
+                        Some(s) => s.as_str(),
+                        None => {
+                            eprintln!("错误: portable 需指定子操作（tokens/pack）");
+                            return 1;
+                        }
+                    };
+                    match psub {
+                        "tokens" => {
+                            // 统计 memory.jsonl 各条目估算 token（确定性口径，不预设精确 tokenizer）。
+                            let path = data_dir.join("memory.jsonl");
+                            let store = gsn_core::PersistentMemoryStore::open(&path);
+                            let entries = match store.load_all() {
+                                Ok(es) => es,
+                                Err(e) => {
+                                    eprintln!("读取记忆档案失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let mut total = 0usize;
+                            let mut max_id = String::new();
+                            let mut max_tokens = 0usize;
+                            for e in &entries {
+                                let t = gsn_core::estimate_entry_tokens(e);
+                                total += t;
+                                if t > max_tokens {
+                                    max_tokens = t;
+                                    max_id = e.task_id.clone();
+                                }
+                            }
+                            if rest.iter().any(|a| a == "--json") {
+                                let mut rows: Vec<serde_json::Value> = Vec::new();
+                                for e in &entries {
+                                    rows.push(serde_json::json!({
+                                        "task_id": e.task_id,
+                                        "tokens": gsn_core::estimate_entry_tokens(e),
+                                    }));
+                                }
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&serde_json::json!({
+                                        "entries": rows.len(),
+                                        "total_tokens": total,
+                                        "max_entry_id": max_id,
+                                        "max_entry_tokens": max_tokens,
+                                        "detail": rows,
+                                    }))
+                                    .unwrap_or_default()
+                                );
+                            } else {
+                                println!(
+                                    "可移植记忆 token 估算（确定性口径，每 4 字符≈1 token）："
+                                );
+                                println!("  条目数 {} 条", entries.len());
+                                println!("  合计估算 {} token", total);
+                                println!("  最大条目 {}（{} token）", max_id, max_tokens);
+                            }
+                            0
+                        }
+                        "pack" => {
+                            // 预算内按相关性分级装包：--max-tokens 必填；
+                            // 过滤复用 --task-id/--tag/--contains；--tier 最低分级门槛；--json 输出明细。
+                            let budget = match mem_flag_value(rest, "--max-tokens") {
+                                Some(v) => match v.parse::<usize>() {
+                                    Ok(n) if n > 0 => n,
+                                    _ => {
+                                        eprintln!("错误: --max-tokens 必须是正整数");
+                                        return 1;
+                                    }
+                                },
+                                None => {
+                                    eprintln!("错误: pack 需 --max-tokens <正整数>");
+                                    return 1;
+                                }
+                            };
+                            let min_tier = match mem_flag_value(rest, "--tier") {
+                                Some(t) => match gsn_core::RelevanceTier::parse(&t) {
+                                    Some(tier) => tier,
+                                    None => {
+                                        eprintln!("错误: --tier 必须是 high/medium/low");
+                                        return 1;
+                                    }
+                                },
+                                None => gsn_core::RelevanceTier::Low,
+                            };
+                            let mut q = gsn_core::MemoryQuery::new();
+                            if let Some(tid) = mem_flag_value(rest, "--task-id") {
+                                q = q.task_id(tid);
+                            }
+                            if let Some(tag) = mem_flag_value(rest, "--tag") {
+                                q = q.tag(tag);
+                            }
+                            if let Some(cc) = mem_flag_value(rest, "--contains") {
+                                q = q.conclusion_contains(cc);
+                            }
+                            let path = data_dir.join("memory.jsonl");
+                            let store = gsn_core::PersistentMemoryStore::open(&path);
+                            let entries = match store.query(&q) {
+                                Ok(es) => es,
+                                Err(e) => {
+                                    eprintln!("检索记忆失败: {e}");
+                                    return 1;
+                                }
+                            };
+                            let pq = gsn_core::PortableQuery {
+                                query: q,
+                                max_tokens: budget,
+                                min_tier,
+                            };
+                            let pack = match gsn_core::portable_pack(&entries, &pq) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    eprintln!("装包失败（fail-closed）: {e}");
+                                    return 1;
+                                }
+                            };
+                            if rest.iter().any(|a| a == "--json") {
+                                let mut packed_rows: Vec<serde_json::Value> = Vec::new();
+                                for se in &pack.entries {
+                                    packed_rows.push(serde_json::json!({
+                                        "task_id": se.entry.task_id,
+                                        "score": se.score,
+                                        "tier": se.tier.label(),
+                                        "tokens": gsn_core::estimate_entry_tokens(&se.entry),
+                                    }));
+                                }
+                                let mut omitted_rows: Vec<serde_json::Value> = Vec::new();
+                                for o in &pack.omitted {
+                                    omitted_rows.push(serde_json::json!({
+                                        "task_id": o.entry_id,
+                                        "tier": o.tier.label(),
+                                        "tokens": o.tokens,
+                                    }));
+                                }
+                                println!(
+                                    "{}",
+                                    serde_json::to_string_pretty(&serde_json::json!({
+                                        "budget": pack.budget,
+                                        "total_tokens": pack.total_tokens,
+                                        "packed": packed_rows,
+                                        "tier_counts": {
+                                            "high": pack.tier_counts.high,
+                                            "medium": pack.tier_counts.medium,
+                                            "low": pack.tier_counts.low,
+                                        },
+                                        "omitted": omitted_rows,
+                                    }))
+                                    .unwrap_or_default()
+                                );
+                            } else {
+                                println!(
+                                    "可移植记忆装包完成（预算 {} token，实测装入 {} token）：",
+                                    pack.budget, pack.total_tokens
+                                );
+                                println!(
+                                    "  已装 {} 条（高 {} / 中 {} / 低 {}）",
+                                    pack.entries.len(),
+                                    pack.tier_counts.high,
+                                    pack.tier_counts.medium,
+                                    pack.tier_counts.low
+                                );
+                                for se in &pack.entries {
+                                    println!(
+                                        "  - [{}] {}（score {}，{} token）",
+                                        se.tier.cn_label(),
+                                        se.entry.task_id,
+                                        se.score,
+                                        gsn_core::estimate_entry_tokens(&se.entry)
+                                    );
+                                }
+                                if !pack.omitted.is_empty() {
+                                    println!(
+                                        "  预算排挤 {} 条（可移植性：未装入）：",
+                                        pack.omitted.len()
+                                    );
+                                    for o in &pack.omitted {
+                                        println!(
+                                            "  - [{}] {}（{} token）",
+                                            o.tier.cn_label(),
+                                            o.entry_id,
+                                            o.tokens
+                                        );
+                                    }
+                                }
+                            }
+                            0
+                        }
+                        "help" => {
+                            println!("portable 用法：");
+                            println!("  gsn memory fleet portable tokens [--json]");
+                            println!("  gsn memory fleet portable pack --max-tokens <正整数> [--tier high|medium|low] [--task-id <id>] [--tag <tag>] [--contains <kw>] [--json]");
+                            println!("说明：token 为确定性估算（每 4 字符≈1 token，不宣称精确 tokenizer）；相关性分级（标签+3/结论+5/argv+2/stdout+1，>=5 高、>=2 中）；预算内先装高相关，预算外条目显式列入 omitted；fail-closed。");
+                            0
+                        }
+                        other_psub => {
+                            eprintln!(
+                                "错误: 未知 portable 子操作 '{other_psub}'（tokens/pack/help）"
+                            );
+                            1
+                        }
+                    }
+                }
                 other_sub => {
                     eprintln!(
-                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/fade/help）"
+                        "错误: 未知 fleet 操作 '{other_sub}'（支持: post/list/status/curate/purge/export/import/assess/lineage/remix/envtrace/consolidation/fade/portable/help）"
                     );
                     1
                 }

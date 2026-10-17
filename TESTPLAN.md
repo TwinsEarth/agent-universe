@@ -62,10 +62,10 @@
 
 | 序列号 | 测试内容 | 测试结果 | 修正时间 | 测试实例 |
 |---|---|---|---|---|
-| TC-NET-001 | 3 节点：节点发现 / DHT 路由表 / GossipSub 广播 / CRDT 同步 / 重启恢复 | 通过 | — | scripts/regression-3and5.sh，release 二进制，独立 data-dir |
-| TC-NET-002 | 5 节点：mesh 形成、广播延迟 | 通过 | — | ONLY=5 scripts/regression-3and5.sh，检查广播延迟指标 |
-| TC-NET-003 | 网络分区：3 节点分 1+2、写冲突、恢复后 CRDT 收敛 | 通过 | — | scripts/regression-partition.sh，恢复后 30s 内 CRDT 收敛。v5.2.5 复测（2026-10-17 macOS，release 二进制）：通过，37ms 收敛到 B-side（<30s 达标） |
-| TC-NET-004 | 恶意节点：20% 恶意（10 节点/2 不转发），消息到达率 > 95% | 通过 | — | scripts/regression-malicious.sh，记录到达率。v5.2.5 复测（2026-10-17 macOS）：通过，正常节点收到 8/8、到达率 100%，17.65s |
+| TC-NET-001 | 3 节点：节点发现 / DHT 路由表 / GossipSub 广播 / CRDT 同步 / 重启恢复 | 通过 | — | scripts/regression-3and5.sh，release 二进制，独立 data-dir。v5.2.7 复测（2026-10-18 macOS，gsn-daemon 0.5.26）：PASS=11 FAIL=0 |
+| TC-NET-002 | 5 节点：mesh 形成、广播延迟 | 通过 | — | ONLY=5 scripts/regression-3and5.sh，检查广播延迟指标。v5.2.7 复测（2026-10-18 macOS，0.5.26）：5 节点 mesh 形成（boot 连 4），GossipSub 广播延迟约 28ms |
+| TC-NET-003 | 网络分区：3 节点分 1+2、写冲突、恢复后 CRDT 收敛 | 通过 | — | scripts/regression-partition.sh，恢复后 30s 内 CRDT 收敛。v5.2.5 复测（2026-10-17 macOS，release 二进制）：通过，37ms 收敛到 B-side（<30s 达标）。v5.2.7 复测（2026-10-18 macOS，0.5.26）：通过，38ms 收敛到 B-side |
+| TC-NET-004 | 恶意节点：20% 恶意（10 节点/2 不转发），消息到达率 > 95% | 通过 | — | scripts/regression-malicious.sh，记录到达率。v5.2.5 复测（2026-10-17 macOS）：通过，正常节点收到 8/8、到达率 100%，17.65s。v5.2.7 复测（2026-10-18 macOS，0.5.26）：通过，到达率 100.00% > 95%，含 Rust 单测 gossipsub_survives_20pct_malicious_nonforwarders 1 passed（17.56s） |
 | TC-NET-005 | 50 节点规模：每节点路由表 ≥ K=20 | 失败 | 2026-10-17 | GSN_N=50 K=20 scripts/regression-scale.sh。v5.2.2 补跑（macOS M系列单机）：未达标——多配置实测 best median=9 / best ge_K=5/50（95s chain 度2+limit12）、顺序启动+度3 median=9/mean=12.04/max=49；根因=50 进程连接 churn（建立后被 closed by peer）致 FIND_NODE 扩散停滞于连接子图。修复链使 10 节点满拓扑、boot 侧 47 条、50 节点 median 1→9。v5.2.3 多机复测（Linux 云 VM 4vCPU/8GiB 独立第二机器，2026-10-17）：6 组矩阵——标准星型 settle60 一次性峰值 median=24.5/max=31/ge_K=31/50(62%)，同参数复跑不可复现（稳定 median=1）；settle45/120、chain 度2、顺序启动均 median=1~9/ge_K=1/50；Linux 3/5 节点 PASS=11/0。两机一致证实：单机 50 进程 libp2p churn 为系统性限制（Linux 峰值更高但同样不可复现），K=20 门禁需多机部署（每机 ≤20 节点）方可稳定达标；非代码缺陷 |
 | TC-NET-006 | 手动 3 节点组网：Peer ID 互不相同 | 通过 | — | BIN=gsn-core/target/release/gsn-daemon，GSN_DISABLE_PUBLIC_RELAY=1，独立 data-dir |
 | TC-NET-007 | 真实多节点 10 节点回归 | 通过 | — | 10 节点 chain 拓扑（worker 传 boot+前邻 bootstrap），60s 内 routing 全 9/9 满拓扑（/tmp/au-scale10chain、au-scale10chain4） |
@@ -197,7 +197,7 @@
 | TC-BASE-002 | workspace 测试全部通过 | 通过 | — | cargo test --workspace。v5.2.5 复测（2026-10-17 macOS）：全部 test result ok（含 1059 lib、malicious 集成 17.65s 等），0 failed |
 | TC-BASE-003 | clippy -D warnings 零告警 | 通过 | — | cargo clippy -- -D warnings（2026-10-16 实跑 0 warning/error）。v5.2.5 复测（2026-10-17 macOS）：clippy --workspace -- -D warnings 0 warning/error |
 | TC-BASE-004 | cargo fmt --check 干净 | 通过 | — | cargo fmt --check（2026-10-16 实跑 0 diff）。v5.2.5 复测（2026-10-17 macOS）：0 diff |
-| TC-BASE-005 | 多节点 3/5/10/20/50 回归 | 通过 | — | v5.2.2 补跑（macOS）：3/5 节点 PASS=10/0；partition 36ms 收敛；malicious 到达率 100%；erasure RS 重建双 MATCH；10 节点 chain 满拓扑 9/9；20 节点 median=9/max=19（N<K 不适用）；50 节点未达标（单机限制，见 TC-NET-005）。v5.2.3 追加（Linux 云 VM，2026-10-17）：3/5 节点 PASS=11/0、50 节点 6 组矩阵未达标（见 TC-NET-005）。v5.2.5 复测（2026-10-17 macOS，release 二进制）：partition 37ms 收敛、malicious 到达率 100%、erasure node2/node1 双 MATCH，全部通过。v5.2.0 未在本地补跑、v5.2.2 补跑说明见 TC-NET-005 |
+| TC-BASE-005 | 多节点 3/5/10/20/50 回归 | 通过 | — | v5.2.2 补跑（macOS）：3/5 节点 PASS=10/0；partition 36ms 收敛；malicious 到达率 100%；erasure RS 重建双 MATCH；10 节点 chain 满拓扑 9/9；20 节点 median=9/max=19（N<K 不适用）；50 节点未达标（单机限制，见 TC-NET-005）。v5.2.3 追加（Linux 云 VM，2026-10-17）：3/5 节点 PASS=11/0、50 节点 6 组矩阵未达标（见 TC-NET-005）。v5.2.5 复测（2026-10-17 macOS，release 二进制）：partition 37ms 收敛、malicious 到达率 100%、erasure node2/node1 双 MATCH，全部通过。v5.2.7 季度重跑（2026-10-18 macOS，gsn-daemon 0.5.26）：3+5 节点 PASS=11 FAIL=0（广播延迟约 28ms）、partition 38ms 收敛、malicious 到达率 100%、erasure node1/node2 双 MATCH，全部通过。v5.2.0 未在本地补跑、v5.2.2 补跑说明见 TC-NET-005 |
 
 ## 十五、版本重跑规则
 

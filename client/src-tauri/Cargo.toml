@@ -1,6 +1,6 @@
 [package]
 name = "au-client-universal"
-version = "5.2.6"
+version = "5.2.7"
 description = "Agent Universe v5.2.6 跨平台客户端"
 edition = "2021"
 

@@ -114,7 +114,7 @@
 | TC-CLIENT-001 | 跨平台客户端构建（macOS .dmg/.app） | 通过 | — | client/ 工程，npx tauri build，Apple Silicon |
 | TC-CLIENT-002 | 跨平台客户端构建（Windows .msi/-setup.exe） | 通过 | — | Windows x64，NSIS 安装包 |
 | TC-CLIENT-003 | 跨平台客户端构建（Linux .deb/.AppImage） | 通过 | — | Linux x64 |
-| TC-CLIENT-004 | Android APK 构建（universal/分 ABI） | 待执行 | — | npx tauri android build --apk，需 JDK + Android SDK/NDK |
+| TC-CLIENT-004 | Android APK 构建（universal/分 ABI） | 通过 | 2026-10-17 | macOS arm64；JDK17(Adoptium)+Android SDK(platform-tools r37/platform-34-ext7/build-tools 34.0.0/NDK r26d)；tauri-cli 2.12.0；Rust aarch64-linux-android；Gradle 9.6.1(wrapper base36 hash 4ticwg1pgcbps2hj28r8so764)+AGP 9.3.1+Kotlin 2.2.10；Maven 依赖走阿里云镜像(init.d/mirrors.gradle)，官方源 TLS 握手被断；`npx tauri android build --apk --target aarch64` 产出 app-universal-release-unsigned.apk(10.3M)，apksigner v2 签名(debug keystore) 后 verify 通过，含 classes.dex + lib/arm64-v8a/libau_client_universal.so(9.2M) + assets/tauri.conf.json；可安装验证通过（签名证书 CN=Android Debug）；分 ABI 包（arm/arm64/x86/x86_64）随 CI 矩阵，本机仅验证 arm64 |
 | TC-WB-001 | 桌面工作台 9 大视图功能 | 通过 | — | 工作区总览、任务、智能体、终端、文件、工具、模型提供商、插件、设置 |
 | TC-WB-002 | 默认工作区创建（~/.agent-universe/workspaces/default） | 通过 | — | 首次启动自动创建，免选文件夹 |
 | TC-WB-003 | daemon 托管（查找/启动/健康检查/停止/重启） | 通过 | — | 仅绑 loopback，不暴露局域网 |

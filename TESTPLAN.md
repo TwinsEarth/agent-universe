@@ -132,7 +132,7 @@
 | TC-API-003 | GET /peers 本地 Peer ID / 连接数 / DHT 路由表 | 通过 | — | 返回 Peer ID、连接数、路由表条目。v5.2.5 复测：connected_peers/mode/version 结构正常 |
 | TC-API-004 | GET /agents 已注册智能体列表 | 通过 | — | 返回 AgentCard 列表。v5.2.5 复测：空列表结构正常（agent_count=0），重启后恢复机制生效（"agents 已从磁盘恢复：0 个"） |
 | TC-API-005 | GET /tasks 任务列表 | 通过 | — | 返回任务列表。v5.2.5 复测：空列表结构正常 |
-| TC-API-006 | POST /agents 注册 AgentCard | 部分通过 | — | v5.2.5 复测：端点与业务校验生效——缺 agent_id 返回 400 BAD_REQUEST（卡片校验），带 agent_id 但质押不足返回 422「质押不足：需要至少 100，当前 0」（质押门禁正确）；成功路径依赖治理成员签名注资信封（deposit_signed，CLI 不替签），本地 daemon 未配置治理成员故成功注册+重启恢复未实跑（UNVERIFIED）；历史上 v3.9.10 已完成「签名注资→AgentCard→任务发布」闭环 |
+| TC-API-006 | POST /agents 注册 AgentCard | 通过 | 2026-10-17 | v5.2.6 全链路闭环（macOS，release 二进制，GSN_GOVERNANCE_FILE 1 名治理成员）：①Ed25519 治理密钥 + 指纹 DID（sha256(pubkey)[0..8]）→ GSN_GOVERNANCE_FILE 加载（日志「🏛️ 治理集已从…加载」）；②SignedGovernanceCommand 签名信封（域标签 AU-GOV-CMD/v1 + canonical_claim 按键排序 + Ed25519 签名 128hex）经 `gsn market deposit @envelope.json` → balance=500 status=deposited（成员 DID 指纹/公钥绑定/签名/时间窗全通过）；③POST /api/v1/agents（stake=100≤余额 500，version 必填）→ status=registered；④GET /agents agent_count=1（skills/stake/pricing/sla 全字段）；⑤SQLite 落盘（agents+card_json+ledger_entries/stakes）；⑥重启 daemon → agent_count=1 恢复（TC-PERSIST-002 智能体卡片重启保真同步复验）。未配置治理成员时该路径 422 拦截（fail-closed）此前 v5.2.5 已证 |
 | TC-API-007 | GET /api/v1/plugins 插件 REST API | 通过 | — | v3.0.0 引入的插件内核 REST API。v5.2.5 复测：16 插件全部 Running（9 Official＋7 System），host 0.5.24 |
 
 ## 九、插件内核测试（v3.0.0+）
